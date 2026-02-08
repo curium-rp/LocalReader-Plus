@@ -111,13 +111,21 @@ def create_shortcuts(install_dir, progress_callback=None):
 
 
 def create_shortcuts_powershell(install_dir, launch_vbs):
-    """Create shortcuts using PowerShell"""
+    """Create shortcuts using PowerShell — targets wscript.exe for reliable .vbs execution"""
+    wscript = r"C:\Windows\System32\wscript.exe"
+    vbs_path = str(launch_vbs).replace("\\", "\\\\")
+    working_dir = str(install_dir).replace("\\", "\\\\")
+
     # Desktop shortcut
+    desktop_lnk = str(Path.home() / "Desktop" / "LocalReader Pro.lnk").replace(
+        "\\", "\\\\"
+    )
     ps_script = f"""
 $WshShell = New-Object -comObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("{Path.home() / 'Desktop' / 'LocalReader Pro.lnk'}")
-$Shortcut.TargetPath = "{launch_vbs}"
-$Shortcut.WorkingDirectory = "{install_dir}"
+$Shortcut = $WshShell.CreateShortcut("{desktop_lnk}")
+$Shortcut.TargetPath = "{wscript}"
+$Shortcut.Arguments = '"{vbs_path}"'
+$Shortcut.WorkingDirectory = "{working_dir}"
 $Shortcut.IconLocation = "C:\\Windows\\System32\\shell32.dll,13"
 $Shortcut.Save()
 """
@@ -131,11 +139,13 @@ $Shortcut.Save()
         / "Start Menu"
         / "Programs"
     )
+    start_lnk = str(start_menu / "LocalReader Pro.lnk").replace("\\", "\\\\")
     ps_script = f"""
 $WshShell = New-Object -comObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("{start_menu / 'LocalReader Pro.lnk'}")
-$Shortcut.TargetPath = "{launch_vbs}"
-$Shortcut.WorkingDirectory = "{install_dir}"
+$Shortcut = $WshShell.CreateShortcut("{start_lnk}")
+$Shortcut.TargetPath = "{wscript}"
+$Shortcut.Arguments = '"{vbs_path}"'
+$Shortcut.WorkingDirectory = "{working_dir}"
 $Shortcut.IconLocation = "C:\\Windows\\System32\\shell32.dll,13"
 $Shortcut.Save()
 """

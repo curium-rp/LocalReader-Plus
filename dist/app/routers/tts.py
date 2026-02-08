@@ -49,6 +49,47 @@ def safe_concat(audio_list):
     return np.concatenate(clean_list)
 
 
+def graceful_chunk_for_tts(text, max_chars=200):
+    """
+    GemGem-inspired pre-chunking: split long text at natural boundaries
+    before sending to Kokoro. Prevents garbling when sentences exceed
+    MAX_PHONEME_LENGTH (~510 phonemes ≈ 200 chars at ~2.5x expansion).
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    remaining = text
+    while len(remaining) > max_chars:
+        truncated = remaining[:max_chars]
+        # Find the last natural break before the limit
+        last_break = max(
+            truncated.rfind(". "),
+            truncated.rfind("! "),
+            truncated.rfind("? "),
+            truncated.rfind("; "),
+            truncated.rfind(", "),
+        )
+
+        if last_break > max_chars * 0.3:  # At least 30% preserved
+            chunks.append(remaining[: last_break + 1].strip())
+            remaining = remaining[last_break + 1 :].strip()
+        else:
+            # Fallback: split at last space to avoid mid-word cuts
+            last_space = truncated.rfind(" ")
+            if last_space > max_chars * 0.5:
+                chunks.append(remaining[:last_space].strip())
+                remaining = remaining[last_space:].strip()
+            else:
+                # Hard split (very rare — no spaces in 200 chars)
+                chunks.append(remaining[:max_chars].strip())
+                remaining = remaining[max_chars:].strip()
+
+    if remaining.strip():
+        chunks.append(remaining.strip())
+    return chunks
+
+
 def synthesize_with_pauses(
     text: str, voice: str, speed: float, pause_settings: Dict[str, int]
 ):
@@ -103,14 +144,26 @@ def synthesize_with_pauses(
                 r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]",
                 clean_segment,
             ):
-                plan.append({"type": "tts", "text": clean_segment, "index": i})
+                # GemGem-style pre-chunking for long segments
+                sub_chunks = graceful_chunk_for_tts(clean_segment)
+                for sc_idx, sub_chunk in enumerate(sub_chunks):
+                    plan.append(
+                        {"type": "tts", "text": sub_chunk, "index": f"{i}_{sc_idx}"}
+                    )
                 last_was_punctuation = False
 
     tts_tasks = [p for p in plan if p["type"] == "tts"]
     audio_map = {}
 
     if tts_tasks and state_module.kokoro:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # GPU mode: 1 worker (GPU serializes internally, parallelism adds CPU contention)
+        # CPU mode: 2 workers (moderate parallelism without overwhelming system)
+        is_gpu = isinstance(
+            state_module.kokoro,
+            __import__("app.state", fromlist=["PatchedKokoro"]).PatchedKokoro,
+        )
+        workers = 1 if is_gpu else 2
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_idx = {
                 executor.submit(
                     state_module.kokoro.create,
@@ -310,12 +363,28 @@ async def synthesize(request: SynthesisRequest):
                     text, selected_voice, float(request.speed or 1.0), pause_settings
                 )
             else:
-                samples, sample_rate = state_module.kokoro.create(
-                    text,
-                    voice=selected_voice,
-                    speed=float(request.speed or 1.0),
-                    lang=lang,
-                )
+                # GemGem-style pre-chunking for direct synthesis path
+                sub_chunks = graceful_chunk_for_tts(text)
+                if len(sub_chunks) == 1:
+                    samples, sample_rate = state_module.kokoro.create(
+                        text,
+                        voice=selected_voice,
+                        speed=float(request.speed or 1.0),
+                        lang=lang,
+                    )
+                else:
+                    chunk_audios = []
+                    sample_rate = SAMPLE_RATE
+                    for chunk in sub_chunks:
+                        chunk_samples, sr = state_module.kokoro.create(
+                            chunk,
+                            voice=selected_voice,
+                            speed=float(request.speed or 1.0),
+                            lang=lang,
+                        )
+                        chunk_audios.append(chunk_samples.flatten())
+                        sample_rate = sr
+                    samples = safe_concat(chunk_audios)
 
         buffer = io.BytesIO()
         sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")

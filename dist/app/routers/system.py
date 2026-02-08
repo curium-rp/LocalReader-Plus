@@ -4,6 +4,7 @@ from ..state import audio_cache, kokoro, system_status
 from ..utils import safe_save_json
 from ..config import base_dir, settings_file, get_app_anchored_path
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -107,6 +108,28 @@ def load_engine_logic(requested_mode=None):
 
         if actual_mode == "gpu":
             print("[ENGINE] Using PatchedKokoro for GPU model compatibility...")
+            # Configure GPU provider before Kokoro init (it reads ONNX_PROVIDER env var)
+            import onnxruntime as ort_check
+
+            available = ort_check.get_available_providers()
+            print(f"[ENGINE] Available ONNX providers: {available}")
+            gpu_providers = ["DmlExecutionProvider", "CUDAExecutionProvider"]
+            selected_provider = None
+            for gp in gpu_providers:
+                if gp in available:
+                    selected_provider = gp
+                    break
+            if selected_provider:
+                os.environ["ONNX_PROVIDER"] = selected_provider
+                print(f"[ENGINE] GPU provider set: {selected_provider}")
+            else:
+                print(
+                    "[ENGINE] WARNING: No GPU provider available (DML/CUDA not found)."
+                )
+                print(
+                    "[ENGINE] Install onnxruntime-directml (Windows) or onnxruntime-gpu (CUDA) for GPU offloading."
+                )
+                print("[ENGINE] Running FP32 model on CPU — expect high CPU usage.")
             state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
         else:
             print("[ENGINE] Using default Kokoro for CPU model...")

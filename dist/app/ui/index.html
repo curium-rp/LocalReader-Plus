@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
@@ -45,6 +45,13 @@
               </h1>
             </div>
             <div class="flex items-center gap-2">
+              <button
+                id="sidebarCollapseBtn"
+                class="p-1.5 hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 rounded-md transition-colors"
+                title="Collapse Sidebar"
+              >
+                <i data-lucide="panel-left-close" class="w-4 h-4"></i>
+              </button>
               <button
                 id="languageToggle"
                 class="px-2 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-600/30 rounded-md text-xs font-bold transition-all"
@@ -330,6 +337,16 @@
             </p>
           </div>
           <div id="textContent" class="chapter-text hidden"></div>
+          <!-- Drag-and-Drop Overlay -->
+          <div id="dropOverlay" class="drop-overlay hidden">
+            <div class="drop-overlay-content">
+              <i data-lucide="upload" class="w-12 h-12 text-blue-400"></i>
+              <p class="text-lg font-bold text-white mt-4">
+                Drop PDF or EPUB here
+              </p>
+              <p class="text-sm text-zinc-400">Release to upload</p>
+            </div>
+          </div>
         </div>
 
         <!-- Controls -->
@@ -376,11 +393,11 @@
                 <i data-lucide="skip-forward" class="w-5 h-5"></i>
               </button>
               <button
-                id="stopBtn"
-                class="text-zinc-500 hover:text-red-400 p-1 transition-colors"
-                title="Stop Playback"
+                id="hidePlaybarBtn"
+                class="text-zinc-500 hover:text-zinc-300 p-1 transition-colors"
+                title="Hide Playbar"
               >
-                <i data-lucide="square" class="w-5 h-5 fill-current"></i>
+                <i data-lucide="chevron-down" class="w-5 h-5"></i>
               </button>
               <div class="h-4 w-px bg-zinc-800 mx-1"></div>
               <span
@@ -394,6 +411,17 @@
         </div>
       </main>
     </div>
+
+    <!-- Sidebar Expand Tab (visible when sidebar is collapsed) -->
+    <button id="sidebarExpandBtn" class="sidebar-expand-btn" title="Show Sidebar">
+      <i data-lucide="chevron-right" class="w-4 h-4"></i>
+    </button>
+
+    <!-- Playbar Restore Pill (visible when playbar is hidden) -->
+    <button id="playbarRestoreBtn" class="playbar-restore-btn" title="Show Player">
+      <i data-lucide="chevron-up" class="w-3 h-3"></i>
+      <span>Show Player</span>
+    </button>
 
     <!-- Voice Settings Button (Floating) -->
     <button
