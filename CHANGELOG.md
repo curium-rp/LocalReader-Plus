@@ -1,21 +1,47 @@
 # LocalReader Pro Changelog
 
- ## v3.5 - January 6, 2026 (The "Explorer" Update)
+## v3.6 - February 8, 2026 (The "GPU Awakening" Update)
 
- ### 🧭 Decoupled Browsing System
+### ⚡ GPU Acceleration Fixed (Issue #5)
 
- - **Independent Navigation:** You can now freely browse pages (via wheel or top buttons) without interrupting the current audio playback. The audio stays on its page while you peek ahead or review previous chapters.
- - **"Back to Reading" Button:** Added a neutral floating button (🎯) that appears automatically whenever you browse away from the page currently being spoken. Clicking it instantly snaps your view back to the active reader.
- - **Smart Follow Mode:** The app now remembers if you are "following" the voice or browsing manually. Resuming a book or clicking a line re-enables auto-scrolling.
-. - **Dynamic Highlighting:** Sentence highlighting now only appears when you are viewed the same page the voice is reading, preventing visual confusion.
+- **DirectML Now Works:** Fixed GPU mode silently falling back to CPU. The `kokoro_onnx` library's GPU detection was broken. We now create the ONNX session ourselves with proper provider ordering (`DmlExecutionProvider` + `CPUExecutionProvider` fallback).
+- **Opset 22 Conversion:** DML's `ConvTranspose` operator fails on opset 17 models. The engine now auto-converts to opset 22 on first GPU launch and caches it as `kokoro_opset22.onnx`.
+- **DML Session Config:** Disabled memory pattern optimization and forced sequential execution mode, both required by DirectML.
+- **Smart Thread Pool:** GPU mode uses 1 worker thread (GPU serializes internally), CPU mode uses 2.
+- **New Dependencies:** Added `onnx` and `onnxruntime-directml` to `requirements.txt`.
 
- ### 🚀 UI & Logic Refinements
+### 🔊 TTS Stability (Issue #6)
 
- - **Reference Safety:** Fixed a critical `ReferenceError` in the playback loop that occasionally caused audio to stop unexpectedly.
- - **Navigation Sync:** Improved the `jump-to-sentence` logic to ensure that clicking any line immediately brings BOTH the audio and the visual focus to that spot.
+- **Long Sentence Chunking:** Pre-splits text at sentence boundaries before Kokoro's 510-phoneme limit. Prevents garbled/repeated audio on long sentences.
 
- ***
-   
+### 🎨 Usability Improvements (Issue #4)
+
+- **Drag & Drop Upload:** Drop PDF or EPUB files anywhere on the page to upload.
+- **Collapsible Sidebar:** Collapse button in sidebar header; tab on left edge to restore.
+- **Playbar Hide Toggle:** Replaced redundant "Stop" button with minimize. "Show Player" pill restores it.
+
+### 🛠️ Installer Fix
+
+- **VBS Shortcut Fix:** Start Menu shortcuts now target `wscript.exe` with `launch.vbs` as argument.
+- **Rebuilt `setup.exe`** with all fixes.
+
+---
+
+## v3.5 - January 6, 2026 (The "Explorer" Update)
+
+### 🧭 Decoupled Browsing System
+
+- **Independent Navigation:** You can now freely browse pages (via wheel or top buttons) without interrupting the current audio playback. The audio stays on its page while you peek ahead or review previous chapters.
+- **"Back to Reading" Button:** Added a neutral floating button (🎯) that appears automatically whenever you browse away from the page currently being spoken. Clicking it instantly snaps your view back to the active reader.
+- **Smart Follow Mode:** The app now remembers if you are "following" the voice or browsing manually. Resuming a book or clicking a line re-enables auto-scrolling.
+  . - **Dynamic Highlighting:** Sentence highlighting now only appears when you are viewed the same page the voice is reading, preventing visual confusion.
+
+### 🚀 UI & Logic Refinements
+
+- **Reference Safety:** Fixed a critical `ReferenceError` in the playback loop that occasionally caused audio to stop unexpectedly.
+- **Navigation Sync:** Improved the `jump-to-sentence` logic to ensure that clicking any line immediately brings BOTH the audio and the visual focus to that spot.
+
+---
 
 ## v3.4 - January 6, 2026 (The "Clean Sweep" Update)
 
