@@ -4,7 +4,6 @@ from ..state import audio_cache, kokoro, system_status
 from ..utils import safe_save_json
 from ..config import base_dir, settings_file, get_app_anchored_path
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -108,73 +107,7 @@ def load_engine_logic(requested_mode=None):
 
         if actual_mode == "gpu":
             print("[ENGINE] Using PatchedKokoro for GPU model compatibility...")
-            import onnxruntime as ort
-
-            available = ort.get_available_providers()
-            print(f"[ENGINE] Available ONNX providers: {available}")
-
-            # Build provider list: GPU first, CPU fallback for unsupported ops
-            gpu_providers = ["DmlExecutionProvider", "CUDAExecutionProvider"]
-            selected_gpu = None
-            for gp in gpu_providers:
-                if gp in available:
-                    selected_gpu = gp
-                    break
-
-            if selected_gpu:
-                providers = [selected_gpu, "CPUExecutionProvider"]
-                # Suppress noisy DML fallback errors
-                ort.set_default_logger_severity(3)
-                print(f"[ENGINE] GPU provider: {selected_gpu} (CPU fallback enabled)")
-
-                # DML's ConvTranspose was updated in opset 22 — Kokoro ships as opset 17.
-                # Convert model to opset 22 so DML can handle ConvTranspose correctly.
-                if selected_gpu == "DmlExecutionProvider":
-                    opset22_path = model_to_load.parent / (
-                        model_to_load.stem + "_opset22.onnx"
-                    )
-                    if not opset22_path.exists():
-                        print(
-                            "[ENGINE] Converting model to opset 22 for DML compatibility (one-time)..."
-                        )
-                        try:
-                            import onnx
-                            from onnx import version_converter
-
-                            original = onnx.load(str(model_to_load))
-                            converted = version_converter.convert_version(original, 22)
-                            onnx.save(converted, str(opset22_path))
-                            print(f"[ENGINE] Saved opset 22 model: {opset22_path.name}")
-                        except Exception as e:
-                            print(
-                                f"[ENGINE] WARNING: Opset conversion failed ({e}), using original model"
-                            )
-                            opset22_path = model_to_load
-                    else:
-                        print(
-                            f"[ENGINE] Using cached opset 22 model: {opset22_path.name}"
-                        )
-                    model_to_load = opset22_path
-            else:
-                providers = ["CPUExecutionProvider"]
-                print(
-                    "[ENGINE] WARNING: No GPU provider available (DML/CUDA not found)."
-                )
-                print(
-                    "[ENGINE] Install onnxruntime-directml (Windows) or onnxruntime-gpu (CUDA) for GPU offloading."
-                )
-                print("[ENGINE] Running FP32 model on CPU — expect high CPU usage.")
-
-            # Configure session options for DML compatibility
-            sess_opts = ort.SessionOptions()
-            sess_opts.enable_mem_pattern = False
-            sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-
-            # Create session with proper provider chain, then pass to PatchedKokoro
-            sess = ort.InferenceSession(
-                str(model_to_load), sess_options=sess_opts, providers=providers
-            )
-            state_module.kokoro = PatchedKokoro.from_session(sess, str(voices_path))
+            state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
         else:
             print("[ENGINE] Using default Kokoro for CPU model...")
             state_module.kokoro = Kokoro(str(model_to_load), str(voices_path))

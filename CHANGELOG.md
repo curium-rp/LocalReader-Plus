@@ -1,14 +1,16 @@
 # LocalReader Pro Changelog
 
-## v3.6 - February 8, 2026 (The "GPU Awakening" Update)
+## v3.6.1 - February 9, 2026 (The "Page Sync" Update)
 
-### ⚡ GPU Acceleration Fixed (Issue #5)
+### ⚠️ GPU Acceleration Reverted (Issue #5)
 
-- **DirectML Now Works:** Fixed GPU mode silently falling back to CPU. The `kokoro_onnx` library's GPU detection was broken. We now create the ONNX session ourselves with proper provider ordering (`DmlExecutionProvider` + `CPUExecutionProvider` fallback).
-- **Opset 22 Conversion:** DML's `ConvTranspose` operator fails on opset 17 models. The engine now auto-converts to opset 22 on first GPU launch and caches it as `kokoro_opset22.onnx`.
-- **DML Session Config:** Disabled memory pattern optimization and forced sequential execution mode, both required by DirectML.
-- **Smart Thread Pool:** GPU mode uses 1 worker thread (GPU serializes internally), CPU mode uses 2.
-- **New Dependencies:** Added `onnx` and `onnxruntime-directml` to `requirements.txt`.
+- **Reverted:** The DirectML GPU changes from v3.6 have been rolled back. While GPU inference worked, it introduced **static noise across all voices** — likely caused by certain operations sporadically falling back to CPU, producing dtype mismatches in the audio pipeline. The app still runs in GPU mode but with occasional CPU fallback (the original reported behavior). A clean fix is pending.
+
+### 🔧 TTS Page-Boundary Fix
+
+- **Fixed: Wrong Line Read on Page Turn:** Fixed a race condition where TTS would read text from the **previous page** after auto-advancing to a new page.
+  - **Root Cause:** The `onended` audio callback fired `playNext()` and `preCacheNextSentences()` concurrently. During page transitions, the pre-cache function read stale sentence data (from the old page) but stored it under the new page's cache keys — causing wrong audio on cache hit.
+  - **Fix:** `onended` now awaits `playNext()` before pre-caching, ensuring state is fully settled. The frontend audio cache is also cleared on page transitions as a safety net.
 
 ### 🔊 TTS Stability (Issue #6)
 

@@ -156,14 +156,7 @@ def synthesize_with_pauses(
     audio_map = {}
 
     if tts_tasks and state_module.kokoro:
-        # GPU mode: 1 worker (GPU serializes internally, parallelism adds CPU contention)
-        # CPU mode: 2 workers (moderate parallelism without overwhelming system)
-        is_gpu = isinstance(
-            state_module.kokoro,
-            __import__("app.state", fromlist=["PatchedKokoro"]).PatchedKokoro,
-        )
-        workers = 1 if is_gpu else 2
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             future_to_idx = {
                 executor.submit(
                     state_module.kokoro.create,
