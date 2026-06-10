@@ -431,6 +431,9 @@ export async function getSentencesForPage(pageIndex) {
         // Fix broken DIM tags
         if (s.includes("[DIM]") && !s.includes("[/DIM]")) s += "[/DIM]";
         if (!s.includes("[DIM]") && s.includes("[/DIM]")) s = "[DIM]" + s;
+        
+        if (segmentItem.segment.includes('\n')) s += '\n'; // <-- ADD THIS LINE
+        
         sentences.push(s);
     }
   }

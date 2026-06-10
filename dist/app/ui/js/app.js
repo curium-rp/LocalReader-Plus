@@ -54,7 +54,10 @@ async function init() {
     state.ignoreList = settings.ignoreList || [];
     state.headerFooterMode = settings.header_footer_mode || "off";
     state.engineMode = settings.engine_mode || "gpu";
-    state.pauseSettings = settings.pause_settings || state.pauseSettings;
+// FIX: Guarantee it is ALWAYS an object with safe defaults, never undefined!
+    state.pauseSettings = settings.pause_settings || state.pauseSettings || {
+      comma: 1, period: 2, question: 2, exclamation: 2, colon: 1, semicolon: 1
+    };
     state.uiLanguage = settings.ui_language || "en";
 
     // Apply UI Settings
@@ -680,16 +683,28 @@ window.selectDocById = async (id) => {
     const el = document.getElementById(`pause${k}`);
     if (el) {
       el.oninput = (e) => {
+        // 1. Ensure the object exists before trying to write to it!
+        if (!state.pauseSettings) state.pauseSettings = {};
+        
         state.pauseSettings[k.toLowerCase()] = parseInt(e.target.value);
-        document.getElementById(`pause${k}Val`).textContent = e.target.value;
+        
+        // 2. Safely update the text number next to the slider
+        const valEl = document.getElementById(`pause${k}Val`);
+        if (valEl) valEl.textContent = e.target.value;
       };
       el.onchange = saveSettings;
     }
   },
 );
-document.getElementById("pauseSettingsToggle").onclick = () => {
-  document.getElementById("pauseSettingsContent").classList.toggle("hidden");
-};
+
+// Safe Toggle: Only attach the click event if the button actually exists in the HTML
+const pauseToggleBtn = document.getElementById("pauseSettingsToggle");
+if (pauseToggleBtn) {
+  pauseToggleBtn.onclick = () => {
+    const content = document.getElementById("pauseSettingsContent");
+    if (content) content.classList.toggle("hidden");
+  };
+}
 
 window.addEventListener("jump-to-sentence", (e) => jumpToSentence(e.detail));
 

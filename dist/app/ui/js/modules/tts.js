@@ -112,7 +112,8 @@ export async function playNext() {
 
   saveProgress();
 
-  const cleanText = stripHTML(text);
+  let cleanText = stripHTML(text);
+  if (text.endsWith('\n')) cleanText += '\n'; // <-- Keep it for the backend
   console.log(
     `Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..."`,
   );
@@ -222,12 +223,12 @@ export async function jumpToSentence(i) {
     }
   }
 
-  // 3. Buffer for 2 seconds then start playing
+  // 3. Buffer for 2 seconds then start playing 
   console.log(`[TTS] Buffering 2 seconds for jump to index ${i}...`);
   state.jumpTimer = setTimeout(() => {
     state.jumpTimer = null;
     playNext();
-  }, 2000);
+  }, 1000);
 }
 
 export async function saveProgress() {
@@ -260,66 +261,99 @@ export async function saveProgress() {
   }
 }
 
+// Lock to prevent multiple network stampedes
+let isPreloading = false;
+
 export async function preCacheNextSentences() {
-  const sentencesToPreCache = 2;
-  if (!state.audioContext) return;
+  const MAX_FORWARD = 5; // How many sentences to look ahead
+  const MAX_CACHE_SIZE = 10; // 5 forward + 1 playing + 4 backward history
 
-  const voiceSelect = document.getElementById("voiceSelect");
-  const speedRange = document.getElementById("speedRange");
+  if (!state.audioContext || isPreloading) return;
+  isPreloading = true;
 
-  for (let i = 1; i <= sentencesToPreCache; i++) {
-    let targetPageIndex = state.readingPageIndex;
-    let targetSentenceIndex = state.currentSentenceIndex + i;
-    let targetSentences = state.readingSentences;
+  try {
+    const voiceSelect = document.getElementById("voiceSelect");
+    const speedRange = document.getElementById("speedRange");
 
-    if (targetSentenceIndex >= state.readingSentences.length) {
-      if (state.readingPageIndex < state.currentPages.length - 1) {
-        targetPageIndex = state.readingPageIndex + 1;
-        targetSentenceIndex = 0;
-        try {
-          targetSentences = await getSentencesForPage(targetPageIndex);
-          if (targetSentences.length === 0) continue;
-        } catch (err) {
-          continue;
-        }
-      } else {
-        break;
-      }
+    // ==========================================
+    // 1. GARBAGE COLLECTION (The 3-Sentence Rewind)
+    // ==========================================
+    // Because JS Maps remember insertion order, the first item is always the oldest.
+    // If we have more than 10 items, we just delete the oldest ones. 
+    // This perfectly preserves your backwards history without doing complex page math!
+    while (state.audioBufferCache.size > MAX_CACHE_SIZE) {
+      const oldestKey = state.audioBufferCache.keys().next().value;
+      state.audioBufferCache.delete(oldestKey);
     }
 
-    const nextText = targetSentences[targetSentenceIndex];
-    if (!nextText || typeof nextText !== "string") continue;
+    // ==========================================
+    // 2. FORWARD PRELOADER (Cross-Page Supported)
+    // ==========================================
+    let targetPageIndex = state.readingPageIndex;
+    let targetSentenceIndex = state.currentSentenceIndex;
+    let targetSentences = state.readingSentences;
 
-    const cleanText = stripHTML(nextText);
-    const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${voiceSelect.value}_${speedRange.value}`;
+    for (let i = 1; i <= MAX_FORWARD; i++) {
+      targetSentenceIndex++; 
 
-    if (state.audioBufferCache.has(cacheKey)) continue;
-
-    fetch(`${API_URL}/api/synthesize`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: cleanText,
-        voice: voiceSelect.value,
-        speed: parseFloat(speedRange.value),
-        rules: state.rules,
-        ignore_list: state.ignoreList,
-        pause_settings: state.pauseSettings,
-      }),
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          const blob = await res.blob();
-          const arrayBuffer = await blob.arrayBuffer();
-          const audioBuffer =
-            await state.audioContext.decodeAudioData(arrayBuffer);
-          state.audioBufferCache.set(cacheKey, audioBuffer);
-          console.log(
-            `[PreCache] Cached page ${targetPageIndex} seq ${targetSentenceIndex}`,
-          );
+      // Safely cross the page boundary if needed
+      if (targetSentenceIndex >= targetSentences.length) {
+        if (targetPageIndex < state.currentPages.length - 1) {
+          targetPageIndex++;
+          targetSentenceIndex = 0; 
+          try {
+            targetSentences = await getSentencesForPage(targetPageIndex);
+            if (!targetSentences || targetSentences.length === 0) break;
+          } catch (err) {
+            break;
+          }
+        } else {
+          break; // End of the book
         }
-      })
-      .catch(() => {});
+      }
+
+      const nextText = targetSentences[targetSentenceIndex];
+      if (!nextText || typeof nextText !== "string") continue;
+
+      // Clean the text and skip empty lines to protect the GPU
+      let cleanText = stripHTML(nextText).replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      if (nextText.endsWith('\n')) cleanText += '\n'; // <-- Keep it for the backend
+  
+      if (cleanText.trim().length < 2) continue;
+
+      const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${voiceSelect.value}_${speedRange.value}`;
+
+      // If we already have it in RAM, skip it!
+      if (state.audioBufferCache.has(cacheKey)) continue;
+
+      // ==========================================
+      // AWAIT FETCH: Wait for the GPU to finish before asking for the next one
+      // ==========================================
+      const res = await fetch(`/api/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: cleanText,
+          voice: voiceSelect.value,
+          speed: parseFloat(speedRange.value),
+          rules: state.rules,
+          ignore_list: state.ignoreList,
+          pause_settings: state.pauseSettings,
+        }),
+      });
+
+      if (res.ok) {
+        const blob = await res.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
+        state.audioBufferCache.set(cacheKey, audioBuffer);
+        console.log(`[Sliding Window] Ready: Page ${targetPageIndex}, Sentence ${targetSentenceIndex}`);
+      }
+    }
+  } catch (error) {
+    console.error("[Preloader] Error:", error);
+  } finally {
+    isPreloading = false; // Always unlock when finished!
   }
 }
 
