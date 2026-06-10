@@ -12,8 +12,8 @@ _And i found out it has many bug and problem that why i started to debug this pr
    -  delay audio startup or buffer startup, set to 1000ms - 1 seconde
    -  No .exe options for windows
 
-   _THIS model is has been modifly for use with gpu NVDIA if can't detect if will fallback for cpu 
-   don't worries, if didn't use windows is has detect os in this code, maybe didn't have problem with Mac and Linux_
+   _THIS model is has been modifly for use with gpu NVDIA if can't detect it will fallback for cpu 
+   don't worries  _-if didn't use windows is has detect os in this code, maybe didn't have problem with Mac and Linux-_
 
 # many bug has been fix  #
    
@@ -24,19 +24,25 @@ _And i found out it has many bug and problem that why i started to debug this pr
    **-fix cache system cause repreat and skip reading, randomly.**
    
    **-fix buffer not works as expect**
-
+---
 # windows installation
 
-   _Only have manual install and if needed to use with NVIDIA GPU more setup to do use it_
+   **!if used install** Original version **(pro) with .exe, first uninstall kokoro onnx,** it has bad cache in package, cause code can't run on teminal. 
+```
+pip uninstall kokoro-onnx
+```   
+   
    _Install **Python 3.12** if not install yet._
+   
   
-   **First method** choose folders that needed to install and open teminal - _can delete .git in folder_
+   **First method for download** choose folders that needed to install and open teminal - _can delete .git in folder_
    
 ```
-git clone https://github.com/curium-rp/LocalReader-Plus.git
+git clone https://github.com/curium-rp/LocalReader-Plus
 ```
+
  
-   **Second mrthod** download zip and unzip it.
+   **Second method** download zip and unzip it.
 
    go to **LocalReader-Plus\ "dist"**  open teminal inside folder dist and run 
 ```
@@ -54,8 +60,8 @@ if missing something just install it.
    > pip install
 
 
-
-# this is what needed to do for KOKORO model for run on GPU for NVIDIA WINDOWS
+---
+# this is what needed to do for KOKORO model for run on GPU for NVIDIA on WINDOWS
 
    install **cuda v12 [https://developer.nvidia.com/cuda-12-8-0-download-archive](https://developer.nvidia.com/cuda-12-8-0-download-archive)**
   
@@ -66,6 +72,7 @@ if this process break normal app NVDIA -stick with loading icon- just go downloa
     
    **go to or find it "CUDNN> v9.XX >bin"**
 default locations 
+
 > C:\Program Files\NVIDIA\CUDNN\v9.23\bin\12.9\x64
 
    it has many of  **.dll** files in bis folder **copy** all of em to **LocalReader-Plus\dist\bin** if didn't have create it
@@ -88,21 +95,16 @@ pip install onnxruntime-gpu
 
 > python main.py 
 
-   if didn't see read color text and kokoro run on GPU when play audio
+   if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need voice engine to works)
+   
    it mean is run on GPU enjoy.
 
 
 ---
 
-
-
-
 **Uninstalling:**
 
-
 To completely remove the supporting software (Python and Libraries):
-
-
 
 **Remove Libraries**: If you haven't deleted the folder yet, open a terminal in the "dist" folder and run: `pip uninstall -r requirements.txt`
 
@@ -194,7 +196,7 @@ python3.12 main.py
 - Pauses apply only to single punctuation or the last char of a group
 - `"..."` creates ONE pause (e.g. 600ms), not three
 - `"?!` creates ONE pause (based on `!`)
-~~- `Title\n` creates a soft pause (300ms)~~ can't find code and if do needed to redesign many things.
+~~- `Title\n` creates a soft pause (300ms)~~ can't find code that have this function and if we need this, is need to redesign many things.
 
 
 ---
@@ -231,7 +233,6 @@ python3.12 main.py
 LocalReader-Plus
 ├── README.md
 ├── CHANGELOG.md
-│
 └── dist/
     ├── main.py                  # App entry point (FastAPI + WebView)
     │
@@ -359,16 +360,12 @@ LocalReader-Plus
   1. Check **Troubleshooting** section above
   2. Verify you're on latest version 
 ~~3. Check `CHANGELOG.md` for known issues~~
-  4. Contact developer with:
+  4. open ticket with:
       - Python version (`python --version`)
       - Error message or screenshot
-      - Steps to reproduce
-
-### Feature Requests
-
-- ~~Review `CHANGELOG.md` to see if already implemented~~
--   Describe use case and expected behavior
--   Provide examples or mockups if applicable
+      - OS
+   
+ 
 
 ---
 
@@ -380,4 +377,4 @@ LocalReader-Plus
 
 ---
 
-**Enjoy your reading! 🔳⚪**
+**Enjoy ! 🔳⚪**
