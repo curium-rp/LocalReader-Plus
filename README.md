@@ -49,11 +49,11 @@ python main.py
 
 **run or skip to next step for GPU setup**
 
-if missing something add it 
+if missing something just install it.
  
    > pip install
 
-what missing 
+
 
 # this is what needed to do for KOKORO model for run on GPU for NVIDIA WINDOWS
 
@@ -94,25 +94,25 @@ pip install onnxruntime-gpu
 
 ---
 
-## 🔘 Key Features
 
 
-~~**Uninstalling:**~~
 
+**Uninstalling:**
 
 
 To completely remove the supporting software (Python and Libraries):
 
-**Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
+
 
 **Remove Libraries**: If you haven't deleted the folder yet, open a terminal in the "dist" folder and run: `pip uninstall -r requirements.txt`
+
+**Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
 
 **Clear Model Cache**: Many voices and AI models are stored in your user profile. You can delete the `.cache` folder in your user directory (usually `C:\Users\<YourName>\.cache\kokoro`) to free up additional space.
 
 **Installation Size:**
 
-zip file -1 MB  unzip files 3-4MB
-- ~~Installer: ~24 MB~~
+- zip file -1 MB  unzip files 3-4MB - ~~Installer: ~24 MB~~
 - Full installation: ~2.6 GB (including Python dependencies)
 
 ---
@@ -170,8 +170,7 @@ python3.12 main.py
 ```
 
 ---
-
-### You can read full deteil in LocalReader Pro [LocalReader Pro](https://github.com/revisionhiep-create/LocalReader-Pro)**
+## 🔘for full Key Features visit [Original LocalReader-Pro](https://github.com/revisionhiep-create/LocalReader-Pro)
 
 ### Custom Pause Settings
 
@@ -229,15 +228,12 @@ python3.12 main.py
 ### File Structure
 
 ```
-LocalReader-Pro/
-├── build_installer.py           # Master build script
-├── installer_logic.py           # setup.exe core logic
+LocalReader-Plus
 ├── README.md
 ├── CHANGELOG.md
 │
 └── dist/
     ├── main.py                  # App entry point (FastAPI + WebView)
-    ├── launch.vbs               # Silent runner
     │
     ├── app/
     │   ├── server.py            # FastAPI initialization
@@ -255,7 +251,7 @@ LocalReader-Pro/
 
 **Additional folders created during use:**
 
-- `bin/` - FFMPEG binaries (auto-downloaded on first export)
+- `bin/` - FFMPEG binaries  (auto-downloaded on first export)
 - `models/` - TTS engine models (auto-downloaded based on your choice)
 - `userdata/audio_cache.db` - SQLite Audio Cache
 
@@ -282,14 +278,14 @@ LocalReader-Pro/
 
 ### System Requirements
 
-| Component      | Minimum                     | Recommended                |
-| -------------- | --------------------------- | -------------------------- |
-| **OS**         | Windows 10+ / Ubuntu 20.04+ | Windows 11 / Ubuntu 22.04+ |
-| **Python**     | 3.10 - 3.13                 | 3.12.10                    |
-| **RAM**        | 4 GB                        | 8 GB+                      |
-| **Disk Space** | 3 GB free                   | 20 GB+ free                |
-| **CPU**        | Dual-core 2.0 GHz           | Quad-core 2.5 GHz+         |
-| **Internet**   | Required for setup only     | Offline after setup        |
+| Component      | Minimum                     | Recommended                    |
+| -------------- | --------------------------- | ------------------------------ |
+| **OS**         | Windows 10+ / Ubuntu 20.04+ | Windows 11 / Ubuntu 22.04+     |
+| **Python**     | 3.10 - 3.13                 | 3.12.10                        |
+| **RAM**        | 4 GB                        | 8 GB+                          |
+| **Disk Space** | 3 GB free                   | 20 GB+ free                    |
+| **CPU**        | Dual-core 2.0 GHz           | Quad-core 2.5 GHz+   NVIDA GPU |
+| **Internet**   | Required for setup only     | Offline after setup            |
 
 ---
 
@@ -352,33 +348,27 @@ LocalReader-Pro/
 
 - **TTS Engine:** [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad
 - **PDF Rendering:** [PDF.js](https://mozilla.github.io/pdf.js/) by Mozilla
-- **UI Framework:** [Tailwind CSS](https://tailwindcss.com/)-(https://github.com/tailwindlabs/tailwindcss)
+- **UI Framework:** [Tailwind CSS](https://tailwindcss.com/) / [github](https://github.com/tailwindlabs/tailwindcss)
 - **Icons:** [Lucide](https://lucide.dev/)
 - **Audio Processing:** [FFMPEG](https://ffmpeg.org/)
-
-### Python Libraries
-
-- FastAPI, uvicorn, torch, onnxruntime, pydub, soundfile, pywebview, ebooklib, beautifulsoup4, and more (see `requirements.txt`)
-
+  
 ---
 
-## 🔘 Support
+### Found a Bug? Support
 
-### Found a Bug?
-
-1. Check **Troubleshooting** section above
-2. Verify you're on latest version 
-3. Check `CHANGELOG.md` for known issues
-4. Contact developer with:
-   - Python version (`python --version`)
-   - Error message or screenshot
-   - Steps to reproduce
+  1. Check **Troubleshooting** section above
+  2. Verify you're on latest version 
+~~3. Check `CHANGELOG.md` for known issues~~
+  4. Contact developer with:
+      - Python version (`python --version`)
+      - Error message or screenshot
+      - Steps to reproduce
 
 ### Feature Requests
 
-- Review `CHANGELOG.md` to see if already implemented
-- Describe use case and expected behavior
-- Provide examples or mockups if applicable
+- ~~Review `CHANGELOG.md` to see if already implemented~~
+-   Describe use case and expected behavior
+-   Provide examples or mockups if applicable
 
 ---
 
