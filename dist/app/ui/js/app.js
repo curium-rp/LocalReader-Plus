@@ -34,6 +34,7 @@ import {
   openExportLocation,
 } from "./modules/export.js";
 import { initTimer } from "./modules/timer.js";
+import { initThemeSystem } from "./modules/themes.js"; // Themesss
 
 // Global access for debugging
 window.state = state;
@@ -132,6 +133,7 @@ async function init() {
 
   // 3. Load Data & UI
   renderIcons();
+  initThemeSystem(); // <-- Installs the hidden trigger
 
   try {
     await loadVoices();
