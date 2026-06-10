@@ -14,5 +14,8 @@ ebooklib
 xhtml2pdf
 beautifulsoup4
 lxml
+psutil
 pydub
-
+num2words
+eng_to_ipa
+##onnxruntime-gpu##
