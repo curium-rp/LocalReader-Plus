@@ -57,7 +57,7 @@ if missing something just install it.
 
 # this is what needed to do for KOKORO model for run on GPU for NVIDIA WINDOWS
 
-   install **cuda v12 [https://developer.nvidia.com/cuda-90-download-archive](https://developer.nvidia.com/cuda-90-download-archive)**
+   install **cuda v12 [https://developer.nvidia.com/cuda-12-8-0-download-archive](https://developer.nvidia.com/cuda-12-8-0-download-archive)**
   
    install **cudnn v9 [https://developer.nvidia.com/cudnn-downloads](https://developer.nvidia.com/cudnn-downloads)**
 
