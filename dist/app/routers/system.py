@@ -20,7 +20,6 @@ try:
     )
     from logic.audio_cache import AudioCache
 
-    # We should also import load_engine logic or reimplement it
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from downloader import (
@@ -31,17 +30,9 @@ except ImportError:
 
 router = APIRouter()
 
-# --- Re-implement load_engine here or import it ---
-# Since load_engine modifies global state 'kokoro', we should import 'load_engine' if we refactored it to state.py or utils.py
-# Or define it here using the global state objects.
-# Ideally, we should move 'load_engine' to state.py or a logic module.
-# For now, let's redefine it here but make sure it updates the state objects.
-
 from ..state import PatchedKokoro
 
-
 def load_engine_logic(requested_mode=None):
-    # This logic was in server.py
     global kokoro
     system_status["is_loading"] = True
 
@@ -92,11 +83,6 @@ def load_engine_logic(requested_mode=None):
         return
 
     try:
-        from kokoro_onnx import Kokoro
-
-        # Unload old
-        # kokoro is imported from state, so we need to update the attribute in that module??
-        # No, 'from ..state import kokoro' imports the name. To update the module variable, we need to access the module.
         import app.state as state_module
 
         if state_module.kokoro is not None:
@@ -106,26 +92,61 @@ def load_engine_logic(requested_mode=None):
         print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
 
         if actual_mode == "gpu":
-            print("[ENGINE] Using PatchedKokoro for GPU model compatibility...")
-            state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
+            print("[ENGINE] Configuring strict CUDA GPU settings...")
+            
+            # 1. Strip out aggressive memory hacks. Keep it clean and stable.
+            cuda_options = {
+                "device_id": 0,                                 
+                "cudnn_conv_algo_search": "HEURISTIC",         
+            }
+            custom_providers = [("CUDAExecutionProvider", cuda_options), "CPUExecutionProvider"]
+            
+            # --- THE MONKEY PATCH ---
+            import onnxruntime as ort
+            original_session = ort.InferenceSession
+            
+            def forced_gpu_session(*args, **kwargs):
+                kwargs['providers'] = custom_providers
+                
+                if 'sess_options' not in kwargs or kwargs['sess_options'] is None:
+                    sess_options = ort.SessionOptions()
+                    kwargs['sess_options'] = sess_options
+                
+                # ==========================================
+                # 2. THE DYNAMIC SHAPE FIX (CRITICAL)
+                # ==========================================
+                # This stops ONNX from forcing Sentence 2 into Sentence 1's memory space!
+                kwargs['sess_options'].enable_mem_pattern = False 
+                
+                # 3. Step down optimization from ALL to EXTENDED. 
+                # This protects the delicate STFT (audio wave) nodes from being crushed.
+                kwargs['sess_options'].graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+                
+                return original_session(*args, **kwargs)
+                
+            # Hijack the engine
+            ort.InferenceSession = forced_gpu_session
+            # ------------------------
+            
+            try:
+                state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
+            except Exception as e:
+                print(f"[ENGINE WARNING] PatchedKokoro failed: {e}. Using standard Kokoro.")
+                from kokoro_onnx import Kokoro
+                state_module.kokoro = Kokoro(str(model_to_load), str(voices_path))
+            finally:
+                # Always put the original engine back
+                ort.InferenceSession = original_session
+                
         else:
             print("[ENGINE] Using default Kokoro for CPU model...")
+            from kokoro_onnx import Kokoro
             state_module.kokoro = Kokoro(str(model_to_load), str(voices_path))
-
-        if actual_mode != requested_mode:
-            warn = f"Using {actual_mode.upper()} model (your selected {requested_mode.upper()} model not found)"
-            system_status["last_error"] = warn
-            print(f"[ENGINE WARNING] {warn}")
-        else:
-            system_status["last_error"] = None
-
-        print(f"[ENGINE] Successfully loaded {actual_mode.upper()} model")
 
     except Exception as e:
         system_status["last_error"] = f"Failed to load TTS engine: {str(e)}"
         print(f"[ENGINE ERROR] {system_status['last_error']}")
         import traceback
-
         traceback.print_exc()
 
     system_status["is_loading"] = False

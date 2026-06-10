@@ -1,3 +1,22 @@
+import os
+import glob
+import platform
+
+# ==========================================
+# WINDOWS DLL FORCE-LOADER (GPU FIX)
+# ==========================================
+if platform.system() == "Windows":
+    print("[STARTUP] Hunting for NVIDIA DLLs...")
+    for path in glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.*\bin"):
+        if os.path.exists(path):
+            os.add_dll_directory(path)
+            print(f"-> Linked CUDA: {path}")
+    for path in glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin"):
+        if os.path.exists(path):
+            os.add_dll_directory(path)
+            print(f"-> Linked cuDNN: {path}")
+# ==========================================
+
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +36,6 @@ from .config import (
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
 from .routers import settings, library, tts, system, export, timer
-from .utils import safe_init_json
 
 
 # --- Lifespan Manager ---
@@ -44,10 +62,7 @@ async def lifespan(app: FastAPI):
     )
     safe_init_json(library_file, [])
 
-    # 3. Check/Install FFMPEG (Async check could go here)
-    # We leave that for the frontend to query via /api/ffmpeg/status
-
-    # 4. Clean temp content
+    # 3. Clean temp content
     try:
         if content_dir.exists():
             for f in content_dir.glob("temp_*"):
@@ -58,7 +73,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[STARTUP] Cleanup warning: {e}")
 
-    # 5. Load model (Auto-load on startup)
+    # 4. Load model (Auto-load on startup)
     try:
         from .routers.system import load_engine_logic
 
@@ -119,5 +134,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="127.0.0.1", port=8000)

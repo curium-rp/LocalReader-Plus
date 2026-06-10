@@ -5,6 +5,7 @@ import threading
 import time
 import uvicorn
 import webview
+import platform
 from pathlib import Path
 
 # --- 1. ARCHITECTURAL SETUP: ABSOLUTE PATH ANCHORING ---
@@ -12,24 +13,32 @@ from pathlib import Path
 base_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(base_dir))
 
-# --- 2. LOCAL FFMPEG SETUP ---
-# Point system PATH to our local /bin folder so pydub finds ffmpeg.exe
+# --- 2. LOCAL FFMPEG & NVIDIA GPU BYPASS SETUP ---
 bin_path = base_dir / "bin"
 
 if bin_path.exists():
-    # Prepend to PATH for this session only
+    # Prepend to PATH for this session only (helps FFMPEG)
     os.environ["PATH"] = str(bin_path) + os.pathsep + os.environ["PATH"]
-    print(f"[OK] Local FFMPEG linked: {bin_path}")
+    
+    # THE MAGIC BULLET: Force Windows to grant DLL permissions to this specific folder
+    if platform.system() == "Windows":
+        try:
+            os.add_dll_directory(str(bin_path))
+            print(f"[OK] Windows DLL Security Bypass active for: {bin_path}")
+        except Exception as e:
+            print(f"[WARNING] Could not bypass DLL security: {e}")
+            
+    print(f"[OK] Local Bin folder linked successfully.")
 else:
     print(f"[WARNING] Local 'bin' folder not found at {bin_path}")
-    print(f"          FFMPEG will need to be downloaded on first export.")
+    print(f"          FFMPEG and GPU DLLs may not load correctly.")
 
 # --- 3. IMPORT APP ---
-# Now when pydub loads, it will find our local ffmpeg first
+# Now when the app loads, Windows has already granted it permission to read the GPU files
 from app.server import app
 
 def is_port_in_use(port):
-    """Check if a port is already in use"""
+# ... (Keep the rest of your main.py code exactly the same below this line) ... """Check if a port is already in use"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
@@ -50,7 +59,7 @@ def run_server():
 
 def main():
     print("=" * 50)
-    print("  LocalReader Pro - Starting")
+    print("  LocalReader Plus - Starting")
     print("=" * 50)
     print(f"Project root: {base_dir}")
     
@@ -85,7 +94,7 @@ def main():
     
     try:
         window = webview.create_window(
-            'LocalReader Pro',
+            'LocalReader Plus',
             url='http://127.0.0.1:8000',
             width=1200,
             height=800,
@@ -95,7 +104,7 @@ def main():
         
         print("[OK] Window created successfully")
         print("=" * 50)
-        print("  LocalReader Pro - Ready!")
+        print("  LocalReader Plus - Ready!")
         print("=" * 50)
         print()
         
@@ -107,7 +116,7 @@ def main():
         sys.exit(1)
 
     # 5. Cleanup on exit
-    print("\n[EXIT] LocalReader Pro shutting down...")
+    print("\n[EXIT] LocalReader Plus shutting down...")
     os._exit(0)
 
 if __name__ == "__main__":
