@@ -55,6 +55,7 @@ class ExportRequest(BaseModel):
     speed: float = 1.0
     rules: List[PronunciationRule]
     ignore_list: List[str] = []
+    format: str = "wav"  # <-- ADD THIS LINE
 
 
 class SynthesisRequest(BaseModel):

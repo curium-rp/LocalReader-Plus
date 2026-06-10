@@ -258,20 +258,22 @@ LocalReader-Plus
 
 ### Storage Requirements
 
-| Component                 | Size                       |
-| ------------------------- | -------------------------- |
-| **-ZIP**                  | ~1 MB                      |
-| **App Files**             | ~3 MB                      |
-| **Python Dependencies**   | ~2 GB (PyTorch, etc.)      |
-| **TTS Engine (GPU Mode)** | ~309 MB                    |
-| **TTS Engine (CPU Mode)** | ~87 MB                     |
-| **Voice Pack (shared)**   | ~30 MB                     |
-| **FFMPEG**                | ~100 MB (optional)         |
-| **Audio Cache (SQLite)**  | ~200 MB max (auto-managed) |
-| **Per Document Cache**    | ~1-5 MB                    |
-| **Exported MP3**          | ~1 MB per minute of audio  |
-| **Cudnn 9.xx**            | ~3 GB (optional)           |
-| **Cuda 12.xx**            | ~3 GB to 4.5 GB (optional) |
+| Component                 | Size                                |
+| ------------------------- | --------------------------          |
+| **-ZIP**                  | ~1 MB                               |
+| **App Files**             | ~3 MB                               |
+| **Python Dependencies**   | ~2 GB (PyTorch, etc.)               |
+| **TTS Engine (GPU Mode)** | ~309 MB                             |
+| **TTS Engine (CPU Mode)** | ~87 MB                              |
+| **Voice Pack (shared)**   | ~30 MB                              |
+| **FFMPEG**                | ~100 MB (optional)                  |
+| **Audio Cache (SQLite)**  | ~200 MB max (auto-managed)          |
+| **Per Document Cache**    | ~1-5 MB                             |
+| **Exported WAV / MP3**    | ~1 MB / ~2.7 MB per minute of audio |
+| **Cudnn 9.xx**            | ~3 GB (optional)                    |
+| **Cuda 12.xx**            | ~3 GB to 4.5 GB (optional)          |
+
+**Exported WAV or MP3 for hole books can't pick start point**
 
 **Total (GPU Mode):** ~2.6 GB (without exported audio)  _not include Cudnn and cuda_
 **Total (CPU Mode):** ~2.4 GB (saves ~220MB)  
