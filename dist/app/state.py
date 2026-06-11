@@ -17,7 +17,8 @@ except ImportError:
 # --- Global State Instances ---
 audio_cache = AudioCache(cache_db_path, max_size_mb=MAX_CACHE_SIZE_MB)
 kokoro = None  # The TTS engine instance
-
+marvis_generator = None 
+marvis_tokenizer = None  
 system_status = {"is_loading": False, "last_error": None, "is_downloading": False}
 
 export_status = {
@@ -37,6 +38,10 @@ ffmpeg_status = {
     "message": "",
 }
 
+#  FOR MARVIS STATE TRACKING ---
+is_marvis_downloading = False
+is_marvis_loading = False
+marvis_model_loaded = False
 
 # --- PatchedKokoro Class ---
 class PatchedKokoro(Kokoro):

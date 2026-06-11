@@ -55,7 +55,7 @@ async function init() {
     state.ignoreList = settings.ignoreList || [];
     state.headerFooterMode = settings.header_footer_mode || "off";
     state.engineMode = settings.engine_mode || "gpu";
-// FIX: Guarantee it is ALWAYS an object with safe defaults, never undefined!
+    state.ttsEngine = settings.active_engine || "kokoro";
     state.pauseSettings = settings.pause_settings || state.pauseSettings || {
       comma: 1, period: 2, question: 2, exclamation: 2, colon: 1, semicolon: 1
     };
@@ -88,9 +88,18 @@ async function init() {
     }
     const headerSelect = document.getElementById("headerFooterMode");
     if (headerSelect) headerSelect.value = state.headerFooterMode;
-    const engineSelect = document.getElementById("engineMode");
+     const engineSelect = document.getElementById("engineMode");
+    if (engineSelect) {
+      // If Marvis is the active engine, select it. Otherwise, select the Kokoro mode (gpu/cpu).
+      if (state.ttsEngine === "marvis") {
+        engineSelect.value = "marvis";
+      } else {
+        engineSelect.value = state.engineMode; 
+      }
+    }
     if (engineSelect) engineSelect.value = state.engineMode;
-
+    const ttsEngineSelect = document.getElementById("ttsEngineSelect");
+    if (ttsEngineSelect) ttsEngineSelect.value = state.ttsEngine;
     // Pause Settings UI
     [
       "comma",
@@ -336,10 +345,12 @@ async function saveSettings() {
     await fetchJSON(`/api/settings`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+body: JSON.stringify({
         pronunciationRules: state.rules,
         ignoreList: state.ignoreList,
         voice_id: document.getElementById("voiceSelect").value,
+        active_engine: state.ttsEngine,    // <- Saves 'kokoro' or 'marvis'
+        engine_mode: state.engineMode,     // <-- 'gpu' or 'cpu'
         speed: parseFloat(document.getElementById("speedRange").value),
         font_size: parseInt(document.getElementById("fontSizeSlider").value),
         header_footer_mode: state.headerFooterMode,
@@ -387,24 +398,43 @@ document.getElementById("voiceSelect").onchange = async () => {
   }
   await saveSettings();
 };
+document.getElementById("ttsEngineSelect").onchange = async (e) => {
+  state.ttsEngine = e.target.value;
+  stopPlayback();
+  state.audioBufferCache.clear();
+  try {
+    await fetchJSON("/api/system/clear-cache", { method: "POST" });
+  } catch (e) {}
+  await saveSettings();
+  await loadVoices(); // Reload the dropdown with the new engine's voices
+};
 document.getElementById("headerFooterMode").onchange = async (e) => {
   state.headerFooterMode = e.target.value;
   await saveSettings();
   if (state.currentDoc) await renderPage();
 };
 document.getElementById("engineMode").onchange = async (e) => {
-  state.engineMode = e.target.value;
-  await saveSettings();
-};
-document.getElementById("setupBtn").onclick = async () => {
-  try {
-    await fetchJSON(`/api/system/setup?model_type=${state.engineMode}`, {
-      method: "POST",
-    });
-    showToast("Started downloading...");
-  } catch (e) {
-    showToast(e.message);
+  const val = e.target.value;
+  
+  // Cleanly route the selection
+  if (val === "marvis") {
+    state.ttsEngine = "marvis";
+    state.engineMode = "gpu"; // Default Marvis to use GPU 
+  } else {
+    state.ttsEngine = "kokoro";
+    state.engineMode = val; // "gpu" or "cpu"
   }
+
+  stopPlayback();
+  state.audioBufferCache.clear();
+  try {
+    await fetchJSON("/api/system/clear-cache", { method: "POST" });
+    // Tell the backend to switch engines in memory immediately
+    await fetchJSON(`/api/system/switch-engine?target_mode=${state.engineMode}`, { method: "POST" });
+  } catch (err) {}
+
+  await saveSettings();
+  await loadVoices(); // Reloads the dropdown to show Marvis Clones or Kokoro Voices
 };
 
 // Drawer & Sidebar Resize
@@ -711,24 +741,127 @@ if (pauseToggleBtn) {
 window.addEventListener("jump-to-sentence", (e) => jumpToSentence(e.detail));
 
 // Status Polling
+// Status Polling
 let lastSysState = null;
 async function startStatusPolling() {
   const poll = async () => {
     try {
       const status = await fetchJSON(`/api/system/status?t=${Date.now()}`);
       window.isEngineReady = status.model_loaded;
-      const selModel =
-        state.engineMode === "gpu"
+      
+      // Determine if the currently selected model is actually downloaded on the hard drive
+      let selModel = false;
+      if (state.ttsEngine === "marvis") {
+        selModel = status.available_models?.marvis;
+      } else {
+        selModel = state.engineMode === "gpu"
           ? status.available_models?.gpu
           : status.available_models?.cpu;
+      }
+
       const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${selModel}`;
+      
       if (curState !== lastSysState) {
         lastSysState = curState;
-        updateEngineStatusUI(status, selModel);
+        // This UI function automatically shows the "Setup Voice Engine" button if selModel is false!
+        updateEngineStatusUI(status, selModel); 
         if (status.model_loaded) loadVoices();
       }
     } catch (e) {}
     setTimeout(poll, 2000);
   };
   poll();
+}
+
+// ==========================================
+// MARVIS VOICE CLONING UI LOGIC
+// ==========================================
+const cloneModal = document.getElementById("cloneVoiceModal");
+const openCloneBtn = document.getElementById("openCloneModalBtn");
+const cancelCloneBtn = document.getElementById("cancelCloneBtn");
+const submitCloneBtn = document.getElementById("submitCloneBtn");
+
+if (openCloneBtn && cloneModal) {
+  openCloneBtn.onclick = () => {
+    cloneModal.classList.remove("hidden");
+  };
+}
+
+if (cancelCloneBtn && cloneModal) {
+  cancelCloneBtn.onclick = () => {
+    cloneModal.classList.add("hidden");
+    // Clear inputs on close
+    document.getElementById("cloneVoiceName").value = "";
+    document.getElementById("cloneVoiceText").value = "";
+    document.getElementById("cloneVoiceFile").value = "";
+  };
+}
+
+if (submitCloneBtn) {
+  submitCloneBtn.onclick = async () => {
+    const nameInput = document.getElementById("cloneVoiceName").value.trim();
+    const textInput = document.getElementById("cloneVoiceText").value.trim();
+    const fileInput = document.getElementById("cloneVoiceFile").files[0];
+
+    // 1. Validation
+    if (!nameInput) {
+      showToast("Please enter a voice name.");
+      return;
+    }
+    if (!textInput) {
+      showToast("Please enter the exact transcript of the audio.");
+      return;
+    }
+    if (!fileInput) {
+      showToast("Please select a .wav audio file.");
+      return;
+    }
+    if (!fileInput.name.toLowerCase().endsWith(".wav")) {
+      showToast("Only .wav files are supported!");
+      return;
+    }
+
+    // 2. Prepare the payload
+    const formData = new FormData();
+    formData.append("name", nameInput);
+    formData.append("text", textInput);
+    formData.append("file", fileInput);
+
+    // 3. UI Loading State
+    const originalText = submitCloneBtn.innerHTML;
+    submitCloneBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span>Cloning...</span>`;
+    submitCloneBtn.disabled = true;
+    renderIcons();
+
+    // 4. Send to Backend
+    try {
+      const response = await fetch("/api/voices/clone", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Failed to clone voice.");
+      }
+
+      showToast(result.message);
+      
+      // Close modal and clear inputs
+      cancelCloneBtn.click();
+
+      // Refresh the dropdown menu so the new voice shows up!
+      import("./modules/tts.js").then((tts) => tts.loadVoices());
+
+    } catch (error) {
+      console.error(error);
+      showToast(error.message);
+    } finally {
+      // Restore button state
+      submitCloneBtn.innerHTML = originalText;
+      submitCloneBtn.disabled = false;
+      renderIcons();
+    }
+  };
 }

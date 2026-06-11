@@ -229,10 +229,13 @@
               class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-2"
             >
               <option value="gpu" data-i18n="settings.gpu_mode">
-                High Quality (GPU) - ~309MB
+                Kokoro Quality (GPU)
               </option>
               <option value="cpu" data-i18n="settings.cpu_mode">
-                High Performance (CPU) - ~87MB
+                Kokoro Performance (CPU)
+              </option>
+              <option value="marvis" data-i18n="settings.marvis_mode">
+                Marvis TTS (GPU)
               </option>
             </select>
             <div
@@ -443,9 +446,23 @@
       <span id="timerBtnText" style="display: none"></span>
     </button>
 
-    <!-- Drawer Overlay -->
+    <!-- Drawer Overlay and tts engine-->
     <div id="drawerOverlay" class="drawer-overlay"></div>
-
+        <div class="mb-6">
+          <label
+            class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
+          >
+            <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
+            <span data-i18n="settings.engine_selection">TTS Engine</span>
+          </label>
+          <select
+            id="ttsEngineSelect"
+            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="kokoro">Kokoro-ONNX (Standard)</option>
+            <option value="marvis">Marvis TTS (Real-time edge)</option>
+          </select>
+        </div>
     <!-- Voice Settings Drawer -->
     <div id="voiceSettingsDrawer" class="voice-settings-drawer">
       <!-- Drawer Header -->
@@ -488,6 +505,13 @@
           >
             <option value="" disabled selected>Loading voices...</option>
           </select>
+          <button
+            id="openCloneModalBtn"
+            class="w-full mt-3 flex items-center justify-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg transition-all text-xs font-bold"
+          >
+            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+            <span data-i18n="settings.clone_voice">Clone New Voice (Marvis)</span>
+          </button>
         </div>
 
         <!-- Speed Control -->
@@ -1010,7 +1034,62 @@
         </div>
       </div>
     </div>
+    <div
+      id="cloneVoiceModal"
+      class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[2000] hidden"
+    >
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-6 max-w-md w-full mx-4">
+        <div class="flex items-center justify-between mb-6">
+          <h3 class="text-lg font-bold text-white flex items-center gap-2">
+            <i data-lucide="mic" class="w-5 h-5 text-blue-500"></i>
+            Clone Voice
+          </h3>
+          <button id="cancelCloneBtn" class="text-zinc-500 hover:text-red-500 transition-colors">
+            <i data-lucide="x" class="w-5 h-5"></i>
+          </button>
+        </div>
 
+        <div class="space-y-4">
+          <div>
+            <label class="block text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Voice Name</label>
+            <input
+              type="text"
+              id="cloneVoiceName"
+              placeholder="e.g., Steve Jobs, My Voice"
+              class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2.5 text-sm text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+            />
+          </div>
+
+          <div>
+            <label class="block text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Reference Transcript</label>
+            <textarea
+              id="cloneVoiceText"
+              rows="3"
+              placeholder="Type EXACTLY what is spoken in the audio clip..."
+              class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2.5 text-sm text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none resize-none custom-scrollbar"
+            ></textarea>
+          </div>
+
+          <div>
+            <label class="block text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Audio File (.wav only, 3-10 seconds)</label>
+            <input
+              type="file"
+              id="cloneVoiceFile"
+              accept=".wav"
+              class="w-full text-sm text-zinc-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-zinc-800 file:text-zinc-300 hover:file:bg-zinc-700 cursor-pointer border border-zinc-800 rounded-lg bg-zinc-950"
+            />
+          </div>
+
+          <button
+            id="submitCloneBtn"
+            class="w-full mt-4 flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold transition-all shadow-lg shadow-blue-900/20"
+          >
+            <i data-lucide="upload-cloud" class="w-4 h-4"></i>
+            <span>Upload & Clone</span>
+          </button>
+        </div>
+      </div>
+    </div>
     <!-- Search Modal -->
     <div
       id="searchModal"

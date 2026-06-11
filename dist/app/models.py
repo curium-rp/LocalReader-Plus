@@ -29,6 +29,7 @@ class AppSettings(BaseModel):
     pronunciationRules: List[PronunciationRule]
     ignoreList: List[str]
     voice_id: Optional[str] = "af_bella"
+    active_engine: Optional[str] = "kokoro"  # default models
     speed: Optional[float] = 1.0
     font_size: Optional[int] = 16
     header_footer_mode: Optional[str] = "off"
@@ -61,6 +62,7 @@ class ExportRequest(BaseModel):
 class SynthesisRequest(BaseModel):
     text: str
     voice: str = "af_sky"
+    engine: str = "kokoro"  # <-- ADDED
     speed: float = 1.0
     rules: List[PronunciationRule]
     ignore_list: List[str] = []

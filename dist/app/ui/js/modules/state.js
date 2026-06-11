@@ -27,6 +27,7 @@ export const state = {
     ignoreList: [],
     headerFooterMode: 'off',
     engineMode: 'gpu',
+    ttsEngine: 'kokoro', // <-- Default engine
     currentSearchQuery: '',
     searchDebounceTimer: null,
     jumpTimer: null,

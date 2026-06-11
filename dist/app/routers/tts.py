@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
+import shutil
+from ..config import settings_file
 from fastapi.responses import StreamingResponse
 import numpy as np
 import io
@@ -245,13 +247,46 @@ def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list):
 @router.get("/api/voices/available")
 async def get_voices():
     import app.state as state_module
+    
+    # 1. Determine which engine is active
+    active_engine = "kokoro"
+    try:
+        if settings_file.exists():
+            with open(settings_file, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+                active_engine = settings.get("active_engine", "kokoro")
+    except Exception:
+        pass
 
+    categories = {}
+
+    # ==========================================
+    # MARVIS VOICES (Dynamic Folder Scanning)
+    # ==========================================
+    if active_engine == "marvis":
+        marvis_voices_dir = base_dir / "voices" / "marvis"
+        marvis_voices_dir.mkdir(parents=True, exist_ok=True)
+        
+        voices = []
+        # Scan the directory for folders that contain a ref.wav
+        for item in marvis_voices_dir.iterdir():
+            if item.is_dir() and (item / "ref.wav").exists():
+                voices.append({"id": item.name, "name": item.name.replace("_", " ").title()})
+                
+        if not voices:
+            voices.append({"id": "default", "name": "Default Marvis Voice"})
+            
+        categories["en"] = {"label": "Marvis Cloned Voices", "voices": voices}
+        return {"categories": categories}
+
+    # ==========================================
+    # KOKORO VOICES (Original Logic)
+    # ==========================================
     if not state_module.kokoro:
         return {"categories": {}}
 
     try:
         raw_voices = state_module.kokoro.get_voices()
-        categories = {}
 
         def get_voice_name(vid):
             parts = vid.split("_")
@@ -261,14 +296,9 @@ async def get_voices():
 
         def get_lang_label(code):
             maps = {
-                "en-us": "English (US)",
-                "en-gb": "English (UK)",
-                "fr-fr": "French",
-                "es": "Spanish",
-                "cmn": "Chinese (Mandarin)",
-                "it": "Italian",
-                "pt-br": "Portuguese (Brazil)",
-                "ja": "Japanese",
+                "en-us": "English (US)", "en-gb": "English (UK)", "fr-fr": "French",
+                "es": "Spanish", "cmn": "Chinese (Mandarin)", "it": "Italian",
+                "pt-br": "Portuguese (Brazil)", "ja": "Japanese",
             }
             return maps.get(code, "Other")
 
@@ -296,6 +326,44 @@ async def get_voices():
     except Exception as e:
         return {"categories": {}}
 
+
+# ==========================================
+# NEW VOICE CLONING ENDPOINT
+# ==========================================
+@router.post("/api/voices/clone")
+async def clone_voice(
+    name: str = Form(...), 
+    text: str = Form(...), 
+    file: UploadFile = File(...)
+):
+    """Takes an uploaded .wav and transcript, and creates a Marvis voice folder."""
+    try:
+        # Clean up the folder name (e.g., "My Voice" -> "my_voice")
+        folder_name = name.strip().lower().replace(" ", "_")
+        if not folder_name:
+            raise HTTPException(status_code=400, detail="Voice name cannot be empty.")
+            
+        if not file.filename.lower().endswith('.wav'):
+            raise HTTPException(status_code=400, detail="Only .wav files are supported for voice cloning.")
+
+        voice_dir = base_dir / "voices" / "marvis" / folder_name
+        voice_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save the audio file as ref.wav
+        audio_path = voice_dir / "ref.wav"
+        with open(audio_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Save the transcript as ref.txt
+        text_path = voice_dir / "ref.txt"
+        with open(text_path, "w", encoding="utf-8") as f:
+            f.write(text.strip())
+
+        return {"status": "success", "message": f"Voice '{name}' cloned successfully!", "id": folder_name}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/api/locale/{lang}")
 async def get_locale(lang: str):
     locale_dir = base_dir / "locales"
@@ -308,15 +376,105 @@ async def get_locale(lang: str):
     except Exception:
         return {}
 
+import torch
+from pathlib import Path
+
+async def synthesize_kokoro_logic(text, request, pause_settings, state_module):
+    """Your original Kokoro TTS logic, isolated for cleanliness."""
+    voices = state_module.kokoro.get_voices()
+    selected_voice = request.voice if request.voice in voices else "af_sky"
+    lang = get_language_from_voice(selected_voice)
+    
+    punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
+    has_punctuation = any(p in text for p in punctuation_chars)
+
+    if not re.search(r"[a-zA-Z0-9\u3000-\u30ff\u4e00-\u9faf]", text):
+        return np.zeros(int(24000 * 0.1), dtype=np.float32), 24000
+
+    if pause_settings and has_punctuation:
+        return synthesize_with_pauses(text, selected_voice, float(request.speed or 1.0), pause_settings)
+    else:
+        sub_chunks = graceful_chunk_for_tts(text)
+        if len(sub_chunks) == 1:
+            return state_module.kokoro.create(
+                text, voice=selected_voice, speed=float(request.speed or 1.0), lang=lang
+            )
+        else:
+            chunk_audios = []
+            sr = 24000
+            for chunk in sub_chunks:
+                chunk_samples, current_sr = state_module.kokoro.create(
+                    chunk, voice=selected_voice, speed=float(request.speed or 1.0), lang=lang
+                )
+                chunk_audios.append(chunk_samples.flatten())
+                sr = current_sr
+            return safe_concat(chunk_audios), sr
+
+async def synthesize_marvis_logic(text, request, state_module):
+    """New Marvis TTS logic adapted from inference.py"""
+    from marvis_tts.utils import Segment
+    
+    generator = state_module.marvis_generator
+    tokenizer = state_module.marvis_tokenizer
+    device = generator.device
+
+    # For zero-shot cloning, Marvis requires a reference audio and text.
+    # We map the requested 'voice' ID to a folder containing .wav and .txt
+    voices_dir = Path(base_dir) / "voices" / "marvis"
+    voice_folder = voices_dir / request.voice
+    
+    ref_audio_path = voice_folder / "ref.wav"
+    ref_text_path = voice_folder / "ref.txt"
+
+    # Fallback to a default if the custom voice isn't set up yet
+    if not ref_audio_path.exists() or not ref_text_path.exists():
+        # Let's create a silent fallback or raise an error. For now, raise.
+        raise Exception(f"Marvis Zero-Shot files missing for voice: {request.voice}. Expected {ref_audio_path}")
+
+    # 1. Read Reference Audio & Text
+    wav, sr = sf.read(str(ref_audio_path))
+    if wav.ndim == 2:
+        wav = wav.mean(axis=1)
+    ref_audio_tensor = torch.tensor(wav[None, None, :], dtype=torch.float32, device=device)
+    ref_audio_tokens = generator._audio_tokenizer.encode(ref_audio_tensor)[-1, :, :]
+
+    with open(ref_text_path, "r", encoding="utf-8") as f:
+        ref_text = f.read().strip()
+
+    # 2. Build the Marvis Context (combining reference text with the target text)
+    all_text = (ref_text + " " + text.strip()).strip()
+    context = [
+        Segment(
+            text=torch.tensor(tokenizer.encode(f"[0]{all_text}"), dtype=torch.long, device=device),
+            audio=torch.tensor(ref_audio_tokens, dtype=torch.long, device=device)[:32, :],
+            speaker=0,
+        )
+    ]
+
+    # 3. Generate Audio
+    with torch.inference_mode():
+        audio_tensor = generator.generate(
+            text="",  # Conditioned entirely via context as per inference.py
+            speaker=0,
+            context=context,
+            max_audio_length_ms=30000, # 30 seconds max limit per chunk
+            temperature=0.7,
+            topk=50,
+            voice_match=True,
+        )
+
+    # Convert tensor to numpy array for the frontend
+    samples = audio_tensor.cpu().numpy()
+    
+    # Marvis operates natively at 24000Hz (based on inference.py)
+    return samples, 24000
+
 @router.post("/api/synthesize")
 async def synthesize(request: SynthesisRequest):
     import app.state as state_module
 
-    if state_module.kokoro is None:
-        raise HTTPException(status_code=503, detail="TTS Engine not initialized.")
-
+    # 1. Text Pipeline (Applies to ALL engines)
     try:
-        # Perfectly indented logic flow
         text = fix_special_formats(request.text)
         text = filter_text_for_tts(text)
         rules_data = [r.model_dump() for r in request.rules]
@@ -325,20 +483,19 @@ async def synthesize(request: SynthesisRequest):
         text = fix_special_formats(request.text)
         text = filter_text_for_tts(text)
 
+    # 2. Cache Generation (Applies to ALL engines)
     try:
-        voices = state_module.kokoro.get_voices()
-        selected_voice = request.voice if request.voice in voices else "af_sky"
-        
         pause_settings = request.pause_settings or {}
-        
         cache_key = generate_cache_key(
             text,
-            selected_voice,
+            request.voice,
             float(request.speed or 1.0),
             pause_settings,
             request.rules,
             request.ignore_list,
         )
+        # Add engine to cache key so Kokoro and Marvis don't mix up audio!
+        cache_key = f"{request.engine}_{cache_key}"
 
         cached_audio = audio_cache.get(cache_key)
         if cached_audio:
@@ -348,47 +505,36 @@ async def synthesize(request: SynthesisRequest):
                 headers={"Content-Length": str(len(cached_audio))},
             )
 
-        has_pause_settings = pause_settings and isinstance(pause_settings, dict)
-        punctuation_chars = [
-            ",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、",
-        ]
-        has_punctuation = any(p in text for p in punctuation_chars)
-        lang = get_language_from_voice(selected_voice)
+        # ==========================================
+        # 3. ENGINE ROUTING (The Backbone)
+        # ==========================================
+        samples = None
+        sample_rate = 24000
 
-        if not re.search(
-            r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]",
-            text,
-        ):
-            samples = np.zeros(int(24000 * 0.1), dtype=np.float32)
-            sample_rate = 24000
+        # --- KOKORO ENGINE ---
+        if request.engine == "kokoro":
+            if state_module.kokoro is None:
+                raise HTTPException(status_code=503, detail="Kokoro Engine not loaded.")
+            
+            samples, sample_rate = await synthesize_kokoro_logic(
+                text, request, pause_settings, state_module
+            )
+
+        # --- MARVIS ENGINE ---
+        elif request.engine == "marvis":
+            if state_module.marvis_generator is None:
+                raise HTTPException(status_code=503, detail="Marvis Engine not loaded.")
+            
+            samples, sample_rate = await synthesize_marvis_logic(
+                text, request, state_module
+            )
+            
         else:
-            if has_pause_settings and has_punctuation:
-                samples, sample_rate = synthesize_with_pauses(
-                    text, selected_voice, float(request.speed or 1.0), pause_settings
-                )
-            else:
-                sub_chunks = graceful_chunk_for_tts(text)
-                if len(sub_chunks) == 1:
-                    samples, sample_rate = state_module.kokoro.create(
-                        text,
-                        voice=selected_voice,
-                        speed=float(request.speed or 1.0),
-                        lang=lang,
-                    )
-                else:
-                    chunk_audios = []
-                    sample_rate = SAMPLE_RATE
-                    for chunk in sub_chunks:
-                        chunk_samples, sr = state_module.kokoro.create(
-                            chunk,
-                            voice=selected_voice,
-                            speed=float(request.speed or 1.0),
-                            lang=lang,
-                        )
-                        chunk_audios.append(chunk_samples.flatten())
-                        sample_rate = sr
-                    samples = safe_concat(chunk_audios)
+            raise HTTPException(status_code=400, detail=f"Unknown engine: {request.engine}")
 
+        # ==========================================
+        # 4. Audio Output & Caching
+        # ==========================================
         buffer = io.BytesIO()
         sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")
         audio_bytes = buffer.getvalue()
@@ -401,4 +547,6 @@ async def synthesize(request: SynthesisRequest):
             headers={"Content-Length": str(len(audio_bytes))},
         )
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
