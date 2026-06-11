@@ -2,66 +2,92 @@
 
 **A modern, privacy-focused PDF/EPUB reader with AI-powered text-to-speech, multilingual support, and smart audio caching ~~that authors didn't active~~ .**
 
-_And i found out it has many bug and problem that why i started to debug this project_
+And i found out it has many bug and problem that why i started to debug this project
+    
 
 # What difference from LocalReader Pro(main)
 
-   -  have feature that handle reading number 
-   -  have more smart chunk to make models not overload itself, is use IPA for count if reach limit of 510 phoneme if it nearly limit will cut it, smoothly.
-   -  have support with gpu NVDIA _NEED more setup_
-   -  delay audio startup or buffer startup, set to 1000ms - 1 seconde
-   -  No .exe options for windows
+   -  Have feature that handle reading number 
+   -  Have more smart chunk (cut sentence before reach limit), is use IPA for count if reach limit of 510 phoneme if it nearly limit will cut it, smoothly.
+   -  Have support with GPU NVDIA _NEED more setup_
+   -  Delay audio startup or buffer startup, set to 1000ms - 1 seconde
+   -  No .exe options for windows.
+   -  Have themes
 
-   _THIS model is has been modifly for use with gpu NVDIA if can't detect it will fallback for cpu 
-   don't worries  _-if didn't use windows is has detect os in this code, maybe didn't have problem with Mac and Linux-_
+   _THIS Apps has been modifly for use with gpu NVDIA if can't detect or didn't have it will fallback for CPU don't worries_
 
-# many bug has been fix  #
+# Many bug has been fix  #
    
-   **-fix pause setting not respond.**
+   **-Fix pause setting not respond.**
    
-   **-fix preload system when apply pause setthing.** _tread off, need to wait a little to effect when change pause , i mean it need to wait buffer that preload forward end._
+   **-Fix preload system when apply pause setthing.** _tread off, when play audio and change in real-time, it need to wait a little for settings apply when change pause, i mean it need to wait -old buffer setting end._
    
-   **-fix cache system cause repreat and skip reading, randomly.**
+   **-Fix cache system cause repreat and skip reading, randomly.**
    
-   **-fix buffer not works as expect**
+   **-Fix buffer not works as expect**
+   
 ---
-# windows installation
+# Windows installation
 
-   **!if used install** Original version **(pro) with .exe, first uninstall kokoro onnx,** it has bad cache in package, cause code can't run on teminal. 
-```
-pip uninstall kokoro-onnx
-```   
-   
    _Install **Python 3.12** if not install yet._
    
   
-   **First method for download** choose folders that needed to install and open teminal - _can delete .git in folder_
+  ## **First method for download** 
+   Choose folders that needed to install and open teminal - _can delete .git in folder_
    
 ```
 git clone https://github.com/curium-rp/LocalReader-Plus
 ```
 
- 
-   **Second method** download zip and unzip it.
+```
+cd LocalReader-Plus\dist
+pip install -r requirements.txt
+```
+**And run**
 
-   go to **LocalReader-Plus\ "dist"**  open teminal inside folder dist and run 
+Uninstall onnxruntime and install back 
+```
+pip uninstall onnxruntime 
+```
+```
+pip install onnxruntime
+```
+```
+python main.py
+```
+ ---
+   ## **Second method** download zip and unzip it.
+
+   Go to **LocalReader-Plus\ "dist"**  open teminal inside folder dist and run 
 ```
 pip install -r requirements.txt
+```
+**And run**
+Uninstall onnxruntime and install back 
+```
+pip uninstall onnxruntime 
+```
+```
+pip install onnxruntime
 ```
 
 ```
 python main.py
 ```
 
-**run or skip to next step for GPU setup**
 
-if missing something just install it.
+
+**(Run or skip to next step for NVIDIA GPU setup)**
+
+---
+If missing something just install it.
  
    > pip install
 
+And open trick tell what missing, i will add in requirements.txt
 
 ---
-# this is what needed to do for KOKORO model for run on GPU for NVIDIA on WINDOWS
+## This is what needed to do for KOKORO model for run on NVIDIA GPU on WINDOWS
 
    install **cuda v12 [https://developer.nvidia.com/cuda-12-8-0-download-archive](https://developer.nvidia.com/cuda-12-8-0-download-archive)**
   
@@ -70,34 +96,34 @@ if missing something just install it.
 if this process break normal app NVDIA -stick with loading icon- just go download NVDIA app it and re-install
 
     
-   **go to or find it "CUDNN> v9.XX >bin"**
-default locations 
+   **Go to or find it "CUDNN> v9.XX >bin"**
+Default locations 
 
 > C:\Program Files\NVIDIA\CUDNN\v9.23\bin\12.9\x64
 
-   it has many of  **.dll** files in bis folder **copy** all of em to **LocalReader-Plus\dist\bin** if didn't have create it
+   It has many of  **.dll** files in bis folder **copy** all of em to **LocalReader-Plus\dist\bin** if didn't have create it
 
-   install onnxruntime-gpu  _Make sure you don't have onnxruntime cpu as it will cause conflicts_
+   Install onnxruntime-gpu  _Make sure you don't have onnxruntime cpu, it will cause conflicts_
    
-   **-first uninstall both**
+   **-First uninstall both**
    
 ```
 pip uninstall onnxruntime onnxruntime-gpu -y
 
 ```
-   **-second install onnxruntime-gpu**
+   **-Second install onnxruntime-gpu**
 
 ```
 pip install onnxruntime-gpu
 ```
 
-   _open powershell in **"dist"** folder try to play it_
+   _Open powershell in **"dist"** folder_
 
 > python main.py 
 
-   if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need voice engine to works)
+  Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need voice engine to works)
    
-   it mean is run on GPU enjoy.
+   It mean is run on GPU enjoy.
 
 
 ---
@@ -111,11 +137,6 @@ To completely remove the supporting software (Python and Libraries):
 **Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
 
 **Clear Model Cache**: Many voices and AI models are stored in your user profile. You can delete the `.cache` folder in your user directory (usually `C:\Users\<YourName>\.cache\kokoro`) to free up additional space.
-
-**Installation Size:**
-
-- zip file -1 MB  unzip files 3-4MB - ~~Installer: ~24 MB~~
-- Full installation: ~2.6 GB (including Python dependencies)
 
 ---
 
@@ -174,6 +195,11 @@ python3.12 main.py
 ---
 ## 🔘for full Key Features visit [Original LocalReader-Pro](https://github.com/revisionhiep-create/LocalReader-Pro)
 
+## Themes on icon "LocalReader" and GUI
+<div align="center">
+  <img src="docs/images/image1.png" alt="Themes settings and UI" width="100%">
+</div>
+
 ### Custom Pause Settings
 
 1. Open **"Pause Settings"** section in sidebar
@@ -196,6 +222,7 @@ python3.12 main.py
 - Pauses apply only to single punctuation or the last char of a group
 - `"..."` creates ONE pause (e.g. 600ms), not three
 - `"?!` creates ONE pause (based on `!`)
+
 ~~- `Title\n` creates a soft pause (300ms)~~ can't find code that have this function and if we need this, is need to redesign many things.
 
 
@@ -252,7 +279,7 @@ LocalReader-Plus
 
 **Additional folders created during use:**
 
-- `bin/` - FFMPEG binaries  (auto-downloaded on first export)
+- `bin/` - FFMPEG binaries  ~~(auto-downloaded on first export)~~
 - `models/` - TTS engine models (auto-downloaded based on your choice)
 - `userdata/audio_cache.db` - SQLite Audio Cache
 
@@ -266,9 +293,9 @@ LocalReader-Plus
 | **TTS Engine (GPU Mode)** | ~309 MB                             |
 | **TTS Engine (CPU Mode)** | ~87 MB                              |
 | **Voice Pack (shared)**   | ~30 MB                              |
-| **FFMPEG**                | ~100 MB (optional)                  |
+| **FFMPEG**                | ~100 MB (optional for MP3 output)   |
 | **Audio Cache (SQLite)**  | ~200 MB max (auto-managed)          |
-| **Per Document Cache**    | ~1-5 MB                             |
+| **Per Document Cache**    | ~1-5+ MB                             |
 | **Exported WAV / MP3**    | ~1 MB / ~2.7 MB per minute of audio |
 | **Cudnn 9.xx**            | ~3 GB (optional)                    |
 | **Cuda 12.xx**            | ~3 GB to 4.5 GB (optional)          |
@@ -362,10 +389,11 @@ LocalReader-Plus
   1. Check **Troubleshooting** section above
   2. Verify you're on latest version 
 ~~3. Check `CHANGELOG.md` for known issues~~
-  4. open ticket with:
+  4. Open ticket with:
       - Python version (`python --version`)
-      - Error message or screenshot
       - OS
+      - Error message or screenshot
+      
    
  
 
@@ -375,7 +403,7 @@ LocalReader-Plus
 **Engine:** Kokoro-82M (Dual-Mode: CPU/GPU)
 **Last Updated LocalReader Pro:** January 6, 2026
 
-**Last Updated this fork** June 10, 2026
+**Last Updated this fork** June 11, 2026
 
 ---
 
