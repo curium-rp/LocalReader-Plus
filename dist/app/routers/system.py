@@ -259,18 +259,19 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
 
 
 @router.post("/api/system/switch-engine")
-async def switch_engine(background_tasks: BackgroundTasks, target_mode: str):
+async def switch_engine(background_tasks: BackgroundTasks, target_mode: str, engine: str = "kokoro"):
     if target_mode not in ["gpu", "cpu"]:
         raise HTTPException(status_code=400, detail="Invalid engine mode")
 
     if system_status["is_downloading"]:
         return {"status": "busy", "message": "Cannot switch while downloading"}
 
-    # Just save the settings and reload. load_engine_logic will handle picking the right active_engine.
+    # Fix: Save both the target_mode (gpu/cpu) AND the active_engine (kokoro/marvis) instantly
     try:
         with open(settings_file, "r") as f:
             settings = json.load(f)
         settings["engine_mode"] = target_mode
+        settings["active_engine"] = engine
         safe_save_json(settings_file, settings)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -278,7 +279,6 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str):
     def reload_task():
         if system_status["is_loading"]:
             return
-        # Removed setting is_loading=True here since load_engine_logic handles it internally now
         try:
             load_engine_logic(target_mode)
         except Exception as e:
@@ -288,7 +288,8 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str):
     return {
         "status": "switching",
         "target_mode": target_mode,
-        "message": f"Switching to {target_mode}...",
+        "engine": engine,
+        "message": f"Switching to {engine}...",
     }
 
 

@@ -173,226 +173,90 @@ def download_file_with_progress(url: str, dest_path: Path, description: str):
                 f.write(chunk)
     print(f"[Marvis Setup] Finished downloading {description}.")
 
-def start_marvis_setup(model_type: str = "gpu"):
-    """Main background task runner to handle downloads and loading sequence."""
-    try:
-        state_module.is_marvis_downloading = True
-        
-        # Ensure folders exist
-        MARVIS_MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        VOICES_DIR.mkdir(parents=True, exist_ok=True)
-
-        # 1. URLs for Marvis Weights (CSM-1B & Mimi Codec wrapped weights)
-        # (Replace these strings with the direct repository download links when available)
-        MODEL_URL = "https://huggingface.co/marvis-labs/marvis-tts/resolve/main/marvis_tts.pt"
-        
-        checkpoint_path = MARVIS_MODEL_DIR / "marvis_tts.pt"
-        
-        # Download core model weights
-        download_file_with_progress(MODEL_URL, checkpoint_path, "Marvis TTS Checkpoint")
-
-        # Create a default fallback voice template so the app doesn't crash on initial run
-        default_voice_dir = VOICES_DIR / "default_voice"
-        default_voice_dir.mkdir(parents=True, exist_ok=True)
-        
-        ref_audio = default_voice_dir / "ref.wav"
-        ref_text = default_voice_dir / "ref.txt"
-        
-        if not ref_text.exists():
-            with open(ref_text, "w", encoding="utf-8") as f:
-                f.write("This is a default sample reference text for voice cloning.")
-
-        state_module.is_marvis_downloading = False
-        
-        # 2. Trigger Model Loading Sequence immediately after download finishes
-        load_marvis_into_memory(model_type)
-
-    except Exception as e:
-        print(f"[Marvis Setup Error] Setup failed: {e}")
-        state_module.is_marvis_downloading = False
-        state_module.is_marvis_loading = False
-
-def load_marvis_into_memory(model_type: str = "gpu"):
-    """Loads the downloaded model weights cleanly into RAM or VRAM."""
-    try:
-        state_module.is_marvis_loading = True
-        print("[Marvis Load] Initializing Marvis TTS model layers...")
-
-        # Determine compute target device mapping
-        if model_type == "gpu" and torch.cuda.is_available():
-            device = "cuda"
-        elif model_type == "gpu" and torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = "cpu"
-
-        checkpoint_path = MARVIS_MODEL_DIR / "marvis_tts.pt"
-        
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Missing weight files at {checkpoint_path}")
-
-        # Import modules dynamically from the marvis-tts repository code
-        from marvis_tts.generator import MarvisGenerator
-        from transformers import AutoTokenizer
-
-        # Load Tokenizer & Model Generator
-        print(f"[Marvis Load] Loading weights onto target device: {device}")
-        state_module.marvis_tokenizer = AutoTokenizer.from_pretrained("marvis-labs/marvis-tts")
-        
-        # Initialize generator layer directly using the weights matching inference.py structure
-        state_module.marvis_generator = MarvisGenerator.from_pretrained(str(checkpoint_path), device=device)
-
-        state_module.marvis_model_loaded = True
-        state_module.is_marvis_loading = False
-        print("[Marvis Load] System successfully online and ready for generation requests!")
-
-    except Exception as e:
-        print(f"[Marvis Load Error] Failed to map model into memory: {e}")
-        state_module.marvis_model_loaded = False
-        state_module.is_marvis_loading = False
-
 # ==========================================
 # MARVIS DOWNLOAD & BOOT SYSTEM
 # ==========================================
 def start_marvis_setup(model_type="gpu"):
-    import requests
-    from ..config import base_dir
+    import app.config as config_module
     import app.state as state_module
     
-    marvis_dir = base_dir / "models" / "marvis"
-    voices_dir = base_dir / "voices" / "marvis"
-    marvis_dir.mkdir(parents=True, exist_ok=True)
-    voices_dir.mkdir(parents=True, exist_ok=True)
-    
-    ckpt_path = marvis_dir / "marvis_tts.pt"
-    
-    if not ckpt_path.exists():
-        print("[Marvis Setup] Downloading weights (This may take a while)...")
-        # Direct URL to the pytorch weights
-        url = "https://huggingface.co/marvis-labs/marvis-tts/resolve/main/marvis_tts.pt"
-        
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        with open(ckpt_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk: f.write(chunk)
-                
-    # Create the default dummy voice if it doesn't exist
-    dummy_voice = voices_dir / "default"
-    dummy_voice.mkdir(exist_ok=True)
-    if not (dummy_voice / "ref.txt").exists():
-        with open(dummy_voice / "ref.txt", "w") as f:
-            f.write("This is a generated reference text.")
-            
-    # Auto-load after download
-    load_marvis_into_memory(model_type)
-
-def load_marvis_into_memory(model_type="gpu"):
-    import torch
-    import app.state as state_module
-    from ..config import base_dir
-    
-    print("[Marvis Boot] Loading Marvis into memory...")
-    ckpt_path = base_dir / "models" / "marvis" / "marvis_tts.pt"
-    
-    device = "cuda" if model_type == "gpu" and torch.cuda.is_available() else "cpu"
-    
-    # Using relative imports assuming you place the marvis_tts folder inside your app
-    from marvis_tts.generator import Generator
-    from marvis_tts.models import ModelArgs, Model
-    from marvis_tts.utils import load_smollm2_tokenizer
-    
-    state_module.marvis_tokenizer = load_smollm2_tokenizer()
-    
-    model_args = ModelArgs(
-        backbone_flavor="llama-250M",
-        decoder_flavor="llama-60M",
-        text_vocab_size=state_module.marvis_tokenizer.vocab_size,
-        audio_vocab_size=2051,
-        audio_num_codebooks=32,
-    )
-    
-    raw_model = Model(model_args).to(device=device, dtype=torch.float32)
-    
-    # Load Weights
-    obj = torch.load(str(ckpt_path), weights_only=True, map_location="cpu")
-    state_dict = obj["model_state"] if isinstance(obj, dict) and "model_state" in obj else obj
-    raw_model.load_state_dict(state_dict, strict=True)
-    raw_model.eval()
-    
-    state_module.marvis_generator = Generator(raw_model, text_tokenizer=state_module.marvis_tokenizer, device=device)
-    state_module.marvis_model_loaded = True
-    print(f"[Marvis Boot] Marvis Engine ready on {device.upper()}!")
-
-    # ==========================================
-# MARVIS DOWNLOAD & BOOT SYSTEM
-# ==========================================
-def start_marvis_setup(model_type="gpu"):
-    import requests
-    from ..config import base_dir
-    import app.state as state_module
-    
+    base_dir = config_module.base_dir
     print("[SETUP] Initiating Marvis Engine Download Sequence...")
     
-    # 1. Define the exact folder structures needed
     marvis_dir = base_dir / "models" / "marvis"
     voices_dir = base_dir / "voices" / "marvis"
     
-    # 2. Create the folders if they don't exist yet
     marvis_dir.mkdir(parents=True, exist_ok=True)
     voices_dir.mkdir(parents=True, exist_ok=True)
     
-    ckpt_path = marvis_dir / "marvis_tts.pt"
-    
-    # 3. Download the model weights safely
-    if not ckpt_path.exists():
-        print(f"[SETUP] Downloading Marvis weights to {ckpt_path} (This will take a few minutes)...")
+    # We use the official huggingface_hub library to safely find the right files
+    try:
+        from huggingface_hub import snapshot_download
+        print(f"[SETUP] Connecting to HuggingFace to download official Marvis weights...")
+        
+        # Download the base PyTorch repo (fallback to main repo if needed)
         try:
-            # Direct URL to the pytorch weights
-            url = "https://huggingface.co/marvis-labs/marvis-tts/resolve/main/marvis_tts.pt"
-            
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            
-            with open(ckpt_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk: 
-                        f.write(chunk)
-            print("[SETUP] Marvis weights downloaded successfully.")
+            snapshot_download(
+                repo_id="Marvis-AI/marvis-tts-250m-v0.1-base-pt",
+                local_dir=str(marvis_dir),
+                local_dir_use_symlinks=False
+            )
         except Exception as e:
-            print(f"[SETUP ERROR] Failed to download Marvis weights: {e}")
-            return # Abort setup if download fails
+            print(f"[SETUP] Base-PT repo failed ({e}). Falling back to main repository...")
+            snapshot_download(
+                repo_id="Marvis-AI/marvis-tts-250m-v0.1",
+                local_dir=str(marvis_dir),
+                local_dir_use_symlinks=False
+            )
+        print("[SETUP] Marvis weights downloaded successfully.")
+        
+    except ImportError:
+        print("[SETUP ERROR] 'huggingface_hub' is missing! Please run: pip install huggingface_hub")
+        return
+    except Exception as e:
+        print(f"[SETUP ERROR] Failed to download Marvis weights: {e}")
+        return
             
-    # 4. Create a Default "Template" Cloned Voice Folder
-    # This prevents the UI from crashing if the user hasn't uploaded a clone yet.
+    # Create the Default "Template" Cloned Voice Folder
     dummy_voice = voices_dir / "default"
     dummy_voice.mkdir(exist_ok=True)
     if not (dummy_voice / "ref.txt").exists():
         with open(dummy_voice / "ref.txt", "w", encoding="utf-8") as f:
             f.write("This is a default reference text for voice cloning.")
             
-    # 5. Automatically load the model into memory now that we have the files
+    # Automatically load the model into memory
     print("[SETUP] Files verified. Triggering Marvis Memory Load...")
     load_marvis_into_memory(model_type)
 
 
 def load_marvis_into_memory(model_type="gpu"):
     import torch
+    import app.config as config_module
     import app.state as state_module
-    from ..config import base_dir
+    from pathlib import Path
     
+    base_dir = config_module.base_dir
     print("[ENGINE] Loading Marvis into memory...")
-    ckpt_path = base_dir / "models" / "marvis" / "marvis_tts.pt"
+    marvis_dir = base_dir / "models" / "marvis"
     
-    if not ckpt_path.exists():
-        print("[ENGINE ERROR] Marvis weights not found. Setup aborted.")
+    # Auto-detect the correct weights file (.pt or .safetensors)
+    ckpt_path = None
+    for ext in ["*.pt", "*.pth", "*.safetensors", "model.safetensors", "pytorch_model.bin"]:
+        found = list(marvis_dir.rglob(ext))
+        if found:
+            ckpt_path = found[0]
+            break
+            
+    if not ckpt_path:
+        print("[ENGINE ERROR] No Marvis weights (.pt or .safetensors) found in the models/marvis directory. Setup aborted.")
         return
+        
+    print(f"[ENGINE] Found weights file: {ckpt_path.name}")
     
     device = "cuda" if model_type == "gpu" and torch.cuda.is_available() else "cpu"
     
     try:
-        # Load the raw architecture from the marvis-tts repository
+        # Load the raw architecture from the marvis-tts repository code
         from marvis_tts.generator import Generator
         from marvis_tts.models import ModelArgs, Model
         from marvis_tts.utils import load_smollm2_tokenizer
@@ -409,22 +273,32 @@ def load_marvis_into_memory(model_type="gpu"):
         
         raw_model = Model(model_args).to(device=device, dtype=torch.float32)
         
-        # Load the downloaded weights securely into the architecture
-        obj = torch.load(str(ckpt_path), weights_only=True, map_location="cpu")
-        state_dict = obj["model_state"] if isinstance(obj, dict) and "model_state" in obj else obj
-        raw_model.load_state_dict(state_dict, strict=True)
+        # Safely load either safetensors or torch pt formats
+        if ckpt_path.suffix == ".safetensors":
+            from safetensors.torch import load_file
+            state_dict = load_file(ckpt_path)
+            # Clean up keys if HuggingFace added a 'model.' prefix
+            if any(k.startswith("model.") for k in state_dict.keys()):
+                 state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
+        else:
+            obj = torch.load(str(ckpt_path), weights_only=True, map_location="cpu")
+            state_dict = obj["model_state"] if isinstance(obj, dict) and "model_state" in obj else obj
+            
+        raw_model.load_state_dict(state_dict, strict=False)
         raw_model.eval()
         
-        # Bind it to the global state so tts.py can access it
+        # Bind it to the global state
         state_module.marvis_generator = Generator(raw_model, text_tokenizer=state_module.marvis_tokenizer, device=device)
         state_module.marvis_model_loaded = True
         
         print(f"[ENGINE] Marvis Engine fully online and ready on {device.upper()}!")
         
     except ImportError as e:
-        print(f"[ENGINE ERROR] Missing Marvis Python Code: {e}")
-        print("ACTION REQUIRED: Ensure the 'marvis_tts' repository is placed in your Python path.")
+        print(f"[ENGINE ERROR] Missing Python Module: {e}")
+        print("ACTION REQUIRED: Ensure 'safetensors' and 'marvis_tts' are installed.")
         state_module.marvis_model_loaded = False
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"[ENGINE ERROR] Failed to load Marvis: {e}")
         state_module.marvis_model_loaded = False
