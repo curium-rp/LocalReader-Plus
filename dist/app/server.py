@@ -19,7 +19,7 @@ if str(base_dir_parent) not in sys.path:
 # ==========================================
 # 2. ROUTER IMPORTS
 # ==========================================
-from .routers import settings, library, tts, system, export, timer, theme
+from .routers import settings, library, tts, system, export, timer, theme, f5_manager
 
 # ==========================================
 # 3. NON-BLOCKING BOOT SEQUENCE
@@ -68,7 +68,7 @@ app.include_router(system.router)
 app.include_router(export.router)
 app.include_router(timer.router)
 app.include_router(theme.router)
-
+app.include_router(f5_manager.router)
 # ==========================================
 # 6. MOUNT FRONTEND UI
 # ==========================================

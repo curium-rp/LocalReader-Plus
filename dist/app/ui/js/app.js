@@ -35,8 +35,55 @@ import {
 } from "./modules/export.js";
 import { initTimer } from "./modules/timer.js";
 import { initThemeSystem } from "./modules/themes.js";
+import { F5Studio } from "./modules/f5_studio.js";
 
 window.state = state;
+window.f5Studio = new F5Studio("voiceControlWrapper");
+
+window.refreshVoiceDropdown = async () => {
+  try {
+    const engineToFetch = state.ttsEngine || "kokoro";
+
+    // 1. If F5 is active, intercept the UI and mount the studio
+    if (engineToFetch === "f5") {
+      await window.f5Studio.mount();
+      return;
+    }
+
+    // 2. If Kokoro is active, unmount F5 and restore standard select
+    window.f5Studio.unmount();
+    
+    const response = await fetch(`/api/voices/available?engine=kokoro`);
+    const data = await response.json();
+    const voiceSelect = document.getElementById("voiceSelect");
+    if (!voiceSelect) return;
+    
+    const currentVal = state.voiceId || voiceSelect.value;
+    voiceSelect.innerHTML = ""; 
+
+    Object.entries(data.categories || {}).forEach(([catKey, catData]) => {
+      const group = document.createElement("optgroup");
+      group.label = catData.label || catKey;
+      catData.voices.forEach(v => {
+        const opt = document.createElement("option");
+        opt.value = v.id;
+        opt.textContent = v.name;
+        group.appendChild(opt);
+      });
+      voiceSelect.appendChild(group);
+    });
+
+    if (currentVal && voiceSelect.querySelector(`option[value="${currentVal}"]`)) {
+      voiceSelect.value = currentVal;
+    } else {
+      voiceSelect.selectedIndex = 0;
+    }
+    
+    state.voiceId = voiceSelect.value;
+  } catch (e) {
+    console.error("Failed to refresh voices:", e);
+  }
+};
 
 async function init() {
   try {
@@ -121,6 +168,16 @@ async function init() {
   renderIgnoreList();
   startStatusPolling();
   initTimer();
+  document.addEventListener('f5-voice-changed', async (e) => {
+      state.voiceId = e.detail;
+      stopPlayback();
+      state.audioBufferCache.clear();
+      try {
+          await fetchJSON("/api/system/clear-cache", { method: "POST" });
+      } catch (err) {}
+      await saveSettings();
+  });
+
 }
 
 document.addEventListener("DOMContentLoaded", init);
@@ -824,3 +881,16 @@ window.addEventListener("unhandledrejection", (event) => {
       if (cloneModal) cloneModal.classList.remove("hidden");
   }
 });
+
+const voiceSelect = document.getElementById("voiceSelect");
+if (voiceSelect) {
+  voiceSelect.onchange = async (e) => {
+    state.voiceId = e.target.value; 
+    stopPlayback();
+    state.audioBufferCache.clear();
+    try {
+      await fetchJSON("/api/system/clear-cache", { method: "POST" });
+    } catch (err) {}
+    await saveSettings();
+  };
+}
