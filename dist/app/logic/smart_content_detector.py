@@ -222,16 +222,29 @@ def apply_header_footer_filter(text: str, headers: List[str], footers: List[str]
         return text
 
 
-def filter_text_for_tts(text: str) -> str:
+def filter_text_for_tts(text: str, ignore_list: List[str] = None) -> str:
     """
-    Removes [DIM]...[/DIM] markers for TTS playback.
+    Removes [DIM]...[/DIM] markers and ignored text for TTS playback.
     
     Args:
         text: Text with potential dim markers
+        ignore_list: List of phrases to remove from the text before speaking
     
     Returns:
-        Clean text without dimmed sections
+        Clean text without dimmed sections or ignored phrases
     """
-    # Remove dimmed sections
-    return re.sub(r'\[DIM\].*?\[/DIM\]', '', text, flags=re.DOTALL).strip()
-
+    if ignore_list is None:
+        ignore_list = []
+        
+    # 1. Remove the dimmed header/footer sections
+    cleaned_text = re.sub(r'\[DIM\].*?\[/DIM\]', '', text, flags=re.DOTALL)
+    
+    # 2. Apply the user's Ignore List (remove specific words/phrases)
+    for word in ignore_list:
+        phrase = word.strip()
+        if phrase:
+            # Case-insensitive removal of the ignored phrase
+            pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+            cleaned_text = pattern.sub('', cleaned_text)
+            
+    return cleaned_text.strip()
