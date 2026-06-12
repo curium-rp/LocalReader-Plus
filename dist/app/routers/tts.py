@@ -199,44 +199,42 @@ def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list):
 
 # --- API Endpoints ---
 @router.get("/api/voices/available")
-async def get_voices():
+async def get_voices(engine: str = None):
     import app.state as state_module
+    import json
     
-    active_engine = "kokoro"
-    try:
-        if settings_file.exists():
-            with open(settings_file, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-                active_engine = settings.get("active_engine", "kokoro")
-    except Exception:
-        pass
+    # 1. STRICT ENGINE ISOLATION
+    active_engine = engine
+    if not active_engine:
+        active_engine = "kokoro"
+        try:
+            if settings_file.exists():
+                with open(settings_file, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                    active_engine = settings.get("active_engine", "kokoro")
+        except Exception:
+            pass
 
     categories = {}
 
-    # ==========================================
-    # F5 VOICES (Dynamic Folder Scanning)
-    # ==========================================
+    # 2. F5-TTS CLONED VOICES ONLY
     if active_engine == "f5":
         f5_voices_dir = base_dir / "voices" / "f5"
         f5_voices_dir.mkdir(parents=True, exist_ok=True)
         
         voices = []
-        voices.append({"id": "action_create_clone", "name": "➕ Create New Voice Clone..."})
-        
         for item in f5_voices_dir.iterdir():
             if item.is_dir() and (item / "ref.wav").exists():
                 if item.name != "default": 
                     voices.append({"id": item.name, "name": item.name.replace("_", " ").title()})
                 
-        if len(voices) == 1:
+        if len(voices) == 0:
             voices.append({"id": "default", "name": "Default Voice (Needs Setup)"})
             
-        categories["en"] = {"label": "F5 Cloned Voices", "voices": voices}
+        categories["F5"] = {"label": "F5 Cloned Voices", "voices": voices}
         return {"categories": categories}
 
-    # ==========================================
-    # KOKORO VOICES (Original Logic)
-    # ==========================================
+    # 3. KOKORO PRESET VOICES ONLY
     if not state_module.kokoro:
         return {"categories": {}}
 
@@ -260,6 +258,7 @@ async def get_voices():
         for voice in raw_voices:
             voice_id = voice if isinstance(voice, str) else voice.get("id")
 
+            # Filter out raw internal voice variants
             if voice_id.lower().split("_")[-1] in ["alpha", "beta", "omega", "psi"]:
                 continue
 
