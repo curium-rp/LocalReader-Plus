@@ -107,7 +107,9 @@ async function init() {
     if (langToggle) langToggle.textContent = state.uiLanguage.toUpperCase();
     await updateTranslations(state.uiLanguage);
 
-}
+  } catch (e) {
+    console.error("Settings load error:", e);
+  }
 
   renderIcons();
   initThemeSystem(); 
@@ -347,14 +349,13 @@ if (fontSizeSlider) {
   };
 }
 
-
 const engineMode = document.getElementById("engineMode");
 if (engineMode) {
   engineMode.onchange = async (e) => {
     const val = e.target.value;
     
-    if (val === "f5") {               
-      state.ttsEngine = "f5";         
+    if (val === "f5") {
+      state.ttsEngine = "f5";
       state.engineMode = "gpu"; 
     } else {
       state.ttsEngine = "kokoro";
@@ -373,12 +374,11 @@ if (engineMode) {
   };
 }
 
-// SETUP BUTTON FIXED & SAFE
 const setupBtn = document.getElementById("setupBtn");
 if (setupBtn) {
   setupBtn.onclick = async () => {
     try {
-      const activeEngine = state.ttsEngine === "f5" ? "f5" : "kokoro"; 
+      const activeEngine = state.ttsEngine === "f5" ? "f5" : "kokoro";
       await fetchJSON(`/api/system/setup?model_type=${state.engineMode}&engine=${activeEngine}`, {
         method: "POST",
       });
@@ -724,22 +724,18 @@ async function startStatusPolling() {
 }
 
 // ==========================================
-// 1. UNIFIED VOICE SELECT HANDLER 
+// UNIFIED VOICE SELECT HANDLER 
 // ==========================================
 const voiceSelect = document.getElementById("voiceSelect");
 if (voiceSelect) {
   voiceSelect.onchange = async (e) => {
-    // Intercept: If they click "➕ Create New Voice Clone..."
     if (e.target.value === "action_create_clone") {
         const cloneModal = document.getElementById("cloneVoiceModal");
         if (cloneModal) cloneModal.classList.remove("hidden");
-
-        // Revert the dropdown selection so the UI doesn't visually break
         if (e.target.options.length > 1) e.target.selectedIndex = 1;
         return;
     }
 
-    // Standard Voice Switch Logic
     stopPlayback();
     state.audioBufferCache.clear();
     try {
@@ -749,17 +745,33 @@ if (voiceSelect) {
   };
 }
 
+// ==========================================
+// FIXED CLONE SUBMIT LOGIC & AUTO-SELECT
+// ==========================================
+const cloneModal = document.getElementById("cloneVoiceModal");
+const openCloneBtn = document.getElementById("openCloneModalBtn");
+const cancelCloneBtn = document.getElementById("cancelCloneBtn");
+const submitCloneBtn = document.getElementById("submitCloneBtn");
 
-// ==========================================
-// 2. FIXED CLONE SUBMIT LOGIC & AUTO-SELECT
-// ==========================================
+if (openCloneBtn && cloneModal) {
+  openCloneBtn.onclick = () => cloneModal.classList.remove("hidden");
+}
+
+if (cancelCloneBtn && cloneModal) {
+  cancelCloneBtn.onclick = () => {
+    cloneModal.classList.add("hidden");
+    document.getElementById("cloneVoiceName").value = "";
+    document.getElementById("cloneVoiceText").value = "";
+    document.getElementById("cloneVoiceFile").value = "";
+  };
+}
+
 if (submitCloneBtn) {
   submitCloneBtn.onclick = async () => {
     const nameInput = document.getElementById("cloneVoiceName").value.trim();
     const textInput = document.getElementById("cloneVoiceText").value.trim();
     const fileInput = document.getElementById("cloneVoiceFile").files[0];
 
-    // Validation
     if (!nameInput) { showToast("Please enter a voice name."); return; }
     if (!textInput) { showToast("Please enter the exact transcript of the audio."); return; }
     if (!fileInput) { showToast("Please select a .wav audio file."); return; }
@@ -770,46 +782,39 @@ if (submitCloneBtn) {
     formData.append("text", textInput);
     formData.append("file", fileInput);
 
-    // Set UI to loading state
     const originalText = submitCloneBtn.innerHTML;
     submitCloneBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span>Cloning...</span>`;
     submitCloneBtn.disabled = true;
     renderIcons();
 
     try {
-      // 1. Send files to the backend
       const response = await fetch("/api/voices/clone", { method: "POST", body: formData });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Failed to clone voice.");
       
       showToast(result.message);
-      cancelCloneBtn.click(); // Close the popup
+      cancelCloneBtn.click();
       
-      // 2. FIX: Safely reload the voices natively
+      // Native auto-reload
       await loadVoices();
       
-      // 3. FIX: Auto-Select the newly cloned voice in the dropdown!
+      // Auto-select the newly cloned voice
       if (voiceSelect) {
           voiceSelect.value = result.id;
-          await saveSettings(); // Save it immediately so the backend remembers it
+          await saveSettings(); 
       }
       
     } catch (error) {
       console.error(error);
       showToast(error.message);
     } finally {
-      // Restore the button state
       submitCloneBtn.innerHTML = originalText;
       submitCloneBtn.disabled = false;
       renderIcons();
     }
   };
 }
-// ==========================================
-// GLOBAL MISSING VOICE INTERCEPTOR
-// ==========================================
-// If the backend ever rejects playback because a voice is missing its .wav file,
-// this catches the error globally and auto-opens the clone modal for the user.
+
 window.addEventListener("unhandledrejection", (event) => {
   if (event.reason && event.reason.message && event.reason.message.includes("reference audio is missing")) {
       showToast("Please upload an audio file to clone this voice first!", "error");
