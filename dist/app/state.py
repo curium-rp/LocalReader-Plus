@@ -16,9 +16,14 @@ except ImportError:
 
 # --- Global State Instances ---
 audio_cache = AudioCache(cache_db_path, max_size_mb=MAX_CACHE_SIZE_MB)
-kokoro = None  # The TTS engine instance
-marvis_generator = None 
-marvis_tokenizer = None  
+kokoro = None  # The Kokoro ONNX TTS engine instance
+
+# --- FOR F5 STATE TRACKING ---
+f5_model = None 
+is_f5_downloading = False
+is_f5_loading = False
+f5_model_loaded = False
+
 system_status = {"is_loading": False, "last_error": None, "is_downloading": False}
 
 export_status = {
@@ -38,10 +43,6 @@ ffmpeg_status = {
     "message": "",
 }
 
-#  FOR MARVIS STATE TRACKING ---
-is_marvis_downloading = False
-is_marvis_loading = False
-marvis_model_loaded = False
 
 # --- PatchedKokoro Class ---
 class PatchedKokoro(Kokoro):
@@ -169,6 +170,5 @@ class SleepTimer:
                 "remaining_seconds": int(remaining),
                 "total_seconds": self.duration_seconds,
             }
-
 
 sleep_timer = SleepTimer()

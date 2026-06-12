@@ -17,19 +17,18 @@ try:
         download_kokoro_model,
         check_model_exists,
         get_available_models,
-        start_marvis_setup,       # <-- ADDED for Marvis
-        load_marvis_into_memory   # <-- ADDED for Marvis
+        start_f5_setup,       # <-- Hook for your F5 setup logic
+        load_f5_into_memory   # <-- Hook for your F5 model loader
     )
     from logic.audio_cache import AudioCache
-
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from downloader import (
         download_kokoro_model,
         check_model_exists,
         get_available_models,
-        start_marvis_setup,       # <-- ADDED for Marvis
-        load_marvis_into_memory   # <-- ADDED for Marvis
+        start_f5_setup,       
+        load_f5_into_memory   
     )
 
 router = APIRouter()
@@ -47,31 +46,33 @@ def load_engine_logic(requested_mode=None):
             with open(settings_file, "r") as f:
                 settings = json.load(f)
             requested_mode = settings.get("engine_mode", "gpu")
-            active_engine = settings.get("active_engine", "kokoro") # <-- Get active engine
+            active_engine = settings.get("active_engine", "kokoro")
         except Exception:
             requested_mode = "gpu"
 
     # ==========================================
-    # MARVIS ENGINE BOOT SEQUENCE
+    # F5-TTS ENGINE BOOT SEQUENCE
     # ==========================================
-    if active_engine == "marvis":
-        print(f"[ENGINE] Initializing Marvis TTS model...")
+    if active_engine == "f5":
+        print(f"[ENGINE] Initializing F5-TTS model...")
         try:
+            # 1. Unload Kokoro to prevent VRAM explosion
             if state_module.kokoro is not None:
                 print("[ENGINE] Unloading Kokoro to free VRAM...")
                 state_module.kokoro = None 
             
-            load_marvis_into_memory(requested_mode)
+            # 2. Load F5
+            load_f5_into_memory()
             system_status["is_loading"] = False
             return
         except Exception as e:
-            system_status["last_error"] = f"Failed to load Marvis: {str(e)}"
+            system_status["last_error"] = f"Failed to load F5-TTS: {str(e)}"
             print(f"[ENGINE ERROR] {system_status['last_error']}")
             system_status["is_loading"] = False
             return
 
     # ==========================================
-    # KOKORO ENGINE BOOT SEQUENCE (Original Untouched Code)
+    # KOKORO ENGINE BOOT SEQUENCE 
     # ==========================================
     models_dir = base_dir / "models"
     voices_path = models_dir / "voices.bin"
@@ -112,19 +113,21 @@ def load_engine_logic(requested_mode=None):
         return
 
     try:
+        # Unload any previous instances
         if state_module.kokoro is not None:
-            print("[ENGINE] Unloading previous model...")
-            state_module.kokoro = None  # GC old model
+            print("[ENGINE] Unloading previous Kokoro model...")
+            state_module.kokoro = None  
             
-        # Also unload marvis if switching to kokoro
-        if getattr(state_module, 'marvis_generator', None) is not None:
-            state_module.marvis_generator = None
+        # Unload F5 if switching to Kokoro
+        if getattr(state_module, 'f5_model', None) is not None:
+            print("[ENGINE] Unloading F5 to free VRAM...")
+            state_module.f5_model = None
+            state_module.f5_model_loaded = False
 
         print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
 
         if actual_mode == "gpu":
             print("[ENGINE] Configuring strict CUDA GPU settings...")
-            
             cuda_options = {
                 "device_id": 0,                                 
                 "cudnn_conv_algo_search": "HEURISTIC",         
@@ -178,21 +181,21 @@ async def get_status():
         current_engine_mode = "gpu"
 
     models_dir = base_dir / "models"
-    marvis_dir = models_dir / "marvis"
+    f5_dir = models_dir / "f5"
     
     available_models = {
         "gpu": (models_dir / "kokoro.onnx").exists(),
         "cpu": (models_dir / "kokoro.int8.onnx").exists(),
         "voices": (models_dir / "voices.bin").exists(),
-        "marvis": (marvis_dir / "marvis_tts.pt").exists(), # <-- ADDED
+        "f5": f5_dir.exists(), # Basic check to see if the F5 folder is there
     }
 
     import app.state as state_module
 
-    marvis_loaded = getattr(state_module, 'marvis_model_loaded', False)
+    f5_loaded = getattr(state_module, 'f5_model_loaded', False)
 
     return {
-        "model_loaded": (state_module.kokoro is not None) or marvis_loaded, # <-- ADDED logic
+        "model_loaded": (state_module.kokoro is not None) or f5_loaded, 
         "is_loading": system_status["is_loading"],
         "is_downloading": system_status["is_downloading"],
         "last_error": system_status["last_error"],
@@ -203,27 +206,27 @@ async def get_status():
 
 
 @router.post("/api/system/setup")
-async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, engine: str = "kokoro"): # <-- ADDED engine parameter
+async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, engine: str = "kokoro"): 
     if system_status["is_downloading"]:
         return {"status": "already_running"}
 
-    if engine == "marvis":
-        def marvis_setup_task():
+    if engine == "f5":
+        def f5_setup_task():
             system_status["is_downloading"] = True
             system_status["last_error"] = None
             try:
-                print(f"[SETUP] Starting download for Marvis model...")
-                start_marvis_setup(model_type or "gpu")
-                print("[SETUP] Marvis Setup complete!")
+                print(f"[SETUP] Starting download & setup for F5-TTS...")
+                start_f5_setup() # Route to downloader.py
+                print("[SETUP] F5-TTS Setup complete!")
             except Exception as e:
-                msg = f"Marvis setup failed: {str(e)}"
+                msg = f"F5 setup failed: {str(e)}"
                 system_status["last_error"] = msg
                 print(f"[SETUP ERROR] {msg}")
             finally:
                 system_status["is_downloading"] = False
         
-        background_tasks.add_task(marvis_setup_task)
-        return {"status": "started", "message": "Marvis setup started"}
+        background_tasks.add_task(f5_setup_task)
+        return {"status": "started", "message": "F5-TTS setup started"}
 
     # Original Kokoro setup task
     def setup_task():
@@ -266,7 +269,6 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str, eng
     if system_status["is_downloading"]:
         return {"status": "busy", "message": "Cannot switch while downloading"}
 
-    # Fix: Save both the target_mode (gpu/cpu) AND the active_engine (kokoro/marvis) instantly
     try:
         with open(settings_file, "r") as f:
             settings = json.load(f)
@@ -289,7 +291,7 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str, eng
         "status": "switching",
         "target_mode": target_mode,
         "engine": engine,
-        "message": f"Switching to {engine}...",
+        "message": f"Switching to {engine.upper()}...",
     }
 
 

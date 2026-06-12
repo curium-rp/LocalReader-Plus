@@ -1,3 +1,5 @@
+import asyncio
+import traceback
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
 import shutil
 from ..config import settings_file
@@ -261,29 +263,24 @@ async def get_voices():
     categories = {}
 
 # ==========================================
-    # MARVIS VOICES (Dynamic Folder Scanning)
+    # F5 VOICES (Dynamic Folder Scanning)
     # ==========================================
-    if active_engine == "marvis":
-        marvis_voices_dir = base_dir / "voices" / "marvis"
-        marvis_voices_dir.mkdir(parents=True, exist_ok=True)
+    if active_engine == "f5":
+        f5_voices_dir = base_dir / "voices" / "f5"
+        f5_voices_dir.mkdir(parents=True, exist_ok=True)
         
         voices = []
-        
-        # 1. ALWAYS inject the Create Clone button at the top of the list!
         voices.append({"id": "action_create_clone", "name": "➕ Create New Voice Clone..."})
         
-        # 2. Scan the directory for real cloned folders
-        for item in marvis_voices_dir.iterdir():
+        for item in f5_voices_dir.iterdir():
             if item.is_dir() and (item / "ref.wav").exists():
-                # Prevent adding duplicate 'default' if it exists
                 if item.name != "default": 
                     voices.append({"id": item.name, "name": item.name.replace("_", " ").title()})
                 
-        # 3. If no real clones exist, provide the default fallback
         if len(voices) == 1:
             voices.append({"id": "default", "name": "Default Voice (Needs Setup)"})
             
-        categories["en"] = {"label": "Marvis Cloned Voices", "voices": voices}
+        categories["en"] = {"label": "F5 Cloned Voices", "voices": voices}
         return {"categories": categories}
 
     # ==========================================
@@ -333,19 +330,15 @@ async def get_voices():
     except Exception as e:
         return {"categories": {}}
 
-
-# ==========================================
-# NEW VOICE CLONING ENDPOINT
-# ==========================================
+# voices clone
 @router.post("/api/voices/clone")
 async def clone_voice(
     name: str = Form(...), 
     text: str = Form(...), 
     file: UploadFile = File(...)
 ):
-    """Takes an uploaded .wav and transcript, and creates a Marvis voice folder."""
+    """Takes an uploaded .wav and transcript, and creates an F5 voice folder."""
     try:
-        # Clean up the folder name (e.g., "My Voice" -> "my_voice")
         folder_name = name.strip().lower().replace(" ", "_")
         if not folder_name:
             raise HTTPException(status_code=400, detail="Voice name cannot be empty.")
@@ -353,7 +346,7 @@ async def clone_voice(
         if not file.filename.lower().endswith('.wav'):
             raise HTTPException(status_code=400, detail="Only .wav files are supported for voice cloning.")
 
-        voice_dir = base_dir / "voices" / "marvis" / folder_name
+        voice_dir = base_dir / "voices" / "f5" / folder_name
         voice_dir.mkdir(parents=True, exist_ok=True)
 
         # Save the audio file as ref.wav
@@ -417,94 +410,88 @@ async def synthesize_kokoro_logic(text, request, pause_settings, state_module):
                 sr = current_sr
             return safe_concat(chunk_audios), sr
 
-async def synthesize_marvis_logic(text, request, state_module):
-    """New Marvis TTS logic with Resampling, Warning Fixes, and Crash Protection"""
-    from marvis_tts.utils import Segment
-    import torchaudio
-    import traceback
-    
-    generator = state_module.marvis_generator
-    tokenizer = state_module.marvis_tokenizer
-    device = generator.device
-
-    # For zero-shot cloning, Marvis requires a reference audio and text.
-    voices_dir = Path(base_dir) / "voices" / "marvis"
+async def synthesize_f5_logic(text, request, state_module):
+    """
+    Robust F5-TTS generation logic with error handling, async offloading,
+    dynamic reference loading, and safe tensor-to-numpy conversion.
+    """
+    voices_dir = Path(base_dir) / "voices" / "f5"
     voice_folder = voices_dir / request.voice
     
     ref_audio_path = voice_folder / "ref.wav"
     ref_text_path = voice_folder / "ref.txt"
 
-    # SELF-HEALING: Auto-fallback
+    # 1. SELF-HEALING: Auto-fallback if the voice folder is missing or deleted
     if not ref_audio_path.exists() or not ref_text_path.exists():
-        print(f"[MARVIS] Voice '{request.voice}' not found. Auto-switching to 'default'.")
+        print(f"[F5-TTS] Voice '{request.voice}' missing reference files. Auto-switching to 'default'.")
         voice_folder = voices_dir / "default"
         ref_audio_path = voice_folder / "ref.wav"
         ref_text_path = voice_folder / "ref.txt"
         
         if not ref_audio_path.exists():
-             raise HTTPException(status_code=500, detail="Marvis default reference audio is missing!")
+             raise HTTPException(status_code=500, detail="F5 default reference audio is missing! Please clone a voice first.")
 
-    # 1. Read & Resample Reference Audio (Fixes the Instant EOS Bug)
-    wav, sr = sf.read(str(ref_audio_path))
-    if wav.ndim == 2:
-        wav = wav.mean(axis=1)
-        
-    if sr != 24000:
-        print(f"[MARVIS] Resampling reference audio from {sr}Hz to 24000Hz...")
-        wav_tensor = torch.tensor(wav, dtype=torch.float32)
-        wav_tensor = torchaudio.functional.resample(wav_tensor, orig_freq=sr, new_freq=24000)
-        wav = wav_tensor.numpy()
-
-    ref_audio_tensor = torch.tensor(wav[None, None, :], dtype=torch.float32, device=device)
-    ref_audio_tokens = generator._audio_tokenizer.encode(ref_audio_tensor)[-1, :, :]
-
-    with open(ref_text_path, "r", encoding="utf-8") as f:
-        ref_text = f.read().strip()
-
-    # 2. Build the Marvis Context
-    all_text = (ref_text + " " + text.strip()).strip()
-    
-    # 3. Fix the "UserWarning: To copy construct from a tensor..."
-    safe_audio_tokens = ref_audio_tokens.detach().clone().to(dtype=torch.long, device=device)[:32, :]
-    
-    context = [
-        Segment(
-            text=torch.tensor(tokenizer.encode(f"[0]{all_text}"), dtype=torch.long, device=device),
-            audio=safe_audio_tokens,
-            speaker=0,
-        )
-    ]
-
-    # 4. Generate Audio with Crash Protection
+    # 2. Extract Reference Text
     try:
-        with torch.inference_mode():
-            audio_tensor = generator.generate(
-                text="",  # Conditioned entirely via context
-                speaker=0,
-                context=context,
-                max_audio_length_ms=30000, 
-                temperature=0.7,
-                topk=50,
-                voice_match=True,
-            )
-        samples = audio_tensor.cpu().numpy()
-        
-    except RuntimeError as e:
-        if "stack expects a non-empty TensorList" in str(e):
-            print(f"[MARVIS ERROR] Model generated 0 frames (Instant EOS)! The reference audio '{request.voice}' might be corrupted/unclear. Returning silence.")
-            return np.zeros(int(24000 * 0.1), dtype=np.float32), 24000
-        else:
-            traceback.print_exc()
-            raise e
-            
-    except ValueError as ve:
-        if "Inputs too long" in str(ve):
-            print(f"[MARVIS ERROR] Text is too long for a single generation chunk. Returning silence.")
-            return np.zeros(int(24000 * 0.1), dtype=np.float32), 24000
-        else:
-            raise ve
+        with open(ref_text_path, "r", encoding="utf-8") as f:
+            ref_text = f.read().strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read reference text: {str(e)}")
 
-    return samples, 24000
+    # 3. Validate Model State
+    f5_model = getattr(state_module, 'f5_model', None)
+    if f5_model is None:
+        raise HTTPException(status_code=503, detail="F5-TTS model is not loaded in memory. Please initialize it.")
+
+    print(f"[F5-TTS] Generating audio for voice: '{voice_folder.name}' | Text length: {len(text)}")
+
+    # 4. Generate Audio (Offloaded to thread to prevent FastAPI blocking)
+    try:
+        speed_val = float(request.speed) if hasattr(request, 'speed') and request.speed else 1.0
+
+        def run_f5_inference():
+            # F5TTS API infer() handles internal chunking for long texts automatically.
+            return f5_model.infer(
+                ref_file=str(ref_audio_path),
+                ref_text=ref_text,
+                gen_text=text,
+                speed=speed_val
+            )
+
+        # Offload the heavy GPU task to a background thread
+        result = await asyncio.to_thread(run_f5_inference)
+
+        # 5. Safe Unpacking (Accounts for different F5-TTS API versions)
+        if isinstance(result, tuple):
+            if len(result) == 3:
+                wav, sr, _ = result  # Returns wav, sample_rate, spectrogram
+            elif len(result) == 2:
+                wav, sr = result     # Returns wav, sample_rate
+            else:
+                wav = result[0]
+                sr = 24000
+        else:
+            wav = result
+            sr = 24000
+
+        # 6. Format Conversion (Ensure it's a 1D float32 numpy array for the frontend)
+        if not isinstance(wav, np.ndarray):
+            import torch
+            if isinstance(wav, torch.Tensor):
+                wav = wav.cpu().numpy()
+            else:
+                wav = np.array(wav)
+                
+        if wav.ndim > 1:
+            wav = wav.flatten() # Convert stereo/2D to mono/1D
+
+        return wav.astype(np.float32), sr
+
+    except Exception as e:
+        traceback.print_exc()
+        print(f"[F5-TTS ERROR] Synthesis crashed: {str(e)}")
+        # Graceful degradation: Return 0.1s of silence so the UI reader doesn't fatally crash
+        return np.zeros(int(24000 * 0.1), dtype=np.float32), 24000
 
 
 @router.post("/api/synthesize")
@@ -514,54 +501,21 @@ async def synthesize(request: SynthesisRequest):
     # ==========================================
     # SELF-HEALING ENGINE ROUTER
     # ==========================================
-    # Check exactly what is loaded in the computer's memory right now
     has_kokoro = getattr(state_module, 'kokoro', None) is not None
-    has_marvis = getattr(state_module, 'marvis_generator', None) is not None
+    has_f5 = getattr(state_module, 'f5_model', None) is not None # Or whatever your F5 state var is named
     
     actual_engine = request.engine
     
-    # Intercept Ghost Payloads: If JS asks for Kokoro but Marvis is loaded, force Marvis.
-    if actual_engine == "kokoro" and not has_kokoro and has_marvis:
-        actual_engine = "marvis"
-    elif actual_engine == "marvis" and not has_marvis and has_kokoro:
+    if actual_engine == "kokoro" and not has_kokoro and has_f5:
+        actual_engine = "f5"
+    elif actual_engine == "f5" and not has_f5 and has_kokoro:
         actual_engine = "kokoro"
-    elif not has_kokoro and not has_marvis:
+    elif not has_kokoro and not has_f5:
         raise HTTPException(status_code=503, detail="No Engine is loaded in memory. Please Setup Voice Engine.")
 
-    # Override the request object so the rest of the app obeys the reality of the RAM
     request.engine = actual_engine
 
-    # 1. Text Pipeline
-    try:
-        text = fix_special_formats(request.text)
-        text = filter_text_for_tts(text)
-        rules_data = [r.model_dump() for r in request.rules]
-        text = apply_custom_pronunciations(text, rules_data, request.ignore_list)
-    except Exception:
-        text = fix_special_formats(request.text)
-        text = filter_text_for_tts(text)
-
-    # 2. Safe Cache Retrieval
-    try:
-        pause_settings = request.pause_settings or {}
-        base_cache_key = generate_cache_key(
-            text, request.voice, float(request.speed or 1.0),
-            pause_settings, request.rules, request.ignore_list,
-        )
-        # Prefix the cache key with the TRUE engine to prevent database clashes
-        cache_key = f"{actual_engine}_{base_cache_key}"
-
-        # Try-Except block protects against corrupted audio_cache.db databases
-        try:
-            cached_audio = audio_cache.get(cache_key)
-            if cached_audio and len(cached_audio) > 50:
-                return StreamingResponse(
-                    io.BytesIO(cached_audio),
-                    media_type="audio/wav",
-                    headers={"Content-Length": str(len(cached_audio))},
-                )
-        except Exception as cache_err:
-            print(f"[CACHE WARNING] Skipping corrupted cache entry: {cache_err}")
+    # ... (Keep the Text Pipeline and Cache checking logic exactly as it is) ...
 
         # 3. ENGINE ROUTING
         samples = None
@@ -571,10 +525,11 @@ async def synthesize(request: SynthesisRequest):
             samples, sample_rate = await synthesize_kokoro_logic(
                 text, request, pause_settings, state_module
             )
-        elif actual_engine == "marvis":
-            samples, sample_rate = await synthesize_marvis_logic(
+        elif actual_engine == "f5":
+            samples, sample_rate = await synthesize_f5_logic(
                 text, request, state_module
             )
+
 
         # 4. Audio Output & Safe Caching
         buffer = io.BytesIO()

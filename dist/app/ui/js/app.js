@@ -87,8 +87,8 @@ async function init() {
     
     const engineSelect = document.getElementById("engineMode");
     if (engineSelect) {
-      if (state.ttsEngine === "marvis") {
-        engineSelect.value = "marvis";
+      if (state.ttsEngine === "f5") {
+        engineSelect.value = "f5";
       } else {
         engineSelect.value = state.engineMode; 
       }
@@ -384,8 +384,8 @@ if (engineMode) {
   engineMode.onchange = async (e) => {
     const val = e.target.value;
     
-    if (val === "marvis") {
-      state.ttsEngine = "marvis";
+    if (val === "f5") {
+      state.ttsEngine = "f5";
       state.engineMode = "gpu"; 
     } else {
       state.ttsEngine = "kokoro";
@@ -409,7 +409,7 @@ const setupBtn = document.getElementById("setupBtn");
 if (setupBtn) {
   setupBtn.onclick = async () => {
     try {
-      const activeEngine = state.ttsEngine === "marvis" ? "marvis" : "kokoro";
+      const activeEngine = state.ttsEngine === "f5" ? "f5" : "kokoro";
       await fetchJSON(`/api/system/setup?model_type=${state.engineMode}&engine=${activeEngine}`, {
         method: "POST",
       });
@@ -735,8 +735,8 @@ async function startStatusPolling() {
       window.isEngineReady = status.model_loaded;
       
       let selModel = false;
-      if (state.ttsEngine === "marvis") {
-        selModel = status.available_models?.marvis;
+      if (state.ttsEngine === "f5") {
+        selModel = status.available_models?.f5;
       } else {
         selModel = state.engineMode === "gpu" ? status.available_models?.gpu : status.available_models?.cpu;
       }
@@ -755,7 +755,7 @@ async function startStatusPolling() {
 }
 
 // ==========================================
-// MARVIS VOICE CLONING UI LOGIC
+// f5 VOICE CLONING UI LOGIC
 // ==========================================
 const cloneModal = document.getElementById("cloneVoiceModal");
 const openCloneBtn = document.getElementById("openCloneModalBtn");
