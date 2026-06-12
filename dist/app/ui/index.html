@@ -4,51 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LocalReader Plus</title>
-    <!-- Local Dependencies -->
-     <script src="lib/tailwindcss-with-all-plugins.js"></script>
+    <script src="lib/tailwindcss-with-all-plugins.js"></script>
     <script src="lib/lucide.min.js"></script>
     <script src="lib/pdf.min.js"></script>
-
-    <div id="cloneVoiceModal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
-      <div class="bg-[#09090b] border border-zinc-800 rounded-lg shadow-xl w-full max-w-md overflow-hidden">
-        <div class="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
-          <h3 class="font-bold text-zinc-100 text-sm flex items-center gap-2">
-            <i data-lucide="mic" class="w-4 h-4 text-blue-400"></i>
-            Clone Voice (F5-TTS)
-          </h3>
-          <button id="cancelCloneTopBtn" class="text-zinc-500 hover:text-zinc-300">
-            <i data-lucide="x" class="w-4 h-4"></i>
-          </button>
-        </div>
-        
-        <div class="p-5 space-y-4">
-          <div>
-            <label class="block text-xs font-bold text-zinc-400 mb-1">Voice Name</label>
-            <input type="text" id="cloneVoiceName" placeholder="e.g., my_custom_voice" class="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500">
-          </div>
-          
-          <div>
-            <label class="block text-xs font-bold text-zinc-400 mb-1">Reference Audio (.wav)</label>
-            <p class="text-[10px] text-zinc-500 mb-2">Upload a 3-10 second clear recording of the voice.</p>
-            <input type="file" id="cloneVoiceFile" accept=".wav" class="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-300 outline-none file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-blue-600/20 file:text-blue-400 hover:file:bg-blue-600/30">
-          </div>
-
-          <div>
-            <label class="block text-xs font-bold text-zinc-400 mb-1">Exact Audio Transcript</label>
-            <p class="text-[10px] text-zinc-500 mb-2">Type the EXACT words spoken in the audio file above.</p>
-            <textarea id="cloneVoiceText" rows="3" placeholder="Type what is being said in the reference audio..." class="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500 resize-none"></textarea>
-          </div>
-        </div>
-        
-        <div class="p-4 border-t border-zinc-800 bg-zinc-900/50 flex justify-end gap-2">
-          <button id="cancelCloneBtn" class="px-4 py-2 rounded text-xs font-bold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors">Cancel</button>
-          <button id="submitCloneBtn" class="px-4 py-2 rounded text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg transition-colors flex items-center gap-2">
-            <i data-lucide="upload" class="w-3.5 h-3.5"></i>
-            Clone Instantly
-          </button>
-        </div>
-      </div>
-    </div>
 
     <script>
       tailwind.config = {
@@ -71,9 +29,7 @@
 
   <body class="min-h-screen selection:bg-blue-500/30 overflow-hidden">
     <div class="main-container">
-      <!-- Sidebar -->
       <aside class="sidebar bg-card flex flex-col">
-        <!-- Drag Handle -->
         <div class="sidebar-drag-handle" id="sidebarDragHandle"></div>
         <div class="p-6 border-b border-border">
           <div class="flex items-center justify-between mb-6">
@@ -137,7 +93,6 @@
             </label>
           </div>
 
-          <!-- Text Size Slider -->
           <div id="textSizeArea" class="mb-4" style="display: none">
             <label
               class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2 block flex items-center justify-between"
@@ -159,6 +114,12 @@
               value="16"
               class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
             />
+            <div class="relative w-full h-3 text-[9px] text-zinc-600 mt-1.5 font-mono select-none">
+              <span class="absolute" style="left: 0%; transform: translateX(0%);">12</span>
+              <span class="absolute" style="left: 33.33%; transform: translateX(-50%);">16</span>
+              <span class="absolute" style="left: 66.66%; transform: translateX(-50%);">20</span>
+              <span class="absolute" style="left: 100%; transform: translateX(-100%);">24</span>
+            </div>
           </div>
 
           <div id="exportArea" class="mb-4" style="display: none">
@@ -174,7 +135,6 @@
           </div>
         </div>
 
-        <!-- Tabs (Compact with Icons) -->
         <div class="flex border-b border-border">
           <button
             id="tabLibrary"
@@ -207,7 +167,6 @@
           </button>
         </div>
 
-        <!-- Content -->
         <div class="flex-1 overflow-hidden flex flex-col">
           <div
             id="libraryPanel"
@@ -255,9 +214,7 @@
           </div>
         </div>
 
-        <!-- Settings -->
         <div class="p-6 border-t border-border bg-black/20 space-y-4">
-          <!-- Processing Mode (v1.9 - Dual-Engine) -->
           <div class="p-3 bg-blue-900/20 border border-blue-800/30 rounded-lg">
             <label
               class="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
@@ -381,7 +338,6 @@
             </p>
           </div>
           <div id="textContent" class="chapter-text hidden"></div>
-          <!-- Drag-and-Drop Overlay -->
           <div id="dropOverlay" class="drop-overlay hidden">
             <div class="drop-overlay-content">
               <i data-lucide="upload" class="w-12 h-12 text-blue-400"></i>
@@ -393,9 +349,7 @@
           </div>
         </div>
 
-        <!-- Controls -->
         <div id="controls" class="player-bar hidden">
-          <!-- Back to Reading Float (appears when browsing away) -->
           <button
             id="backToReadingBtn"
             class="hidden absolute -top-12 left-1/2 -translate-x-1/2 px-4 py-2 bg-zinc-800 text-zinc-300 border border-zinc-700 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 hover:bg-zinc-700 transition-all shadow-xl"
@@ -456,18 +410,15 @@
       </main>
     </div>
 
-    <!-- Sidebar Expand Tab (visible when sidebar is collapsed) -->
     <button id="sidebarExpandBtn" class="sidebar-expand-btn" title="Show Sidebar">
       <i data-lucide="chevron-right" class="w-4 h-4"></i>
     </button>
 
-    <!-- Playbar Restore Pill (visible when playbar is hidden) -->
     <button id="playbarRestoreBtn" class="playbar-restore-btn" title="Show Player">
       <i data-lucide="chevron-up" class="w-3 h-3"></i>
       <span>Show Player</span>
     </button>
 
-    <!-- Voice Settings Button (Floating) -->
     <button
       id="voiceSettingsBtn"
       class="voice-settings-button"
@@ -508,6 +459,19 @@
 
       <div class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
         
+        <div id="voiceControlWrapper">
+          <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 flex items-center gap-2">
+            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+            <span data-i18n="settings.voice">Voice Select</span>
+          </label>
+          <! Clone voice boox for f5_tts -->
+          <button id="openCloneModalBtn" class="w-full bg-zinc-900 text-xs font-bold border border-zinc-800 rounded px-2 py-2 outline-none text-zinc-300 transition-all mb-2 flex items-center justify-center gap-2">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            <span>Create New Voice Clone</span>
+          </button>
+
+          <select id="voiceSelect" class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-3"></select>
+        </div>
 
         <div>
           <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 flex items-center justify-between">
@@ -518,8 +482,12 @@
             <span class="text-blue-400 font-mono"><span id="speedVal">1.00</span>x</span>
           </label>
           <input type="range" id="speedRange" min="0.5" max="3.0" step="0.05" value="1.00" class="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600" />
-          <div class="flex justify-between text-[9px] text-zinc-600 mt-1">
-            <span>0.5x</span><span>1.0x</span><span>2.0x</span><span>3.0x</span>
+          
+          <div class="relative w-full h-4 text-[9px] text-zinc-600 mt-2 font-mono select-none">
+            <span class="absolute" style="left: 0%; transform: translateX(0%);">0.5x</span>
+            <span class="absolute" style="left: 20%; transform: translateX(-50%);">1.0x</span>
+            <span class="absolute" style="left: 60%; transform: translateX(-50%);">2.0x</span>
+            <span class="absolute" style="left: 100%; transform: translateX(-100%);">3.0x</span>
           </div>
         </div>
 
@@ -591,9 +559,7 @@
       </div>
     </div>
 
-    <!-- Timer Settings Drawer -->
     <div id="timerSettingsDrawer" class="voice-settings-drawer">
-      <!-- Drawer Header -->
       <div class="p-6 border-b border-zinc-800">
         <div class="flex items-center justify-between">
           <div>
@@ -614,9 +580,7 @@
         </div>
       </div>
 
-      <!-- Drawer Content -->
       <div class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
-        <!-- Status Display -->
         <div
           class="flex flex-col items-center justify-center p-6 bg-zinc-900/50 rounded-xl border border-zinc-800/50"
         >
@@ -635,7 +599,6 @@
           </div>
         </div>
 
-        <!-- Controls -->
         <div class="border-t border-zinc-800 pt-6">
           <label
             class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-4 block flex items-center gap-2"
@@ -696,7 +659,6 @@
       </div>
     </div>
 
-    <!-- Toast -->
     <div
       id="toast"
       class="fixed top-4 right-4 bg-red-900/95 border border-red-700 text-white px-6 py-4 rounded-xl shadow-2xl hidden z-[9999]"
@@ -707,7 +669,7 @@
       </div>
     </div>
 
-<div
+    <div
       id="exportFormatModal"
       class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[1500] hidden"
     >
@@ -751,7 +713,6 @@
       </div>
     </div>
 
-    <!-- FFMPEG Download Modal -->
     <div
       id="ffmpegModal"
       class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[1000] hidden"
@@ -831,7 +792,6 @@
       </div>
     </div>
 
-    <!-- Export Progress Modal -->
     <div
       id="exportModal"
       class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[1000] hidden"
@@ -906,6 +866,7 @@
         </div>
       </div>
     </div>
+
     <div
       id="cloneVoiceModal"
       class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[2000] hidden"
@@ -962,7 +923,7 @@
         </div>
       </div>
     </div>
-    <!-- Search Modal -->
+
     <div
       id="searchModal"
       class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center pt-20 z-[2000] hidden"
@@ -970,7 +931,6 @@
       <div
         class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden"
       >
-        <!-- Search Input -->
         <div class="p-4 border-b border-zinc-800">
           <div class="flex items-center gap-3">
             <i data-lucide="search" class="w-5 h-5 text-zinc-500"></i>
@@ -990,14 +950,12 @@
           </div>
         </div>
 
-        <!-- Search Results -->
         <div
           id="searchResults"
           class="max-h-96 overflow-y-auto custom-scrollbar"
         >
           <div id="searchResultsList" class="p-4 space-y-2">
-            <!-- Results will be inserted here -->
-          </div>
+            </div>
           <div
             id="searchEmpty"
             class="hidden p-8 text-center text-zinc-500 text-sm"
@@ -1021,7 +979,6 @@
           </div>
         </div>
 
-        <!-- Search Footer (Stats) -->
         <div
           id="searchFooter"
           class="hidden px-4 py-3 border-t border-zinc-800 bg-zinc-900/50"

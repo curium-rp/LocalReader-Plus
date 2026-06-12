@@ -5,14 +5,13 @@ import { showToast, renderIcons } from "./ui.js";
 export class F5Studio {
     constructor(wrapperId) {
         this.wrapper = document.getElementById(wrapperId);
-        this.audioPlayer = new Audio(); // Isolated audio player just for samples
+        this.audioPlayer = new Audio(); 
         this.isCreating = false;
     }
 
     async mount() {
         if (!this.wrapper) return;
         
-        // INTERCEPT: Nuke the Kokoro dropdown and inject F5 Dashboard
         this.wrapper.innerHTML = `
             <div class="f5-studio-container bg-zinc-950/50 border border-zinc-800 rounded-lg p-3 space-y-3 shadow-inner">
                 <div class="flex justify-between items-center border-b border-zinc-800/50 pb-2">
@@ -50,7 +49,7 @@ export class F5Studio {
             </div>
         `;
         
-        renderIcons();
+        if (typeof renderIcons === 'function') renderIcons();
         await this.loadVoices();
         this.attachEvents();
     }
@@ -58,8 +57,17 @@ export class F5Studio {
     unmount() {
         if (!this.wrapper) return;
         this.audioPlayer.pause();
-        // Restore space for Kokoro
-        this.wrapper.innerHTML = `<select id="voiceSelect" class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-3"></select>`;
+        
+        // SURGICAL FIX: We restore the HTML perfectly so the label doesn't vanish
+        this.wrapper.innerHTML = `
+          <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 flex items-center gap-2">
+            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+            <span data-i18n="settings.voice">Voice Select</span>
+          </label>
+          <select id="voiceSelect" class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-3"></select>
+        `;
+        
+        if (typeof renderIcons === 'function') renderIcons();
     }
 
     async loadVoices() {
@@ -93,7 +101,7 @@ export class F5Studio {
                 card.onclick = async (e) => {
                     if (e.target.closest('.play-sample-btn')) return;
                     state.voiceId = v.id;
-                    await this.loadVoices(); // Re-render to show selection dot
+                    await this.loadVoices(); 
                     document.dispatchEvent(new CustomEvent('f5-voice-changed', { detail: v.id }));
                 };
 
@@ -105,7 +113,7 @@ export class F5Studio {
 
                 list.appendChild(card);
             });
-            renderIcons();
+            if (typeof renderIcons === 'function') renderIcons();
         } catch (e) {
             console.error("Failed to load F5 voices:", e);
         }
@@ -115,11 +123,10 @@ export class F5Studio {
         this.audioPlayer.pause();
         this.audioPlayer.src = `/api/f5/sample/${id}?t=${Date.now()}`;
         
-        // Animate the play button
         const icon = btnElement.querySelector('i');
         icon.setAttribute('data-lucide', 'waveform');
         btnElement.classList.add('text-green-400', 'animate-pulse');
-        renderIcons();
+        if (typeof renderIcons === 'function') renderIcons();
 
         this.audioPlayer.play().catch(e => {
             showToast("Sample not found. Uploaded files saved.", "warning");
@@ -132,7 +139,7 @@ export class F5Studio {
     resetPlayButton(btnElement, icon) {
         icon.setAttribute('data-lucide', 'play');
         btnElement.classList.remove('text-green-400', 'animate-pulse');
-        renderIcons();
+        if (typeof renderIcons === 'function') renderIcons();
     }
 
     attachEvents() {
@@ -170,7 +177,7 @@ export class F5Studio {
             const originalHtml = submitBtn.innerHTML;
             submitBtn.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Processing...`;
             submitBtn.disabled = true;
-            renderIcons();
+            if (typeof renderIcons === 'function') renderIcons();
 
             const formData = new FormData();
             formData.append("name", name);
@@ -178,7 +185,6 @@ export class F5Studio {
             formData.append("file", file);
 
             try {
-                // This POST waits for the sample to finish generating in the backend
                 const res = await fetch("/api/f5/clone", { method: "POST", body: formData });
                 const result = await res.json();
                 
@@ -188,9 +194,7 @@ export class F5Studio {
                 state.voiceId = result.id;
                 
                 cancelBtn.click();
-                await this.loadVoices(); // Add it to the list
-                
-                // Trigger a save and clear cache instantly
+                await this.loadVoices(); 
                 document.dispatchEvent(new CustomEvent('f5-voice-changed', { detail: result.id }));
                 
             } catch (e) {
@@ -199,7 +203,7 @@ export class F5Studio {
                 this.isCreating = false;
                 submitBtn.innerHTML = originalHtml;
                 submitBtn.disabled = false;
-                renderIcons();
+                if (typeof renderIcons === 'function') renderIcons();
             }
         };
     }
