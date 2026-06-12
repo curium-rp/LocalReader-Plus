@@ -29,7 +29,7 @@ class AppSettings(BaseModel):
     pronunciationRules: List[PronunciationRule]
     ignoreList: List[str]
     voice_id: Optional[str] = "af_bella"
-    active_engine: Optional[str] = "kokoro"  # default models
+    active_engine: Literal["kokoro", "f5", "fish"] = "kokoro"  # default models
     speed: Optional[float] = 1.0
     font_size: Optional[int] = 16
     header_footer_mode: Optional[str] = "off"
@@ -56,13 +56,13 @@ class ExportRequest(BaseModel):
     speed: float = 1.0
     rules: List[PronunciationRule]
     ignore_list: List[str] = []
-    format: str = "wav"  # <-- ADD THIS LINE
+    format: str = "wav"  
 
 
 class SynthesisRequest(BaseModel):
     text: str
     voice: str = "af_sky"
-    engine: str = "kokoro"  # <-- ADDED
+    engine: Literal["kokoro", "f5", "fish"] = "kokoro"  # add fish i hope fully is works
     speed: float = 1.0
     rules: List[PronunciationRule]
     ignore_list: List[str] = []

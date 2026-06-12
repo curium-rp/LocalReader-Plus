@@ -31,6 +31,15 @@ library_file = userdata_dir / "library.json"
 # Settings
 MAX_CACHE_SIZE_MB = 200
 
+
+# FISH SPEECH PATHS
+fish_models_dir = base_dir / "models" / "fish"
+fish_voices_dir = base_dir / "voices" / "fish"
+
+# Ensure the directories exist on startup
+fish_models_dir.mkdir(parents=True, exist_ok=True)
+fish_voices_dir.mkdir(parents=True, exist_ok=True)
+
 # Ensure directories exist
 try:
     userdata_dir.mkdir(exist_ok=True)

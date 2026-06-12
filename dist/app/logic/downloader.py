@@ -192,7 +192,49 @@ def load_f5_into_memory():
         print(f"[ENGINE ERROR] Failed to load F5-TTS: {e}")
         state_module.f5_model_loaded = False
 
+# ==========================================
+# FISH SPEECH DOWNLOAD & BOOT SYSTEM
+# ==========================================
+def start_fish_setup():
+    """
+    Downloads Fish Speech v1.5 explicitly into models/fish
+    """
+    import app.config as config_module
+    
+    base_dir = config_module.base_dir
+    fish_dir = base_dir / "models" / "fish" / "checkpoints" / "fish-speech-1.5"
+    fish_dir.mkdir(parents=True, exist_ok=True)
+    
+    print("\n[SETUP] Initiating Fish Speech Engine Download Sequence...")
+    print(f"[SETUP] Target Directory: {fish_dir}")
+    
+    try:
+        # 1. Download Fish Speech v1.5 Model Weights
+        print("[SETUP] Downloading Fish Speech v1.5 model (This is large and may take a few minutes)...")
+        snapshot_download(
+            repo_id="fishaudio/fish-speech-1.5",
+            local_dir=str(fish_dir)
+        )
+        
+        # 2. Create Default Voice Setup
+        voices_dir = base_dir / "voices" / "fish" / "default"
+        voices_dir.mkdir(parents=True, exist_ok=True)
+        if not (voices_dir / "ref.txt").exists():
+            with open(voices_dir / "ref.txt", "w", encoding="utf-8") as f:
+                f.write("This is a default reference text for voice cloning.")
+                
+        print("[SETUP] Fish Speech weights downloaded successfully.")
+    except Exception as e:
+        print(f"[SETUP ERROR] Failed to download Fish Speech weights: {e}")
+        raise e
 
+def load_fish_into_memory():
+    """
+    Placeholder for memory loading (we will fill this exact logic during Phase 2)
+    """
+    import app.state as state_module
+    # We will complete this in the Engine Integration step.
+    state_module.fish_model_loaded = False
 # ==========================================
 # SYSTEM HELPERS
 # ==========================================
@@ -205,11 +247,13 @@ def check_model_exists(model_type: Literal["gpu", "cpu"]) -> bool:
 def get_available_models() -> dict:
     target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
     f5_dir = os.path.join(target_dir, "f5")
+    fish_dir = os.path.join(target_dir, "fish")
     return {
         "gpu": check_model_exists("gpu"),
         "cpu": check_model_exists("cpu"),
         "voices": os.path.exists(os.path.join(target_dir, "voices.bin")),
         "f5": os.path.exists(f5_dir)
+        "fish": os.path.exists(fish_dir)
     }
 
 if __name__ == "__main__":
@@ -219,3 +263,46 @@ if __name__ == "__main__":
         print("Usage: python downloader.py [gpu|cpu]")
         sys.exit(1)
     download_kokoro_model(model_type)
+
+def load_fish_into_memory():
+    """
+    Loads Fish Speech into VRAM utilizing the local weights downloaded during setup.
+    """
+    import app.state as state_module
+    import app.config as config_module
+    import torch
+    
+    try:
+        from fish_speech.inference_engine import TTSInferenceEngine
+    except ImportError:
+        print("[ENGINE ERROR] Fish Speech modules not found! Ensure manual requirements are installed.")
+        state_module.fish_model_loaded = False
+        return
+
+    base_dir = config_module.base_dir
+    fish_dir = base_dir / "models" / "fish" / "checkpoints" / "fish-speech-1.5"
+    
+    print("[ENGINE] Loading Fish Speech into memory...")
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Use bfloat16 if the GPU supports it for better speed/memory, otherwise fallback to float16
+    precision = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
+    
+    try:
+        # Initialize the Fish Speech engine
+        state_module.fish_engine = TTSInferenceEngine(
+            llama_checkpoint_path=str(fish_dir),
+            decoder_checkpoint_path=str(fish_dir), # Usually in the same repo for v1.5
+            decoder_config_name="firefly_gan_vq",  # Default vocoder config
+            device=device,
+            precision=precision,
+            compile=False # Keep False for simplicity and wider hardware compatibility
+        )
+        state_module.fish_model_loaded = True
+        print(f"[ENGINE] Fish Speech successfully loaded on {device.upper()}!")
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[ENGINE ERROR] Failed to load Fish Speech: {e}")
+        state_module.fish_model_loaded = False

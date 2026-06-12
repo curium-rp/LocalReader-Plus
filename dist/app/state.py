@@ -23,6 +23,8 @@ f5_model = None
 is_f5_downloading = False
 is_f5_loading = False
 f5_model_loaded = False
+fish_engine = None
+fish_model_loaded = False
 
 system_status = {"is_loading": False, "last_error": None, "is_downloading": False}
 
