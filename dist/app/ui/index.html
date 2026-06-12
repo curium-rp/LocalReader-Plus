@@ -9,6 +9,47 @@
     <script src="lib/lucide.min.js"></script>
     <script src="lib/pdf.min.js"></script>
 
+    <div id="cloneVoiceModal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-[#09090b] border border-zinc-800 rounded-lg shadow-xl w-full max-w-md overflow-hidden">
+        <div class="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+          <h3 class="font-bold text-zinc-100 text-sm flex items-center gap-2">
+            <i data-lucide="mic" class="w-4 h-4 text-blue-400"></i>
+            Clone Voice (F5-TTS)
+          </h3>
+          <button id="cancelCloneTopBtn" class="text-zinc-500 hover:text-zinc-300">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+        
+        <div class="p-5 space-y-4">
+          <div>
+            <label class="block text-xs font-bold text-zinc-400 mb-1">Voice Name</label>
+            <input type="text" id="cloneVoiceName" placeholder="e.g., my_custom_voice" class="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500">
+          </div>
+          
+          <div>
+            <label class="block text-xs font-bold text-zinc-400 mb-1">Reference Audio (.wav)</label>
+            <p class="text-[10px] text-zinc-500 mb-2">Upload a 3-10 second clear recording of the voice.</p>
+            <input type="file" id="cloneVoiceFile" accept=".wav" class="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-300 outline-none file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-blue-600/20 file:text-blue-400 hover:file:bg-blue-600/30">
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-zinc-400 mb-1">Exact Audio Transcript</label>
+            <p class="text-[10px] text-zinc-500 mb-2">Type the EXACT words spoken in the audio file above.</p>
+            <textarea id="cloneVoiceText" rows="3" placeholder="Type what is being said in the reference audio..." class="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500 resize-none"></textarea>
+          </div>
+        </div>
+        
+        <div class="p-4 border-t border-zinc-800 bg-zinc-900/50 flex justify-end gap-2">
+          <button id="cancelCloneBtn" class="px-4 py-2 rounded text-xs font-bold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors">Cancel</button>
+          <button id="submitCloneBtn" class="px-4 py-2 rounded text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg transition-colors flex items-center gap-2">
+            <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+            Clone Instantly
+          </button>
+        </div>
+      </div>
+    </div>
+
     <script>
       tailwind.config = {
         darkMode: "class",
@@ -446,23 +487,7 @@
       <span id="timerBtnText" style="display: none"></span>
     </button>
 
-    <!-- Drawer Overlay and tts engine-->
-    <div id="drawerOverlay" class="drawer-overlay"></div>
-        <div class="mb-6">
-          <label
-            class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
-          >
-            <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
-            <span data-i18n="settings.engine_selection">TTS Engine</span>
-          </label>
-          <select
-            id="ttsEngineSelect"
-            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-          >
-            <option value="kokoro">Kokoro-ONNX (Standard)</option>
-            <option value="marvis">Marvis TTS (Real-time edge)</option>
-          </select>
-        </div>
+
     <!-- Voice Settings Drawer -->
     <div id="voiceSettingsDrawer" class="voice-settings-drawer">
       <!-- Drawer Header -->
@@ -490,28 +515,26 @@
       </div>
 
       <!-- Drawer Content -->
-      <div class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
-        <!-- Voice Selection -->
-        <div>
-          <label
-            class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
-          >
-            <i data-lucide="user" class="w-3.5 h-3.5"></i>
-            <span data-i18n="settings.voice_selection">Voice Selection</span>
+        <div class="mb-6">
+          <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 flex items-center gap-2">
+            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+            <span data-i18n="settings.voice">Voice Select</span>
           </label>
+          
           <select
             id="voiceSelect"
-            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+            class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-3"
           >
-            <option value="" disabled selected>Loading voices...</option>
-          </select>
+            </select>
+
           <button
             id="openCloneModalBtn"
-            class="w-full mt-3 flex items-center justify-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg transition-all text-xs font-bold"
+            class="w-full flex items-center justify-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded transition-all text-xs font-bold"
           >
-            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
             <span data-i18n="settings.clone_voice">Clone New Voice (F5)</span>
           </button>
+        </div>
 
         <!-- Speed Control -->
         <div>

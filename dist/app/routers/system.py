@@ -15,24 +15,18 @@ if str(base_dir_parent) not in sys.path:
 try:
     from logic.downloader import (
         download_kokoro_model,
-        check_model_exists,
-        get_available_models,
-        start_f5_setup,       # <-- Hook for your F5 setup logic
-        load_f5_into_memory   # <-- Hook for your F5 model loader
+        start_f5_setup,       
+        load_f5_into_memory   
     )
-    from logic.audio_cache import AudioCache
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from downloader import (
         download_kokoro_model,
-        check_model_exists,
-        get_available_models,
         start_f5_setup,       
         load_f5_into_memory   
     )
 
 router = APIRouter()
-
 from ..state import PatchedKokoro
 
 def load_engine_logic(requested_mode=None):
@@ -55,13 +49,28 @@ def load_engine_logic(requested_mode=None):
     # ==========================================
     if active_engine == "f5":
         print(f"[ENGINE] Initializing F5-TTS model...")
+        
+        # 1. STRICT CHECK: Ensure the actual safetensors file exists!
+        f5_ckpt = base_dir / "models" / "f5" / "SWivid" / "F5-TTS" / "F5TTS_v1_Base" / "model_1250000.safetensors"
+        if not f5_ckpt.exists():
+            system_status["last_error"] = "F5-TTS model weights missing. Please run setup."
+            print(f"[ENGINE ERROR] {system_status['last_error']}")
+            
+            # Ensure memory is completely cleared so the Red Light triggers
+            if getattr(state_module, 'f5_model', None) is not None:
+                state_module.f5_model = None
+                state_module.f5_model_loaded = False
+            
+            system_status["is_loading"] = False
+            return
+
         try:
-            # 1. Unload Kokoro to prevent VRAM explosion
+            # 2. Unload Kokoro to prevent VRAM explosion
             if state_module.kokoro is not None:
                 print("[ENGINE] Unloading Kokoro to free VRAM...")
                 state_module.kokoro = None 
             
-            # 2. Load F5
+            # 3. Load F5
             load_f5_into_memory()
             system_status["is_loading"] = False
             return
@@ -127,11 +136,7 @@ def load_engine_logic(requested_mode=None):
         print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
 
         if actual_mode == "gpu":
-            print("[ENGINE] Configuring strict CUDA GPU settings...")
-            cuda_options = {
-                "device_id": 0,                                 
-                "cudnn_conv_algo_search": "HEURISTIC",         
-            }
+            cuda_options = {"device_id": 0, "cudnn_conv_algo_search": "HEURISTIC"}
             custom_providers = [("CUDAExecutionProvider", cuda_options), "CPUExecutionProvider"]
             
             import onnxruntime as ort
@@ -140,8 +145,7 @@ def load_engine_logic(requested_mode=None):
             def forced_gpu_session(*args, **kwargs):
                 kwargs['providers'] = custom_providers
                 if 'sess_options' not in kwargs or kwargs['sess_options'] is None:
-                    sess_options = ort.SessionOptions()
-                    kwargs['sess_options'] = sess_options
+                    kwargs['sess_options'] = ort.SessionOptions()
                 kwargs['sess_options'].enable_mem_pattern = False 
                 kwargs['sess_options'].graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
                 return original_session(*args, **kwargs)
@@ -170,7 +174,6 @@ def load_engine_logic(requested_mode=None):
 
     system_status["is_loading"] = False
 
-
 @router.get("/api/system/status")
 async def get_status():
     try:
@@ -181,17 +184,18 @@ async def get_status():
         current_engine_mode = "gpu"
 
     models_dir = base_dir / "models"
-    f5_dir = models_dir / "f5"
+    
+    # EXACT CHECK: The UI will look at this to determine if the Green or Red light turns on.
+    f5_ckpt = models_dir / "f5" / "SWivid" / "F5-TTS" / "F5TTS_v1_Base" / "model_1250000.safetensors"
     
     available_models = {
         "gpu": (models_dir / "kokoro.onnx").exists(),
         "cpu": (models_dir / "kokoro.int8.onnx").exists(),
         "voices": (models_dir / "voices.bin").exists(),
-        "f5": f5_dir.exists(), # Basic check to see if the F5 folder is there
+        "f5": f5_ckpt.exists(), # Now strictly checks for weights, not just the folder!
     }
 
     import app.state as state_module
-
     f5_loaded = getattr(state_module, 'f5_model_loaded', False)
 
     return {
@@ -203,7 +207,6 @@ async def get_status():
         "engine_mode": current_engine_mode,
         "available_models": available_models,
     }
-
 
 @router.post("/api/system/setup")
 async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, engine: str = "kokoro"): 
@@ -217,6 +220,8 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
             try:
                 print(f"[SETUP] Starting download & setup for F5-TTS...")
                 start_f5_setup() # Route to downloader.py
+                # Reload model instantly after download is done
+                load_engine_logic()
                 print("[SETUP] F5-TTS Setup complete!")
             except Exception as e:
                 msg = f"F5 setup failed: {str(e)}"
@@ -228,7 +233,6 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
         background_tasks.add_task(f5_setup_task)
         return {"status": "started", "message": "F5-TTS setup started"}
 
-    # Original Kokoro setup task
     def setup_task():
         system_status["is_downloading"] = True
         system_status["last_error"] = None
@@ -259,7 +263,6 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
 
     background_tasks.add_task(setup_task)
     return {"status": "started"}
-
 
 @router.post("/api/system/switch-engine")
 async def switch_engine(background_tasks: BackgroundTasks, target_mode: str, engine: str = "kokoro"):
@@ -294,7 +297,6 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str, eng
         "message": f"Switching to {engine.upper()}...",
     }
 
-
 @router.post("/api/system/download-model")
 async def download_specific_model(background_tasks: BackgroundTasks, model_type: str):
     if model_type not in ["gpu", "cpu"]:
@@ -320,7 +322,6 @@ async def download_specific_model(background_tasks: BackgroundTasks, model_type:
 
     background_tasks.add_task(download_task)
     return {"status": "started"}
-
 
 @router.post("/api/system/clear-cache")
 async def clear_all_cache():
