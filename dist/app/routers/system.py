@@ -34,29 +34,34 @@ def load_engine_logic(requested_mode=None):
     import app.state as state_module
     system_status["is_loading"] = True
 
+    # ==========================================
+    # SURGICAL FIX: Always read active_engine from settings!
+    # ==========================================
     active_engine = "kokoro"
-    if requested_mode is None:
-        try:
-            with open(settings_file, "r") as f:
+    try:
+        if settings_file.exists():
+            with open(settings_file, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-            requested_mode = settings.get("engine_mode", "gpu")
             active_engine = settings.get("active_engine", "kokoro")
-        except Exception:
+            if requested_mode is None:
+                requested_mode = settings.get("engine_mode", "gpu")
+        elif requested_mode is None:
+            requested_mode = "gpu"
+    except Exception:
+        if requested_mode is None:
             requested_mode = "gpu"
 
     # ==========================================
-    # F5-TTS ENGINE BOOT SEQUENCE
+    # F5-TTS ENGINE BOOT SEQUENCE (STRICT)
     # ==========================================
     if active_engine == "f5":
         print(f"[ENGINE] Initializing F5-TTS model...")
         
-        # 1. STRICT CHECK: Ensure the actual safetensors file exists!
         f5_ckpt = base_dir / "models" / "f5" / "SWivid" / "F5-TTS" / "F5TTS_v1_Base" / "model_1250000.safetensors"
         if not f5_ckpt.exists():
             system_status["last_error"] = "F5-TTS model weights missing. Please run setup."
             print(f"[ENGINE ERROR] {system_status['last_error']}")
             
-            # Ensure memory is completely cleared so the Red Light triggers
             if getattr(state_module, 'f5_model', None) is not None:
                 state_module.f5_model = None
                 state_module.f5_model_loaded = False
@@ -65,12 +70,10 @@ def load_engine_logic(requested_mode=None):
             return
 
         try:
-            # 2. Unload Kokoro to prevent VRAM explosion
             if state_module.kokoro is not None:
                 print("[ENGINE] Unloading Kokoro to free VRAM...")
                 state_module.kokoro = None 
             
-            # 3. Load F5
             load_f5_into_memory()
             system_status["is_loading"] = False
             return
@@ -81,59 +84,44 @@ def load_engine_logic(requested_mode=None):
             return
 
     # ==========================================
-    # KOKORO ENGINE BOOT SEQUENCE 
+    # KOKORO ENGINE BOOT SEQUENCE (STRICT - NO FALLBACKS)
     # ==========================================
     models_dir = base_dir / "models"
     voices_path = models_dir / "voices.bin"
-    gpu_model_path = models_dir / "kokoro.onnx"
-    cpu_model_path = models_dir / "kokoro.int8.onnx"
-
-    if requested_mode == "cpu":
-        primary_model = cpu_model_path
-        fallback_model = gpu_model_path
-        primary_label = "CPU (Quantized)"
-        fallback_label = "GPU (Standard)"
-    else:
-        primary_model = gpu_model_path
-        fallback_model = cpu_model_path
-        primary_label = "GPU (Standard)"
-        fallback_label = "CPU (Quantized)"
 
     if not voices_path.exists():
         system_status["last_error"] = "Voice pack missing. Please run setup."
         system_status["is_loading"] = False
         return
 
-    model_to_load = None
-    actual_mode = requested_mode
-
-    if primary_model.exists():
-        model_to_load = primary_model
-        print(f"[ENGINE] Loading {primary_label} model: {primary_model.name}")
-    elif fallback_model.exists():
-        model_to_load = fallback_model
-        actual_mode = "cpu" if requested_mode == "gpu" else "gpu"
-        msg = f"Requested {primary_label} model not found. Using {fallback_label} model instead."
-        print(f"[ENGINE] {msg}")
-        system_status["last_error"] = msg
+    if requested_mode == "cpu":
+        model_to_load = models_dir / "kokoro.int8.onnx"
+        actual_mode = "cpu"
     else:
-        system_status["last_error"] = "No TTS models found. Please run setup."
+        model_to_load = models_dir / "kokoro.onnx"
+        actual_mode = "gpu"
+
+    if not model_to_load.exists():
+        system_status["last_error"] = f"Kokoro {actual_mode.upper()} model is missing. Please run setup."
+        print(f"[ENGINE ERROR] {system_status['last_error']}")
+        
+        if state_module.kokoro is not None:
+            state_module.kokoro = None
+            
         system_status["is_loading"] = False
         return
 
     try:
-        # Unload any previous instances
         if state_module.kokoro is not None:
             print("[ENGINE] Unloading previous Kokoro model...")
             state_module.kokoro = None  
             
-        # Unload F5 if switching to Kokoro
         if getattr(state_module, 'f5_model', None) is not None:
             print("[ENGINE] Unloading F5 to free VRAM...")
             state_module.f5_model = None
             state_module.f5_model_loaded = False
 
-        print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
+        print(f"[ENGINE] Initializing Kokoro {actual_mode.upper()} model...")
 
         if actual_mode == "gpu":
             cuda_options = {"device_id": 0, "cudnn_conv_algo_search": "HEURISTIC"}
@@ -184,15 +172,13 @@ async def get_status():
         current_engine_mode = "gpu"
 
     models_dir = base_dir / "models"
-    
-    # EXACT CHECK: The UI will look at this to determine if the Green or Red light turns on.
     f5_ckpt = models_dir / "f5" / "SWivid" / "F5-TTS" / "F5TTS_v1_Base" / "model_1250000.safetensors"
     
     available_models = {
         "gpu": (models_dir / "kokoro.onnx").exists(),
         "cpu": (models_dir / "kokoro.int8.onnx").exists(),
         "voices": (models_dir / "voices.bin").exists(),
-        "f5": f5_ckpt.exists(), # Now strictly checks for weights, not just the folder!
+        "f5": f5_ckpt.exists(), 
     }
 
     import app.state as state_module
@@ -219,8 +205,7 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
             system_status["last_error"] = None
             try:
                 print(f"[SETUP] Starting download & setup for F5-TTS...")
-                start_f5_setup() # Route to downloader.py
-                # Reload model instantly after download is done
+                start_f5_setup() 
                 load_engine_logic()
                 print("[SETUP] F5-TTS Setup complete!")
             except Exception as e:
@@ -249,7 +234,7 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
             if target_model not in ["gpu", "cpu"]:
                 target_model = "gpu"
 
-            print(f"[SETUP] Starting download for {target_model} model...")
+            print(f"[SETUP] Starting download for Kokoro {target_model.upper()} model...")
             download_kokoro_model(target_model)
             print("[SETUP] Download complete, loading engine...")
             load_engine_logic(target_model)
@@ -273,8 +258,10 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str, eng
         return {"status": "busy", "message": "Cannot switch while downloading"}
 
     try:
-        with open(settings_file, "r") as f:
-            settings = json.load(f)
+        settings = {}
+        if settings_file.exists():
+            with open(settings_file, "r") as f:
+                settings = json.load(f)
         settings["engine_mode"] = target_mode
         settings["active_engine"] = engine
         safe_save_json(settings_file, settings)
@@ -285,7 +272,7 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str, eng
         if system_status["is_loading"]:
             return
         try:
-            load_engine_logic(target_mode)
+            load_engine_logic(target_mode) # The engine string is safely fetched inside the function now!
         except Exception as e:
             system_status["last_error"] = str(e)
 
