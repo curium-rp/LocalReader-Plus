@@ -401,16 +401,18 @@ if (headerFooterMode) {
 const toggleDrawer = (open) => {
   const d = document.getElementById("voiceSettingsDrawer");
   const o = document.getElementById("drawerOverlay");
-  if (d && o) {
+  
+  if (d) { // Only check if the drawer exists
     if (open) {
       d.classList.add("open");
-      o.classList.add("active");
+      if (o) o.classList.add("active"); // Safely toggle overlay if it exists
     } else {
       d.classList.remove("open");
-      o.classList.remove("active");
+      if (o) o.classList.remove("active");
     }
   }
 };
+
 const voiceSettingsBtn = document.getElementById("voiceSettingsBtn");
 if (voiceSettingsBtn) voiceSettingsBtn.onclick = () => toggleDrawer(true);
 const closeDrawerBtn = document.getElementById("closeDrawerBtn");
