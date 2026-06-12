@@ -1,5 +1,68 @@
 import os
 import sys
+import platform
+import glob
+
+# ==========================================
+# SMART DLL INJECTION (Must run before anything else)
+# ==========================================
+if platform.system() == "Windows":
+    print("[STARTUP] Hunting for NVIDIA DLLs...")
+
+    # 1. Hunt for System CUDA (Prioritize highest version e.g. 12.8 over 12.4)
+    cuda_paths = glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.*\bin")
+    if cuda_paths:
+        # Sort descending so v12.8 is at index 0, v12.4 is at index 1
+        cuda_paths.sort(reverse=True)
+        best_cuda = cuda_paths[0]
+        if os.path.exists(best_cuda):
+            try:
+                os.add_dll_directory(best_cuda)
+                os.environ["PATH"] = best_cuda + os.pathsep + os.environ.get("PATH", "")
+                print(f" -> Linked System CUDA: {best_cuda}")
+            except Exception as e:
+                print(f" -> Failed to link CUDA: {e}")
+    else:
+        print(" -> No System CUDA 12.x found.")
+
+    # 2. Hunt for System cuDNN (Prioritize highest version)
+    cudnn_paths = glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin")
+    if cudnn_paths:
+        cudnn_paths.sort(reverse=True)
+        best_cudnn = cudnn_paths[0]
+        if os.path.exists(best_cudnn):
+            try:
+                os.add_dll_directory(best_cudnn)
+                os.environ["PATH"] = best_cudnn + os.pathsep + os.environ.get("PATH", "")
+                print(f" -> Linked System cuDNN: {best_cudnn}")
+            except Exception as e:
+                pass
+
+    # 3. Safety Net: Link PyTorch's internal DLLs just in case
+    import site
+    try:
+        for site_package in site.getsitepackages():
+            torch_lib_path = os.path.join(site_package, "torch", "lib")
+            if os.path.exists(torch_lib_path):
+                os.add_dll_directory(torch_lib_path)
+                os.environ["PATH"] = torch_lib_path + os.pathsep + os.environ.get("PATH", "")
+                print(f" -> Linked PyTorch Lib: {torch_lib_path}")
+                break
+    except Exception:
+        pass
+
+# ==========================================
+# REST OF MAIN.PY LOGIC BELOW THIS LINE
+# ==========================================
+import uvicorn
+import socket
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
+import sys
+import site
 import socket
 import threading
 import time
@@ -7,6 +70,16 @@ import uvicorn
 import webview
 import platform
 from pathlib import Path
+
+try:
+    for site_package in site.getsitepackages():
+        torch_lib_path = os.path.join(site_package, "torch", "lib")
+        if os.path.exists(torch_lib_path):
+            os.add_dll_directory(torch_lib_path)
+            os.environ["PATH"] = torch_lib_path + os.pathsep + os.environ.get("PATH", "")
+            break
+except Exception:
+    pass
 
 # --- 1. ARCHITECTURAL SETUP: ABSOLUTE PATH ANCHORING ---
 # Anchor all paths to THIS script file location (immune to CWD changes)

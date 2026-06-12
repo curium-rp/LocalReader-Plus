@@ -1,99 +1,54 @@
 import os
-import glob
-import platform
-
-# ==========================================
-# WINDOWS DLL FORCE-LOADER (GPU FIX)
-# ==========================================
-if platform.system() == "Windows":
-    print("[STARTUP] Hunting for NVIDIA DLLs...")
-    for path in glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.*\bin"):
-        if os.path.exists(path):
-            os.add_dll_directory(path)
-            print(f"-> Linked CUDA: {path}")
-    for path in glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin"):
-        if os.path.exists(path):
-            os.add_dll_directory(path)
-            print(f"-> Linked cuDNN: {path}")
-# ==========================================
-
-from fastapi import FastAPI, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+import sys
+import threading
 from contextlib import asynccontextmanager
-import time
-import json
-import psutil
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
+from pathlib import Path
 
-# Import Refactored Modules
-from .config import (
-    base_dir,
-    userdata_dir,
-    content_dir,
-    settings_file,
-    library_file,
-)
-from .utils import safe_save_json, safe_init_json
-import app.state as state_module
+# ==========================================
+# 1. PATH RESOLUTION
+# ==========================================
+base_dir = Path(__file__).parent
+base_dir_parent = base_dir.parent
+if str(base_dir_parent) not in sys.path:
+    sys.path.append(str(base_dir_parent))
+
+# ==========================================
+# 2. ROUTER IMPORTS
+# ==========================================
 from .routers import settings, library, tts, system, export, timer, theme
 
-# --- Lifespan Manager ---
+# ==========================================
+# 3. NON-BLOCKING BOOT SEQUENCE
+# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
-    start_time = time.time()
+    """
+    Runs when the server starts. We offload the heavy model loading 
+    to a background thread so it doesn't overlap or block the UI 
+    from being served instantly.
+    """
+    from .routers.system import load_engine_logic
+    
+    print("[SERVER] FastAPI is up! Initiating background engine boot...")
+    
+    # Start the model loader in a daemon thread so it runs invisibly
+    boot_thread = threading.Thread(target=load_engine_logic, daemon=True)
+    boot_thread.start()
+    
+    yield # The server runs and serves requests here
+    
+    print("[SERVER] Shutting down gracefully...")
 
-    # 1. Check directories
-    if not base_dir.exists():
-        print(f"[CRITICAL] Base dir missing: {base_dir}")
+# ==========================================
+# 4. FASTAPI APP INITIALIZATION
+# ==========================================
+app = FastAPI(title="LocalReader-Plus API", lifespan=lifespan)
 
-    # 2. Init JSON files
-    safe_init_json(
-        settings_file,
-        {
-            "pronunciationRules": [],
-            "ignoreList": [],
-            "voice_id": "af_bella",
-            "speed": 1.0,
-            "engine_mode": "gpu",
-            "ui_language": "en",
-        },
-    )
-    safe_init_json(library_file, [])
-
-    # 3. Clean temp content
-    try:
-        if content_dir.exists():
-            for f in content_dir.glob("temp_*"):
-                try:
-                    f.unlink()
-                except:
-                    pass
-    except Exception as e:
-        print(f"[STARTUP] Cleanup warning: {e}")
-
-    # 4. Load model (Auto-load on startup)
-    try:
-        from .routers.system import load_engine_logic
-
-        print("[STARTUP] Checking for existing models to auto-load...")
-        load_engine_logic()
-    except Exception as e:
-        print(f"[STARTUP] Auto-load failed (non-critical): {e}")
-
-    print(f"[STARTUP] Server ready in {time.time() - start_time:.2f}s")
-
-    yield
-
-    # Shutdown logic
-    state_module.sleep_timer.stop_timer()
-    print("[SHUTDOWN] Cleanup complete.")
-
-
-# --- App Definition ---
-app = FastAPI(lifespan=lifespan)
-
-# --- Middleware ---
+# CORS Setup to prevent frontend/backend port overlap issues
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -102,7 +57,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Routers ---
+# ==========================================
+# 5. REGISTER API ROUTERS
+# (Must be registered BEFORE the static UI mount)
+# ==========================================
 app.include_router(settings.router)
 app.include_router(library.router)
 app.include_router(tts.router)
@@ -111,27 +69,18 @@ app.include_router(export.router)
 app.include_router(timer.router)
 app.include_router(theme.router)
 
-# --- Static Files ---
-# Mount static assets
+# ==========================================
+# 6. MOUNT FRONTEND UI
+# ==========================================
 ui_dir = base_dir / "ui"
+
 if ui_dir.exists():
-    app.mount("/css", StaticFiles(directory=ui_dir / "css"), name="css")
-    app.mount("/js", StaticFiles(directory=ui_dir / "js"), name="js")
-    if (ui_dir / "assets").exists():
-        app.mount("/assets", StaticFiles(directory=ui_dir / "assets"), name="assets")
-    app.mount("/locales", StaticFiles(directory=base_dir / "locales"), name="locales")
-    app.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")
+    # Serves the index.html and all JS/CSS files
+    app.mount("/", StaticFiles(directory=str(ui_dir), html=True), name="ui")
 else:
-    print(f"[WARNING] UI directory not found: {ui_dir}")
+    print(f"[SERVER WARNING] UI directory not found at {ui_dir}! The GUI will not load.")
 
-
-# --- Legacy/Root Endpoints ---
-@app.get("/health")
-async def health_check():
-    process = psutil.Process()
-    return {"status": "ok", "memory_mb": process.memory_info().rss / 1024 / 1024}
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+# Safety fallback if someone hits a raw endpoint
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/index.html")
