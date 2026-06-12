@@ -1,0 +1,12 @@
+cff-version: 0.0.1
+message: "If you use this software, please cite both our work and the underlying F5-TTS model."
+title: "[LocalReader Plus]"
+version: -
+date-released: 2026-06
+url: "https://github.com/curium-rp/LocalReader-Plus/tree/engine]"
+references:
+  - type: software
+    title: "F5-TTS: A Fairytaler that Fakes Fluent and Faithful Speech with Flow Matching"
+    url: "https://github.com/swivid/f5-tts"
+    authors:
+      - name: "F5-TTS Shanghai Jiao Tong University and the University of Cambridge"
