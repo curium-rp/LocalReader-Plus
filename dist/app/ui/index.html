@@ -476,7 +476,6 @@
       <i data-lucide="audio-lines" class="w-5 h-5"></i>
     </button>
 
-    <!-- Sleep Timer Button -->
     <button
       id="timerSettingsBtn"
       class="voice-settings-button"
@@ -487,10 +486,9 @@
       <span id="timerBtnText" style="display: none"></span>
     </button>
 
+    <div id="drawerOverlay" class="drawer-overlay"></div>
 
-    <!-- Voice Settings Drawer -->
     <div id="voiceSettingsDrawer" class="voice-settings-drawer">
-      <!-- Drawer Header -->
       <div class="p-6 border-b border-zinc-800">
         <div class="flex items-center justify-between">
           <div>
@@ -498,243 +496,107 @@
               <i data-lucide="audio-lines" class="w-5 h-5 text-blue-500"></i>
               <span data-i18n="settings.drawer_title">Voice & Audio</span>
             </h2>
-            <p
-              class="text-xs text-zinc-500 mt-1"
-              data-i18n="settings.drawer_subtitle"
-            >
+            <p class="text-xs text-zinc-500 mt-1" data-i18n="settings.drawer_subtitle">
               Customize your reading experience
             </p>
           </div>
-          <button
-            id="closeDrawerBtn"
-            class="p-2 hover:bg-zinc-800 rounded-lg transition-colors"
-          >
+          <button id="closeDrawerBtn" class="p-2 hover:bg-zinc-800 rounded-lg transition-colors">
             <i data-lucide="x" class="w-5 h-5 text-zinc-400"></i>
           </button>
         </div>
       </div>
 
-      <!-- Drawer Content -->
-        <div class="mb-6">
+      <div class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
+        
+        <div>
           <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 flex items-center gap-2">
             <i data-lucide="mic" class="w-3.5 h-3.5"></i>
             <span data-i18n="settings.voice">Voice Select</span>
           </label>
+          <select id="voiceSelect" class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-3"></select>
           
-          <select
-            id="voiceSelect"
-            class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-3"
-          >
-            </select>
-
-          <button
-            id="openCloneModalBtn"
-            class="w-full flex items-center justify-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded transition-all text-xs font-bold"
-          >
+          <button id="openCloneModalBtn" class="w-full hidden flex items-center justify-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded transition-all text-xs font-bold">
             <i data-lucide="plus" class="w-3.5 h-3.5"></i>
             <span data-i18n="settings.clone_voice">Clone New Voice (F5)</span>
           </button>
         </div>
 
-        <!-- Speed Control -->
         <div>
-          <label
-            class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center justify-between"
-          >
+          <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 flex items-center justify-between">
             <span class="flex items-center gap-2">
               <i data-lucide="gauge" class="w-3.5 h-3.5"></i>
               <span data-i18n="settings.playback_speed">Playback Speed</span>
             </span>
-            <span class="text-blue-400 font-mono"
-              ><span id="speedVal">1.00</span>x</span
-            >
+            <span class="text-blue-400 font-mono"><span id="speedVal">1.00</span>x</span>
           </label>
-          <input
-            type="range"
-            id="speedRange"
-            min="0.5"
-            max="3.0"
-            step="0.05"
-            value="1.00"
-            class="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
-          />
+          <input type="range" id="speedRange" min="0.5" max="3.0" step="0.05" value="1.00" class="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600" />
           <div class="flex justify-between text-[9px] text-zinc-600 mt-1">
-            <span>0.5x</span>
-            <span>1.0x</span>
-            <span>2.0x</span>
-            <span>3.0x</span>
+            <span>0.5x</span><span>1.0x</span><span>2.0x</span><span>3.0x</span>
           </div>
         </div>
 
-        <!-- Header/Footer Filter -->
         <div>
-          <label
-            class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
-          >
+          <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 flex items-center gap-2">
             <i data-lucide="filter" class="w-3.5 h-3.5"></i>
             <span data-i18n="settings.header_footer">Header/Footer Filter</span>
           </label>
-          <select
-            id="headerFooterMode"
-            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-          >
-            <option value="off" data-i18n="settings.header_footer_off">
-              Off
-            </option>
-            <option value="clean" data-i18n="settings.header_footer_clean">
-              Clean (Remove)
-            </option>
-            <option value="dim" data-i18n="settings.header_footer_dim">
-              Dim (Show Faded)
-            </option>
+          <select id="headerFooterMode" class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20">
+            <option value="off" data-i18n="settings.header_footer_off">Off</option>
+            <option value="clean" data-i18n="settings.header_footer_clean">Clean (Remove)</option>
+            <option value="dim" data-i18n="settings.header_footer_dim">Dim (Show Faded)</option>
           </select>
-          <p
-            class="text-[9px] text-zinc-600 mt-2"
-            data-i18n="settings.header_footer_desc"
-          >
-            Automatically hide repeated page headers & footers
-          </p>
         </div>
 
-        <!-- Pause Settings -->
         <div class="border border-zinc-800 rounded-lg overflow-hidden">
-          <button
-            id="pauseSettingsToggle"
-            class="w-full flex items-center justify-between p-4 bg-zinc-900/50 hover:bg-zinc-900 transition-colors"
-          >
-            <span
-              class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2"
-            >
+          <button id="pauseSettingsToggle" class="w-full flex items-center justify-between p-4 bg-zinc-900/50 hover:bg-zinc-900 transition-colors">
+            <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
               <i data-lucide="clock" class="w-3.5 h-3.5"></i>
               <span data-i18n="settings.pause_settings">Pause Settings</span>
             </span>
-            <i
-              data-lucide="chevron-down"
-              id="pauseChevron"
-              class="w-4 h-4 text-zinc-500 transition-transform"
-            ></i>
+            <i data-lucide="chevron-down" id="pauseChevron" class="w-4 h-4 text-zinc-500 transition-transform"></i>
           </button>
-          <div
-            id="pauseSettingsContent"
-            class="hidden bg-zinc-950/50 p-4 space-y-4"
-          >
+          <div id="pauseSettingsContent" class="hidden bg-zinc-950/50 p-4 space-y-4">
             <div>
-              <label
-                class="text-[9px] text-zinc-500 mb-2 block flex items-center justify-between"
-              >
+              <label class="text-[9px] text-zinc-500 mb-2 flex items-center justify-between">
                 <span data-i18n="settings.comma_pause">Comma Pause</span>
-                <span class="font-mono text-blue-400"
-                  ><span id="pauseCommaVal">300</span>ms</span
-                >
+                <span class="font-mono text-blue-400"><span id="pauseCommaVal">300</span>ms</span>
               </label>
-              <input
-                type="range"
-                id="pauseComma"
-                min="0"
-                max="2000"
-                step="25"
-                value="300"
-                class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
-              />
+              <input type="range" id="pauseComma" min="0" max="2000" step="25" value="300" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600" />
             </div>
             <div>
-              <label
-                class="text-[9px] text-zinc-500 mb-2 block flex items-center justify-between"
-              >
+              <label class="text-[9px] text-zinc-500 mb-2 flex items-center justify-between">
                 <span data-i18n="settings.period_pause">Period Pause</span>
-                <span class="font-mono text-blue-400"
-                  ><span id="pausePeriodVal">600</span>ms</span
-                >
+                <span class="font-mono text-blue-400"><span id="pausePeriodVal">600</span>ms</span>
               </label>
-              <input
-                type="range"
-                id="pausePeriod"
-                min="0"
-                max="2000"
-                step="25"
-                value="600"
-                class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
-              />
+              <input type="range" id="pausePeriod" min="0" max="2000" step="25" value="600" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600" />
             </div>
             <div>
-              <label
-                class="text-[9px] text-zinc-500 mb-2 block flex items-center justify-between"
-              >
+              <label class="text-[9px] text-zinc-500 mb-2 flex items-center justify-between">
                 <span data-i18n="settings.question_pause">Question Pause</span>
-                <span class="font-mono text-blue-400"
-                  ><span id="pauseQuestionVal">600</span>ms</span
-                >
+                <span class="font-mono text-blue-400"><span id="pauseQuestionVal">600</span>ms</span>
               </label>
-              <input
-                type="range"
-                id="pauseQuestion"
-                min="0"
-                max="2000"
-                step="25"
-                value="600"
-                class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
-              />
+              <input type="range" id="pauseQuestion" min="0" max="2000" step="25" value="600" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600" />
             </div>
             <div>
-              <label
-                class="text-[9px] text-zinc-500 mb-2 block flex items-center justify-between"
-              >
-                <span data-i18n="settings.exclamation_pause"
-                  >Exclamation Pause</span
-                >
-                <span class="font-mono text-blue-400"
-                  ><span id="pauseExclamationVal">600</span>ms</span
-                >
+              <label class="text-[9px] text-zinc-500 mb-2 flex items-center justify-between">
+                <span data-i18n="settings.exclamation_pause">Exclamation Pause</span>
+                <span class="font-mono text-blue-400"><span id="pauseExclamationVal">600</span>ms</span>
               </label>
-              <input
-                type="range"
-                id="pauseExclamation"
-                min="0"
-                max="2000"
-                step="25"
-                value="600"
-                class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
-              />
+              <input type="range" id="pauseExclamation" min="0" max="2000" step="25" value="600" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600" />
             </div>
             <div>
-              <label
-                class="text-[9px] text-zinc-500 mb-2 block flex items-center justify-between"
-              >
+              <label class="text-[9px] text-zinc-500 mb-2 flex items-center justify-between">
                 <span data-i18n="settings.colon_pause">Colon Pause</span>
-                <span class="font-mono text-blue-400"
-                  ><span id="pauseColonVal">400</span>ms</span
-                >
+                <span class="font-mono text-blue-400"><span id="pauseColonVal">400</span>ms</span>
               </label>
-              <input
-                type="range"
-                id="pauseColon"
-                min="0"
-                max="2000"
-                step="25"
-                value="400"
-                class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
-              />
+              <input type="range" id="pauseColon" min="0" max="2000" step="25" value="400" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600" />
             </div>
             <div>
-              <label
-                class="text-[9px] text-zinc-500 mb-2 block flex items-center justify-between"
-              >
-                <span data-i18n="settings.semicolon_pause"
-                  >Semicolon Pause</span
-                >
-                <span class="font-mono text-blue-400"
-                  ><span id="pauseSemicolonVal">400</span>ms</span
-                >
+              <label class="text-[9px] text-zinc-500 mb-2 flex items-center justify-between">
+                <span data-i18n="settings.semicolon_pause">Semicolon Pause</span>
+                <span class="font-mono text-blue-400"><span id="pauseSemicolonVal">400</span>ms</span>
               </label>
-              <input
-                type="range"
-                id="pauseSemicolon"
-                min="0"
-                max="2000"
-                step="25"
-                value="400"
-                class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
-              />
+              <input type="range" id="pauseSemicolon" min="0" max="2000" step="25" value="400" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600" />
             </div>
           </div>
         </div>
