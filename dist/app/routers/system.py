@@ -16,14 +16,18 @@ try:
     from logic.downloader import (
         download_kokoro_model,
         start_f5_setup,       
-        load_f5_into_memory   
+        load_f5_into_memory,
+        start_fish_setup,      # <-- Added Fish TTS
+        load_fish_into_memory  # <-- Added Fish TTS
     )
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from downloader import (
         download_kokoro_model,
         start_f5_setup,       
-        load_f5_into_memory   
+        load_f5_into_memory,
+        start_fish_setup,      # <-- Added Fish TTS
+        load_fish_into_memory  # <-- Added Fish TTS
     )
 
 router = APIRouter()
@@ -52,6 +56,32 @@ def load_engine_logic(requested_mode=None):
             requested_mode = "gpu"
 
     # ==========================================
+    # FISH-TTS ENGINE BOOT SEQUENCE (STRICT)
+    # ==========================================
+    if active_engine == "fish":
+        print(f"[ENGINE] Initializing Fish-TTS model...")
+        
+        try:
+            # Unload others to free VRAM
+            if getattr(state_module, 'kokoro', None) is not None:
+                print("[ENGINE] Unloading Kokoro to free VRAM...")
+                state_module.kokoro = None 
+            
+            if getattr(state_module, 'f5_model', None) is not None:
+                print("[ENGINE] Unloading F5 to free VRAM...")
+                state_module.f5_model = None
+                state_module.f5_model_loaded = False
+
+            load_fish_into_memory()
+            system_status["is_loading"] = False
+            return
+        except Exception as e:
+            system_status["last_error"] = f"Failed to load Fish-TTS: {str(e)}"
+            print(f"[ENGINE ERROR] {system_status['last_error']}")
+            system_status["is_loading"] = False
+            return
+
+    # ==========================================
     # F5-TTS ENGINE BOOT SEQUENCE (STRICT)
     # ==========================================
     if active_engine == "f5":
@@ -70,9 +100,15 @@ def load_engine_logic(requested_mode=None):
             return
 
         try:
-            if state_module.kokoro is not None:
+            # Unload others to free VRAM
+            if getattr(state_module, 'kokoro', None) is not None:
                 print("[ENGINE] Unloading Kokoro to free VRAM...")
                 state_module.kokoro = None 
+                
+            if getattr(state_module, 'fish_engine', None) is not None:
+                print("[ENGINE] Unloading Fish to free VRAM...")
+                state_module.fish_engine = None
+                state_module.fish_model_loaded = False
             
             load_f5_into_memory()
             system_status["is_loading"] = False
@@ -112,14 +148,20 @@ def load_engine_logic(requested_mode=None):
         return
 
     try:
-        if state_module.kokoro is not None:
+        if getattr(state_module, 'kokoro', None) is not None:
             print("[ENGINE] Unloading previous Kokoro model...")
             state_module.kokoro = None  
             
+        # Unload others to free VRAM
         if getattr(state_module, 'f5_model', None) is not None:
             print("[ENGINE] Unloading F5 to free VRAM...")
             state_module.f5_model = None
             state_module.f5_model_loaded = False
+            
+        if getattr(state_module, 'fish_engine', None) is not None:
+            print("[ENGINE] Unloading Fish to free VRAM...")
+            state_module.fish_engine = None
+            state_module.fish_model_loaded = False
 
         print(f"[ENGINE] Initializing Kokoro {actual_mode.upper()} model...")
 
@@ -179,17 +221,19 @@ async def get_status():
         "cpu": (models_dir / "kokoro.int8.onnx").exists(),
         "voices": (models_dir / "voices.bin").exists(),
         "f5": f5_ckpt.exists(), 
+        "fish": (models_dir / "fish").exists(),  # <-- Added Fish check
     }
 
     import app.state as state_module
     f5_loaded = getattr(state_module, 'f5_model_loaded', False)
+    fish_loaded = getattr(state_module, 'fish_model_loaded', False)  # <-- Added Fish loaded check
 
     return {
-        "model_loaded": (state_module.kokoro is not None) or f5_loaded, 
+        "model_loaded": (state_module.kokoro is not None) or f5_loaded or fish_loaded, 
         "is_loading": system_status["is_loading"],
         "is_downloading": system_status["is_downloading"],
         "last_error": system_status["last_error"],
-        "voices": state_module.kokoro.get_voices() if state_module.kokoro else [],
+        "voices": state_module.kokoro.get_voices() if getattr(state_module, 'kokoro', None) else [],
         "engine_mode": current_engine_mode,
         "available_models": available_models,
     }
@@ -199,6 +243,27 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
     if system_status["is_downloading"]:
         return {"status": "already_running"}
 
+    # --- Fish Setup Task ---
+    if engine == "fish":
+        def fish_setup_task():
+            system_status["is_downloading"] = True
+            system_status["last_error"] = None
+            try:
+                print(f"[SETUP] Starting download & setup for Fish-TTS...")
+                start_fish_setup() 
+                load_engine_logic()
+                print("[SETUP] Fish-TTS Setup complete!")
+            except Exception as e:
+                msg = f"Fish setup failed: {str(e)}"
+                system_status["last_error"] = msg
+                print(f"[SETUP ERROR] {msg}")
+            finally:
+                system_status["is_downloading"] = False
+        
+        background_tasks.add_task(fish_setup_task)
+        return {"status": "started", "message": "Fish-TTS setup started"}
+
+    # --- F5 Setup Task ---
     if engine == "f5":
         def f5_setup_task():
             system_status["is_downloading"] = True
@@ -218,6 +283,7 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None, e
         background_tasks.add_task(f5_setup_task)
         return {"status": "started", "message": "F5-TTS setup started"}
 
+    # --- Kokoro Setup Task ---
     def setup_task():
         system_status["is_downloading"] = True
         system_status["last_error"] = None

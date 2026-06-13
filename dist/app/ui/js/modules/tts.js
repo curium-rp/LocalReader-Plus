@@ -128,6 +128,7 @@ export async function playNext() {
     playAudioBuffer(state.audioBufferCache.get(lookupKey));
     return;
   }
+  state.fetchingKeys.add(lookupKey);
 
   try {
     const res = await fetch(`${API_URL}/api/synthesize`, {
@@ -174,8 +175,34 @@ export async function playNext() {
     console.error("Synthesis error:", e);
     showToast(e.message);
     stopPlayback();
-  }
-}
+  } finally {
+    // SURGICAL FIX: Respect the Lock
+      // ==========================================
+      if (!state.fetchingKeys) state.fetchingKeys = new Set();
+      
+      // If we already have it in RAM, or are currently fetching it, skip it!
+      if (state.audioBufferCache.has(cacheKey) || state.fetchingKeys.has(cacheKey)) continue;
+
+      // Lock the key so playNext() knows we are working on it
+      state.fetchingKeys.add(cacheKey);
+
+      // ==========================================
+      // AWAIT FETCH: Wait for the GPU to finish before asking for the next one
+      // ==========================================
+      const res = await fetch(`/api/synthesize`, {
+// ... (Keep the rest of your fetch code exactly the same until the end of the if(res.ok) block)
+
+      if (res.ok) {
+        const blob = await res.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
+        state.audioBufferCache.set(cacheKey, audioBuffer);
+        console.log(`[Sliding Window] Ready: Page ${targetPageIndex}, Sentence ${targetSentenceIndex}`);
+      }
+      
+      // ALWAYS unlock the key when finished
+      state.fetchingKeys.delete(cacheKey);
+    }
 
 export function togglePlayback() {
   const playIcon = document.getElementById("playIcon");
@@ -358,93 +385,20 @@ export async function preCacheNextSentences() {
 }
 
 export async function loadVoices() {
-  const voiceSelect = document.getElementById("voiceSelect");
   try {
-    const currentVoice = voiceSelect.value;
-    const data = await fetchJSON(`/api/voices/available`);
-    const categories = data.categories || {};
-
-    voiceSelect.innerHTML = "";
-    const sortedKeys = Object.keys(categories).sort((a, b) => {
-      if (a.startsWith("en") && !b.startsWith("en")) return -1;
-      if (!a.startsWith("en") && b.startsWith("en")) return 1;
-      return a.localeCompare(b);
-    });
-
-    sortedKeys.forEach((langCode) => {
-      const category = categories[langCode];
-      const group = document.createElement("optgroup");
-      // Try to translate the language code using loaded translations, fallback to label from backend
-      group.label = state.translations?.languages?.[langCode] || category.label;
-      category.voices.forEach((voice) => {
-        // Filter out voices with Indian accents as requested (handles prefixes like v0_alpha)
-        const voiceId = voice.id.toLowerCase();
-        const cleanId = voiceId.includes("_")
-          ? voiceId.split("_").pop()
-          : voiceId;
-        if (["alpha", "beta", "omega", "psi"].includes(cleanId)) return;
-
-        const option = document.createElement("option");
-        option.value = voice.id;
-
-        // Dynamic label generation
-        let label = voice.name;
-        const attrs = state.translations?.voice_attributes || {};
-
-        // Helper to get attributes
-        const getAttrs = (vid) => {
-          if (vid.startsWith("af_")) return [attrs.american, attrs.female];
-          if (vid.startsWith("am_")) return [attrs.american, attrs.male];
-          if (vid.startsWith("bf_")) return [attrs.british, attrs.female];
-          if (vid.startsWith("bm_")) return [attrs.british, attrs.male];
-          if (vid.startsWith("ff_")) return [attrs.french, attrs.female];
-          if (vid.startsWith("jf_")) return [attrs.japanese, attrs.female];
-          if (vid.startsWith("jm_")) return [attrs.japanese, attrs.male];
-          if (vid.startsWith("ef_")) return [attrs.spanish, attrs.female];
-          if (vid.startsWith("em_")) return [attrs.spanish, attrs.male];
-          if (vid.startsWith("zf_")) return [attrs.chinese, attrs.female];
-          if (vid.startsWith("zm_")) return [attrs.chinese, attrs.male];
-          if (vid.startsWith("if_")) return [attrs.italian, attrs.female];
-          if (vid.startsWith("im_")) return [attrs.italian, attrs.male];
-          if (vid.startsWith("pf_")) return [attrs.portuguese, attrs.female];
-          if (vid.startsWith("pm_")) return [attrs.portuguese, attrs.male];
-
-          if (vid === "santa") return [attrs.spanish, attrs.male];
-
-          return [];
-        };
-
-        const [region, gender] = getAttrs(voice.id);
-        if (region && gender) {
-          label = `${voice.name} (${region} ${gender})`;
-        } else {
-          // Fallback to legacy static list if available, or just name
-          label = state.translations?.voices?.[voice.id] || voice.name;
-        }
-
-        option.textContent = label;
-        group.appendChild(option);
-      });
-      voiceSelect.appendChild(group);
-    });
-
-    if (currentVoice) {
-      const exists = Array.from(voiceSelect.options).some(
-        (opt) => opt.value === currentVoice,
-      );
-      if (exists) voiceSelect.value = currentVoice;
+    // Delegate all UI and Voice loading to the master function in app.js
+    // This perfectly supports Kokoro, F5, and Fish-TTS cloned voices!
+    if (typeof window.refreshVoiceDropdown === 'function') {
+      await window.refreshVoiceDropdown();
+      return true;
     }
-
-    if (voiceSelect.options.length === 0) {
-      const option = document.createElement("option");
-      option.textContent = "No voices found (Download Engine)";
-      option.disabled = true;
-      voiceSelect.appendChild(option);
-    }
-    return true;
+    return false;
   } catch (error) {
     console.error("Error loading voices:", error);
-    voiceSelect.innerHTML = "<option disabled>Error loading voices</option>";
+    const voiceSelect = document.getElementById("voiceSelect");
+    if (voiceSelect) {
+        voiceSelect.innerHTML = "<option disabled>Error loading voices</option>";
+    }
     return false;
   }
 }

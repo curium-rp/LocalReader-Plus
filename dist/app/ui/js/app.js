@@ -409,9 +409,12 @@ if (engineMode) {
   engineMode.onchange = async (e) => {
     const val = e.target.value;
     
-    if (val === "f5") {
+if (val === "f5") {
       state.ttsEngine = "f5";
       state.engineMode = "gpu"; 
+    } else if (val === "fish") {      
+      state.ttsEngine = "fish";
+      state.engineMode = "gpu";
     } else {
       state.ttsEngine = "kokoro";
       state.engineMode = val; 
@@ -429,11 +432,12 @@ if (engineMode) {
   };
 }
 
+// --- Fix 1: Setup Button ---
 const setupBtn = document.getElementById("setupBtn");
 if (setupBtn) {
   setupBtn.onclick = async () => {
     try {
-      const activeEngine = state.ttsEngine === "f5" ? "f5" : "kokoro";
+      const activeEngine = state.ttsEngine; // <-- SURGICAL FIX: Automatically uses f5, fish, or kokoro
       await fetchJSON(`/api/system/setup?model_type=${state.engineMode}&engine=${activeEngine}`, {
         method: "POST",
       });
@@ -763,6 +767,8 @@ async function startStatusPolling() {
       let selModel = false;
       if (state.ttsEngine === "f5") {
         selModel = status.available_models?.f5;
+      } else if (state.ttsEngine === "fish") { 
+        selModel = status.available_models?.fish;
       } else {
         selModel = state.engineMode === "gpu" ? status.available_models?.gpu : status.available_models?.cpu;
       }
@@ -809,29 +815,24 @@ window.refreshVoiceDropdown = async () => {
   try {
     const engineToFetch = state.ttsEngine || "kokoro";
     
-    // Connect to the separate Python API
-    const endpoint = engineToFetch === "f5" ? "/api/f5/voices" : "/api/voices/available?engine=kokoro";
-    const response = await fetch(endpoint);
+    // SURGICAL FIX: Connect to the universal Python API!
+    const response = await fetch(`/api/voices/available?engine=${engineToFetch}`);
     const data = await response.json();
     
     const voiceSelect = document.getElementById("voiceSelect");
-    const cloneBtn = document.getElementById("openCloneModalBtn"); // The New Box
+    const cloneBtn = document.getElementById("openCloneModalBtn"); 
     if (!voiceSelect) return;
 
-    // ==========================================
-    // BOX VISIBILITY: F5 (Blue) vs Kokoro (Faded)
-    // ==========================================
+    // BOX VISIBILITY: F5 & Fish (Blue) vs Kokoro (Faded)
     if (cloneBtn) {
-        if (engineToFetch === "f5") {
-            // F5: Box is blue, glowing, and clickable
+        if (engineToFetch === "f5" || engineToFetch === "fish") {
             cloneBtn.disabled = false;
             cloneBtn.className = "w-full bg-blue-600/10 text-xs font-bold border border-blue-500/50 rounded px-2 py-2 outline-none text-blue-400 hover:border-blue-500 hover:bg-blue-600/20 transition-all mb-2 flex items-center justify-center gap-2 shadow-[0_0_10px_rgba(59,130,246,0.1)] cursor-pointer";
-            cloneBtn.innerHTML = `<i data-lucide="plus" class="w-3.5 h-3.5"></i><span>Create Voice Clone (F5)</span>`;
+            cloneBtn.innerHTML = `<i data-lucide="plus" class="w-3.5 h-3.5"></i><span>Create Voice Clone (${engineToFetch.toUpperCase()})</span>`;
         } else {
-            // Kokoro: Box is greyed out, blurred text, and disabled
             cloneBtn.disabled = true;
             cloneBtn.className = "w-full bg-zinc-900/30 text-xs font-bold border border-zinc-800/50 rounded px-2 py-2 outline-none text-zinc-600 cursor-not-allowed mb-2 flex items-center justify-center gap-2 opacity-50";
-            cloneBtn.innerHTML = `<i data-lucide="mic-off" class="w-3.5 h-3.5"></i><span>Clone Voice (Requires F5)</span>`;
+            cloneBtn.innerHTML = `<i data-lucide="mic-off" class="w-3.5 h-3.5"></i><span>Clone Voice (Requires F5 or Fish)</span>`;
         }
         if (typeof renderIcons === 'function') renderIcons();
     }
@@ -839,12 +840,11 @@ window.refreshVoiceDropdown = async () => {
     const currentVal = state.voiceId || voiceSelect.value;
     voiceSelect.innerHTML = ""; 
 
-    // ==========================================
     // POPULATE VOICES
-    // ==========================================
-    if (engineToFetch === "f5") {
-        if (data.voices) {
-            data.voices.forEach(v => {
+    if (engineToFetch === "f5" || engineToFetch === "fish") {
+        const catName = engineToFetch === "f5" ? "F5" : "Fish";
+        if (data.categories && data.categories[catName]) {
+            data.categories[catName].voices.forEach(v => {
                 const opt = document.createElement("option");
                 opt.value = v.id;
                 opt.textContent = v.name;
@@ -876,96 +876,3 @@ window.refreshVoiceDropdown = async () => {
     console.error("Failed to refresh voices:", e);
   }
 };
-
-// ==========================================
-// 2. DROPDOWN LISTENER
-// ==========================================
-document.addEventListener("change", async (e) => {
-    if (e.target && e.target.id === "voiceSelect") {
-        state.voiceId = e.target.value; 
-        stopPlayback();
-        state.audioBufferCache.clear();
-        try {
-            await fetchJSON("/api/system/clear-cache", { method: "POST" });
-        } catch (err) {}
-        await saveSettings();
-    }
-});
-
-// ==========================================
-// 3. CLONE MODAL BUTTON LOGIC
-// ==========================================
-const cloneModal = document.getElementById("cloneVoiceModal");
-const cloneBtn = document.getElementById("openCloneModalBtn"); // The new button
-const cancelCloneBtn = document.getElementById("cancelCloneBtn");
-const submitCloneBtn = document.getElementById("submitCloneBtn");
-
-// Standard Button click -> Opens the Modal Popup!
-if (cloneBtn && cloneModal) {
-  cloneBtn.onclick = () => {
-    cloneModal.classList.remove("hidden");
-  };
-}
-
-if (cancelCloneBtn && cloneModal) {
-  cancelCloneBtn.onclick = () => {
-    cloneModal.classList.add("hidden");
-    document.getElementById("cloneVoiceName").value = "";
-    document.getElementById("cloneVoiceText").value = "";
-    document.getElementById("cloneVoiceFile").value = "";
-  };
-}
-
-if (submitCloneBtn) {
-  submitCloneBtn.onclick = async () => {
-    const nameInput = document.getElementById("cloneVoiceName").value.trim();
-    const textInput = document.getElementById("cloneVoiceText").value.trim();
-    const fileInput = document.getElementById("cloneVoiceFile").files[0];
-
-    // Validation
-    if (!nameInput) { showToast("Please enter a voice name."); return; }
-    if (!textInput) { showToast("Please enter the exact transcript of the audio."); return; }
-    if (!fileInput) { showToast("Please select a .wav audio file."); return; }
-    if (!fileInput.name.toLowerCase().endsWith(".wav")) { showToast("Only .wav files are supported!"); return; }
-
-    const formData = new FormData();
-    formData.append("name", nameInput);
-    formData.append("text", textInput);
-    formData.append("file", fileInput);
-
-    // Set Loading State
-    const originalText = submitCloneBtn.innerHTML;
-    submitCloneBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span>Cloning & Generating Sample...</span>`;
-    submitCloneBtn.disabled = true;
-    if (typeof renderIcons === 'function') renderIcons();
-
-    try {
-      // Connect to your separate F5 logic
-      const response = await fetch("/api/f5/clone", { method: "POST", body: formData });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.detail || "Failed to clone voice.");
-      
-      showToast(result.message || "Voice cloned perfectly!");
-      cancelCloneBtn.click(); // Hide the popup
-      
-      // Reload the dropdown to show the new voice
-      await window.refreshVoiceDropdown();
-      
-      // Auto-Select the new voice instantly
-      const voiceSelect = document.getElementById("voiceSelect");
-      if (voiceSelect) {
-          voiceSelect.value = result.id;
-          state.voiceId = result.id;
-          await saveSettings(); 
-      }
-    } catch (error) {
-      console.error(error);
-      showToast(error.message);
-    } finally {
-      // Restore Button
-      submitCloneBtn.innerHTML = originalText;
-      submitCloneBtn.disabled = false;
-      if (typeof renderIcons === 'function') renderIcons();
-    }
-  };
-}

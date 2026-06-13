@@ -187,12 +187,14 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, pause_settings: 
         return safe_concat(final_segments), sample_rate
     return np.zeros(int(sample_rate * 0.1), dtype=np.float32), sample_rate
 
-def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list):
+# --- Update this function in tts.py ---
+def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list, engine):
     lang = get_language_from_voice(voice)
     cache_data = {
         "text": text, "voice": voice, "language": lang, "speed": speed,
         "pause_settings": pause_settings, "rules": [str(r) for r in rules],
         "ignore_list": sorted(ignore_list),
+        "engine": engine,  # <-- SURGICAL FIX: Isolates the cache by engine
     }
     cache_string = json.dumps(cache_data, sort_keys=True)
     return hashlib.md5(cache_string.encode("utf-8")).hexdigest()
@@ -217,7 +219,24 @@ async def get_voices(engine: str = None):
 
     categories = {}
 
-    # 2. F5-TTS CLONED VOICES ONLY
+    # 2. FISH-TTS CLONED VOICES ONLY
+    if active_engine == "fish":
+        fish_voices_dir = base_dir / "voices" / "fish"
+        fish_voices_dir.mkdir(parents=True, exist_ok=True)
+        
+        voices = []
+        for item in fish_voices_dir.iterdir():
+            if item.is_dir() and (item / "ref.wav").exists():
+                if item.name != "default": 
+                    voices.append({"id": item.name, "name": item.name.replace("_", " ").title()})
+                
+        if len(voices) == 0:
+            voices.append({"id": "default", "name": "Default Unconditioned Voice"})
+            
+        categories["Fish"] = {"label": "Fish-TTS Voices", "voices": voices}
+        return {"categories": categories}
+
+    # 3. F5-TTS CLONED VOICES ONLY
     if active_engine == "f5":
         f5_voices_dir = base_dir / "voices" / "f5"
         f5_voices_dir.mkdir(parents=True, exist_ok=True)
@@ -234,8 +253,8 @@ async def get_voices(engine: str = None):
         categories["F5"] = {"label": "F5 Cloned Voices", "voices": voices}
         return {"categories": categories}
 
-    # 3. KOKORO PRESET VOICES ONLY
-    if not state_module.kokoro:
+    # 4. KOKORO PRESET VOICES ONLY
+    if not getattr(state_module, 'kokoro', None):
         return {"categories": {}}
 
     try:
@@ -278,7 +297,12 @@ async def get_voices(engine: str = None):
         return {"categories": {}}
 
 @router.post("/api/voices/clone")
-async def clone_voice(name: str = Form(...), text: str = Form(...), file: UploadFile = File(...)):
+async def clone_voice(
+    name: str = Form(...), 
+    text: str = Form(...), 
+    file: UploadFile = File(...), 
+    engine: str = Form("f5") # <-- Accept the engine parameter!
+):
     try:
         folder_name = name.strip().lower().replace(" ", "_")
         if not folder_name:
@@ -287,7 +311,8 @@ async def clone_voice(name: str = Form(...), text: str = Form(...), file: Upload
         if not file.filename.lower().endswith('.wav'):
             raise HTTPException(status_code=400, detail="Only .wav files are supported for voice cloning.")
 
-        voice_dir = base_dir / "voices" / "f5" / folder_name
+        # SURGICAL FIX: Save to the correct folder!
+        voice_dir = base_dir / "voices" / engine / folder_name
         voice_dir.mkdir(parents=True, exist_ok=True)
 
         audio_path = voice_dir / "ref.wav"
@@ -339,6 +364,122 @@ async def synthesize_kokoro_logic(text, request, pause_settings, state_module):
                 chunk_audios.append(chunk_samples.flatten())
                 sr = current_sr
             return safe_concat(chunk_audios), sr
+
+async def synthesize_fish_logic(text, request, state_module):
+    # SURGICAL FIX: Import the exact schema types required by Fish-TTS
+    from fish_speech.utils.schema import ServeTTSRequest, ServeReferenceAudio
+
+    voices_dir = Path(base_dir) / "voices" / "fish"
+    voice_folder = voices_dir / request.voice
+    
+    ref_audio_path = voice_folder / "ref.wav"
+    ref_text_path = voice_folder / "ref.txt"
+
+    references = []
+
+    # 1. Properly load Reference Audio into the ServeReferenceAudio Schema
+    if ref_audio_path.exists() and ref_text_path.exists():
+        try:
+            with open(ref_text_path, "r", encoding="utf-8") as f:
+                ref_text = f.read().strip()
+            with open(ref_audio_path, "rb") as f:
+                ref_audio_bytes = f.read()
+            
+            # Pack it into the specific Fish-TTS schema object
+            references.append(ServeReferenceAudio(audio=ref_audio_bytes, text=ref_text))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read Fish reference files: {str(e)}")
+    
+    fish_engine = getattr(state_module, 'fish_engine', None)
+    if fish_engine is None:
+        raise HTTPException(status_code=503, detail="Fish-TTS model is not loaded in memory. Please initialize it.")
+
+    print(f"[FISH-TTS] Generating audio for voice: '{request.voice}' | Text length: {len(text)}")
+
+    try:
+        def run_fish_inference():
+            # Build the exact request schema matching the API
+            req = ServeTTSRequest(
+                text=text,
+                references=references,  
+                chunk_length=400,          # <-- INCREASED from 200 (Allows longer breaths)
+                max_new_tokens=2048,       # <-- ADDED: Prevents the AI from cutting off early
+                top_p=0.8,                 # <-- Optional: Standard temp for stable generation
+                repetition_penalty=1.1,    # <-- Optional: Prevents stuttering
+                format="wav",
+                normalize=True
+            )
+            
+            audio_chunks = []
+            sample_rate = 44100 # Default Fish SR
+            
+            # 3. Iterate through Fish's generator and collect chunks sequentially
+            for result in fish_engine.inference(req):
+                if result.code in ["segment", "final"]:
+                    if isinstance(result.audio, tuple):
+                        sample_rate = result.audio[0]
+                        audio_chunks.append(result.audio[1])  # Extract numpy array
+                elif result.code == "error":
+                    raise Exception(str(result.error))
+
+            # 4. Smart Pause Injection (Tail-end padding)
+        # --- UPDATE INSIDE tts.py (synthesize_fish_logic) ---
+
+            # 4. Smart Speed & Pause Injection
+            if audio_chunks:
+                final_audio = np.concatenate(audio_chunks)
+                
+                # ==========================================
+                # SURGICAL FIX: Post-Process Speed for Fish
+                # ==========================================
+                target_speed = float(getattr(request, 'speed', 1.0))
+                if target_speed != 1.0:
+                    try:
+                        import librosa
+                        # Pitch-preserving time stretch
+                        final_audio = librosa.effects.time_stretch(final_audio, rate=target_speed)
+                    except ImportError:
+                        print("[FISH-TTS WARNING] 'librosa' is not installed. Cannot adjust speed. Run: pip install librosa")
+                
+                # Fetch pause settings from the frontend request
+                pause_settings = getattr(request, 'pause_settings', {}) or {}
+                extra_silence_ms = 0
+                
+                # Check how the text ends and apply the matching UI pause setting
+                if text.endswith('\n'):
+                    extra_silence_ms = pause_settings.get("newline", 800)
+                elif text.rstrip().endswith('.') or text.rstrip().endswith('。'):
+                    extra_silence_ms = pause_settings.get("period", 600)
+                elif text.rstrip().endswith('?') or text.rstrip().endswith('？'):
+                    extra_silence_ms = pause_settings.get("question", 600)
+                elif text.rstrip().endswith('!') or text.rstrip().endswith('！'):
+                    extra_silence_ms = pause_settings.get("exclamation", 600)
+
+                # Dynamically append the exact milliseconds of silence
+                if extra_silence_ms > 0:
+                    # SURGICAL FIX: Shrink the pause gap if reading faster!
+                    if target_speed != 1.0:
+                        extra_silence_ms = int(extra_silence_ms / target_speed)
+                        
+                    silence_samples = int((extra_silence_ms / 1000.0) * sample_rate)
+                    silence_array = np.zeros(silence_samples, dtype=np.float32)
+                    final_audio = np.concatenate([final_audio, silence_array])
+                    
+                return final_audio, sample_rate
+            else:
+                return np.zeros(int(44100 * 0.1), dtype=np.float32), 44100
+        # Execute the generator loop safely in a thread to unblock FastAPI
+        wav, sr = await asyncio.to_thread(run_fish_inference)
+        
+        # Ensure correct float32 type for soundfile pipeline and caching
+        return wav.astype(np.float32), sr
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[FISH-TTS ERROR] Synthesis crashed: {str(e)}")
+        return np.zeros(int(44100 * 0.1), dtype=np.float32), 44100
+
 
 async def synthesize_f5_logic(text, request, state_module):
     voices_dir = Path(base_dir) / "voices" / "f5"
@@ -413,15 +554,24 @@ async def synthesize(request: SynthesisRequest):
     # ==========================================
     has_kokoro = getattr(state_module, 'kokoro', None) is not None
     has_f5 = getattr(state_module, 'f5_model', None) is not None
-    
+    has_fish = getattr(state_module, 'fish_engine', None) is not None
+
+
     # Safely get engine from request, fallback to kokoro if missing
     actual_engine = getattr(request, 'engine', 'kokoro')
     
-    if actual_engine == "kokoro" and not has_kokoro and has_f5:
-        actual_engine = "f5"
-    elif actual_engine == "f5" and not has_f5 and has_kokoro:
-        actual_engine = "kokoro"
-    elif not has_kokoro and not has_f5:
+    # Smart Fallback logic
+    if actual_engine == "kokoro" and not has_kokoro:
+        if has_fish: actual_engine = "fish"
+        elif has_f5: actual_engine = "f5"
+    elif actual_engine == "f5" and not has_f5:
+        if has_kokoro: actual_engine = "kokoro"
+        elif has_fish: actual_engine = "fish"
+    elif actual_engine == "fish" and not has_fish:
+        if has_kokoro: actual_engine = "kokoro"
+        elif has_f5: actual_engine = "f5"
+        
+    if not has_kokoro and not has_f5 and not has_fish:
         raise HTTPException(status_code=503, detail="No Engine is loaded in memory. Please Setup Voice Engine.")
 
     try:
@@ -441,9 +591,10 @@ async def synthesize(request: SynthesisRequest):
 
         pause_settings = request.pause_settings or {}
         
+        # SURGICAL FIX: Pass 'actual_engine' into the cache generator
         cache_key = generate_cache_key(
             text, request.voice, request.speed, pause_settings, 
-            request.rules or [], request.ignore_list or []
+            request.rules or [], request.ignore_list or [], actual_engine
         )
 
         cached_audio = audio_cache.get(cache_key)
@@ -454,14 +605,15 @@ async def synthesize(request: SynthesisRequest):
                 headers={"Content-Length": str(len(cached_audio))},
             )
 
-        # ==========================================
+
         # 3. ENGINE ROUTING
-        # ==========================================
         samples = None
         sample_rate = 24000
 
         if actual_engine == "kokoro":
             samples, sample_rate = await synthesize_kokoro_logic(text, request, pause_settings, state_module)
+        elif actual_engine == "fish":
+            samples, sample_rate = await synthesize_fish_logic(text, request, state_module)
         elif actual_engine == "f5":
             samples, sample_rate = await synthesize_f5_logic(text, request, state_module)
 

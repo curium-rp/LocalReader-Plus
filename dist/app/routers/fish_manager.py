@@ -1,32 +1,42 @@
+from fastapi import APIRouter, HTTPException
 import shutil
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pathlib import Path
-from ..config import base_dir
+import sys
+
+# Add app to path for imports
+base_dir_parent = Path(__file__).parent.parent.parent
+if str(base_dir_parent) not in sys.path:
+    sys.path.append(str(base_dir_parent))
+
+from app.config import base_dir
 
 router = APIRouter()
 
-@router.post("/api/fish/voice/add")
-async def add_fish_voice(name: str = Form(...), text: str = Form(...), file: UploadFile = File(...)):
-    try:
-        folder_name = name.strip().lower().replace(" ", "_")
-        if not folder_name:
-            raise HTTPException(status_code=400, detail="Voice name cannot be empty.")
-            
-        if not file.filename.lower().endswith(('.wav', '.mp3', '.flac', '.ogg')):
-            raise HTTPException(status_code=400, detail="Only audio files are supported for voice reference.")
+@router.get("/api/fish/voices")
+async def list_fish_voices():
+    """Helper endpoint to list all custom cloned voices for Fish-TTS"""
+    voices_dir = base_dir / "voices" / "fish"
+    if not voices_dir.exists():
+        return {"voices": []}
+        
+    voices = []
+    for item in voices_dir.iterdir():
+        if item.is_dir() and (item / "ref.wav").exists():
+            voices.append({"id": item.name, "name": item.name.replace("_", " ").title()})
+    return {"voices": voices}
 
-        # Save to the fish voices directory
-        voice_dir = base_dir / "voices" / "fish" / folder_name
-        voice_dir.mkdir(parents=True, exist_ok=True)
-
-        audio_path = voice_dir / "ref.wav"
-        with open(audio_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        text_path = voice_dir / "ref.txt"
-        with open(text_path, "w", encoding="utf-8") as f:
-            f.write(text.strip())
-
-        return {"status": "success", "message": f"Fish voice '{name}' added successfully!", "id": folder_name}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@router.delete("/api/fish/voices/{voice_id}")
+async def delete_fish_voice(voice_id: str):
+    """Allows users to safely delete a cloned voice via API"""
+    if voice_id.lower() == "default":
+        raise HTTPException(status_code=400, detail="Cannot delete the default voice.")
+        
+    voice_dir = base_dir / "voices" / "fish" / voice_id
+    if voice_dir.exists() and voice_dir.is_dir():
+        try:
+            shutil.rmtree(voice_dir)
+            return {"status": "success", "message": f"Voice '{voice_id}' has been permanently deleted."}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete voice: {str(e)}")
+    else:
+        raise HTTPException(status_code=404, detail=f"Voice '{voice_id}' not found.")

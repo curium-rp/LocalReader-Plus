@@ -195,114 +195,76 @@ def load_f5_into_memory():
 # ==========================================
 # FISH SPEECH DOWNLOAD & BOOT SYSTEM
 # ==========================================
+import torch
+from huggingface_hub import snapshot_download
+
+# ==========================================
+# FISH-TTS SETUP & MEMORY MANAGEMENT
+# ==========================================
+
 def start_fish_setup():
     """
-    Downloads Fish Speech v1.5 explicitly into models/fish
+    Downloads the Fish-Speech 1.5 model from HuggingFace to the local models directory.
+    This runs in a background thread triggered by the UI Setup button.
     """
-    import app.config as config_module
+    from ..config import base_dir
+    model_dir = base_dir / "models" / "fish" / "fish-speech-1.5"
+    model_dir.mkdir(parents=True, exist_ok=True)
     
-    base_dir = config_module.base_dir
-    fish_dir = base_dir / "models" / "fish" / "checkpoints" / "fish-speech-1.5"
-    fish_dir.mkdir(parents=True, exist_ok=True)
-    
-    print("\n[SETUP] Initiating Fish Speech Engine Download Sequence...")
-    print(f"[SETUP] Target Directory: {fish_dir}")
-    
+    print("[FISH-SETUP] Starting download for Fish-Speech 1.5 weights...")
     try:
-        # 1. Download Fish Speech v1.5 Model Weights
-        print("[SETUP] Downloading Fish Speech v1.5 model (This is large and may take a few minutes)...")
+        # Download the official 1.5 weights
+        # We ignore .pth if safetensors are available to save space, 
+        # but Fish often uses safetensors by default now.
         snapshot_download(
             repo_id="fishaudio/fish-speech-1.5",
-            local_dir=str(fish_dir)
+            local_dir=str(model_dir),
+            ignore_patterns=["*.pt"] 
         )
+        print("[FISH-SETUP] Download complete!")
         
-        # 2. Create Default Voice Setup
-        voices_dir = base_dir / "voices" / "fish" / "default"
-        voices_dir.mkdir(parents=True, exist_ok=True)
-        if not (voices_dir / "ref.txt").exists():
-            with open(voices_dir / "ref.txt", "w", encoding="utf-8") as f:
-                f.write("This is a default reference text for voice cloning.")
-                
-        print("[SETUP] Fish Speech weights downloaded successfully.")
+        # Ensure the default voice folder exists so it doesn't crash on first run
+        default_voice_dir = base_dir / "voices" / "fish" / "default"
+        default_voice_dir.mkdir(parents=True, exist_ok=True)
+        
     except Exception as e:
-        print(f"[SETUP ERROR] Failed to download Fish Speech weights: {e}")
+        print(f"[FISH-SETUP ERROR] Failed to download model: {str(e)}")
         raise e
 
 def load_fish_into_memory():
     """
-    Placeholder for memory loading (we will fill this exact logic during Phase 2)
+    Instantiates the Fish-TTS engine into VRAM.
     """
+    from ..config import base_dir
     import app.state as state_module
-    # We will complete this in the Engine Integration step.
-    state_module.fish_model_loaded = False
-# ==========================================
-# SYSTEM HELPERS
-# ==========================================
-def check_model_exists(model_type: Literal["gpu", "cpu"]) -> bool:
-    target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
-    if model_type == "cpu":
-        return os.path.exists(os.path.join(target_dir, "kokoro.int8.onnx"))
-    return os.path.exists(os.path.join(target_dir, "kokoro.onnx"))
+    from fish_speech.inference_engine import TTSInferenceEngine
+    
+    model_dir = base_dir / "models" / "fish" / "fish-speech-1.5"
+    
+    if not model_dir.exists():
+        raise FileNotFoundError(f"Fish-TTS model directory not found at {model_dir}. Please run setup.")
 
-def get_available_models() -> dict:
-    target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
-    f5_dir = os.path.join(target_dir, "f5")
-    fish_dir = os.path.join(target_dir, "fish")
-    return {
-        "gpu": check_model_exists("gpu"),
-        "cpu": check_model_exists("cpu"),
-        "voices": os.path.exists(os.path.join(target_dir, "voices.bin")),
-        "f5": os.path.exists(f5_dir)
-        "fish": os.path.exists(fish_dir)
-    }
-
-if __name__ == "__main__":
-    import sys
-    model_type = sys.argv[1] if len(sys.argv) > 1 else "gpu"
-    if model_type not in ["gpu", "cpu"]:
-        print("Usage: python downloader.py [gpu|cpu]")
-        sys.exit(1)
-    download_kokoro_model(model_type)
-
-def load_fish_into_memory():
-    """
-    Loads Fish Speech into VRAM utilizing the local weights downloaded during setup.
-    """
-    import app.state as state_module
-    import app.config as config_module
-    import torch
+    print(f"[FISH-TTS] Loading model from {model_dir} into GPU Memory...")
     
     try:
-        from fish_speech.inference_engine import TTSInferenceEngine
-    except ImportError:
-        print("[ENGINE ERROR] Fish Speech modules not found! Ensure manual requirements are installed.")
-        state_module.fish_model_loaded = False
-        return
-
-    base_dir = config_module.base_dir
-    fish_dir = base_dir / "models" / "fish" / "checkpoints" / "fish-speech-1.5"
-    
-    print("[ENGINE] Loading Fish Speech into memory...")
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Use bfloat16 if the GPU supports it for better speed/memory, otherwise fallback to float16
-    precision = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
-    
-    try:
-        # Initialize the Fish Speech engine
-        state_module.fish_engine = TTSInferenceEngine(
-            llama_checkpoint_path=str(fish_dir),
-            decoder_checkpoint_path=str(fish_dir), # Usually in the same repo for v1.5
-            decoder_config_name="firefly_gan_vq",  # Default vocoder config
-            device=device,
-            precision=precision,
-            compile=False # Keep False for simplicity and wider hardware compatibility
+        # Initialize the Fish engine. 
+        # compile=False is safer for standard Windows/Mac setups. 
+        # We auto-detect bf16 support for optimal VRAM usage.
+        engine = TTSInferenceEngine(
+            llama_path=str(model_dir),
+            decoder_path=str(model_dir),
+            compile=False, 
+            precision="bf16" if torch.cuda.is_bf16_supported() else "fp16"
         )
+        
+        # Lock it into the global state so tts.py can access it
+        state_module.fish_engine = engine
         state_module.fish_model_loaded = True
-        print(f"[ENGINE] Fish Speech successfully loaded on {device.upper()}!")
+        print("[FISH-TTS] Engine successfully loaded into VRAM!")
         
     except Exception as e:
+        state_module.fish_engine = None
+        state_module.fish_model_loaded = False
         import traceback
         traceback.print_exc()
-        print(f"[ENGINE ERROR] Failed to load Fish Speech: {e}")
-        state_module.fish_model_loaded = False
+        raise RuntimeError(f"Failed to load Fish-TTS into memory: {str(e)}")
