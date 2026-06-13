@@ -35,7 +35,7 @@ from .config import (
 )
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
-from .routers import settings, library, tts, system, export, timer, theme
+from .routers import settings, library, tts, system, export, timer, theme, lavasr
 
 # --- Lifespan Manager ---
 @asynccontextmanager
@@ -110,6 +110,7 @@ app.include_router(system.router)
 app.include_router(export.router)
 app.include_router(timer.router)
 app.include_router(theme.router)
+app.include_router(lavasr.router)
 
 # --- Static Files ---
 # Mount static assets

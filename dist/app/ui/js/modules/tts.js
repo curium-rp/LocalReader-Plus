@@ -117,9 +117,16 @@ export async function playNext() {
   console.log(
     `Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..."`,
   );
+//  upscale state
+  const upscaleToggle = document.getElementById("upscaleAudioToggle");
+  const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
+
+  // SURGICAL MODIFICATION: Add useUpscaler to the cache key
+  const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}_${useUpscaler}`;
 
   const voiceSelect = document.getElementById("voiceSelect");
   const speedRange = document.getElementById("speedRange");
+
 
   const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}`;
 
@@ -140,6 +147,7 @@ export async function playNext() {
         rules: state.rules,
         ignore_list: state.ignoreList,
         pause_settings: state.pauseSettings,
+        use_upscaler: useUpscaler
       }),
     });
 
@@ -326,9 +334,6 @@ export async function preCacheNextSentences() {
       // If we already have it in RAM, skip it!
       if (state.audioBufferCache.has(cacheKey)) continue;
 
-      // ==========================================
-      // AWAIT FETCH: Wait for the GPU to finish before asking for the next one
-      // ==========================================
       const res = await fetch(`/api/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -339,6 +344,7 @@ export async function preCacheNextSentences() {
           rules: state.rules,
           ignore_list: state.ignoreList,
           pause_settings: state.pauseSettings,
+          use_upscaler: useUpscaler //hd upscale
         }),
       });
 

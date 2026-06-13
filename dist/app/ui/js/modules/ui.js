@@ -2,6 +2,7 @@
 import { state } from './state.js';
 import { fetchJSON, API_URL } from './api.js';
 
+
 // --- Icon Management ---
 export function renderIcons() {
     // Debounced icon rendering
@@ -276,4 +277,95 @@ export function updateEngineStatusUI(status, selectedModelExists) {
         }
         renderIcons();
     }
+}
+
+import { showToast } from './ui.js';
+
+const upscaleToggle = document.getElementById('upscaleAudioToggle');
+
+if (upscaleToggle) {
+    // 1. Initial Load (Memory)
+    // Assuming 'state.appSettings' holds your loaded config
+    upscaleToggle.checked = state.appSettings?.use_upscaler || false;
+
+    // 2. Listen for the toggle flip
+    upscaleToggle.addEventListener('change', async (e) => {
+        if (e.target.checked) {
+            try {
+                // Check if the backend already has the models
+                const res = await fetch('/api/lavasr/status');
+                const status = await res.json();
+                
+                if (!status.exists) {
+                    // NATIVE BROWSER POPUP!
+                    const downloadConfirmed = window.confirm(
+                        "You don't have the HD Audio models installed yet.\n\nClick OK to download them now (~35MB), or Cancel to abort."
+                    );
+                    
+                    if (downloadConfirmed) {
+                        // User clicked OK
+                        showToast("Downloading HD Audio models... Please wait.");
+                        
+                        // Tell backend to start downloading
+                        await fetch('/api/lavasr/download', { method: 'POST' });
+                        
+                        // Start polling in the background
+                        pollLavasrProgress();
+                    } else {
+                        // User clicked Cancel - forcefully turn the toggle back off
+                        e.target.checked = false;
+                    }
+                } else {
+                    // Model already exists. Save the toggle memory.
+                    state.appSettings.use_upscaler = true;
+                    // Trigger your existing save function here:
+                    // saveSettings(state.appSettings); 
+                }
+            } catch (err) {
+                console.error("Failed to check LavaSR status", err);
+                showToast("Error checking model status.");
+                e.target.checked = false; // Revert on failure
+            }
+        } else {
+            // User manually turned it off. Save memory.
+            state.appSettings.use_upscaler = false;
+            // Trigger your existing save function here:
+            // saveSettings(state.appSettings);
+        }
+    });
+}
+
+// 3. Simple Polling Function
+let lavasrPollInterval;
+async function pollLavasrProgress() {
+    clearInterval(lavasrPollInterval);
+    
+    lavasrPollInterval = setInterval(async () => {
+        try {
+            const res = await fetch('/api/lavasr/status');
+            const status = await res.json();
+            
+            if (status.exists) {
+                // Download finished!
+                clearInterval(lavasrPollInterval);
+                showToast("HD Audio models downloaded successfully! HD Audio is now active.");
+                
+                // Save memory
+                state.appSettings.use_upscaler = true;
+                // saveSettings(state.appSettings);
+                
+            } else if (status.error) {
+                // Download failed
+                clearInterval(lavasrPollInterval);
+                showToast("Error downloading models: " + status.error);
+                
+                // Force toggle off
+                const toggle = document.getElementById('upscaleAudioToggle');
+                if (toggle) toggle.checked = false;
+            }
+            // If still downloading, do nothing and check again in 2 seconds
+        } catch (e) {
+            console.error("Polling error:", e);
+        }
+    }, 2000); // Check every 2 seconds
 }

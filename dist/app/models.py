@@ -34,6 +34,7 @@ class AppSettings(BaseModel):
     header_footer_mode: Optional[str] = "off"
     engine_mode: Optional[str] = "gpu"
     ui_language: Optional[str] = "en"
+    use_upscaler: Optional[bool] = False
     pause_settings: Optional[Dict[str, int]] = {
         "comma": 300,
         "period": 600,
@@ -55,7 +56,7 @@ class ExportRequest(BaseModel):
     speed: float = 1.0
     rules: List[PronunciationRule]
     ignore_list: List[str] = []
-    format: str = "wav"  # <-- ADD THIS LINE
+    format: str = "wav"  
 
 
 class SynthesisRequest(BaseModel):
@@ -64,6 +65,7 @@ class SynthesisRequest(BaseModel):
     speed: float = 1.0
     rules: List[PronunciationRule]
     ignore_list: List[str] = []
+    use_upscaler: Optional[bool] = False
     pause_settings: Optional[Dict[str, int]] = {
         "comma": 300,
         "period": 600,

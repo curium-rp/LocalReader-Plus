@@ -10,6 +10,7 @@ from typing import Dict
 import sys
 import json
 from pathlib import Path
+from app.logic.upscaler import apply_upscale
 
 # Add app logic to path for imports
 base_dir_parent = Path(__file__).parent.parent
@@ -287,6 +288,7 @@ async def get_voices():
             categories[lang_code]["voices"].append(
                 {"id": voice_id, "name": get_voice_name(voice_id)}
             )
+            
 
         for code in categories:
             categories[code]["voices"].sort(key=lambda x: x["name"])

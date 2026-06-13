@@ -449,6 +449,7 @@
     <!-- Voice Settings Drawer -->
     <div id="voiceSettingsDrawer" class="voice-settings-drawer">
       <!-- Drawer Header -->
+    
       <div class="p-6 border-b border-zinc-800">
         <div class="flex items-center justify-between">
           <div>
@@ -547,6 +548,21 @@
             data-i18n="settings.header_footer_desc"
           >
             Automatically hide repeated page headers & footers
+          </p>
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center justify-between">
+            <span class="flex items-center gap-2">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+              <span data-i18n="settings.hd_audio">HD Audio Upscale</span>
+            </span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="upscaleAudioToggle" class="sr-only peer">
+              <div class="w-7 h-4 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-300 after:border-zinc-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+            </label>
+          </label>
+          <p class="text-[9px] text-zinc-600 mt-2" data-i18n="settings.hd_audio_desc">
+            Enhance output to 48kHz using LavaSR
           </p>
         </div>
 
