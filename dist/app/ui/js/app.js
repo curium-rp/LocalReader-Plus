@@ -1,67 +1,31 @@
 import { state } from "./modules/state.js";
 import { fetchJSON, API_URL } from "./modules/api.js";
-import {
-  renderIcons,
-  showToast,
-  switchTab,
-  renderRules,
-  renderIgnoreList,
-  updateEngineStatusUI,
-  highlightSearchTerm,
-  escapeRegex,
-  updateTranslations,
-} from "./modules/ui.js";
-import {
-  loadLibrary,
-  selectDocument,
-  renderPage,
-  processPdfBlob,
-  getSentencesForPage,
-} from "./modules/library.js";
-import {
-  loadVoices,
-  togglePlayback,
-  stopPlayback,
-  playNext,
-  jumpToSentence,
-  initAudioContext,
-  saveProgress,
-} from "./modules/tts.js";
-import {
-  startExport,
-  cancelExport,
-  startFFMPEGDownload,
-  openExportLocation,
-} from "./modules/export.js";
+import { renderIcons, showToast, switchTab, renderRules, renderIgnoreList, updateEngineStatusUI, highlightSearchTerm, escapeRegex, updateTranslations } from "./modules/ui.js";
+import { loadLibrary, selectDocument, renderPage, processPdfBlob, getSentencesForPage } from "./modules/library.js";
+import { loadVoices, togglePlayback, stopPlayback, playNext, jumpToSentence, initAudioContext, saveProgress } from "./modules/tts.js";
+import { startExport, cancelExport, startFFMPEGDownload, openExportLocation } from "./modules/export.js";
 import { initTimer } from "./modules/timer.js";
-import { initThemeSystem } from "./modules/themes.js"; // Themesss
+import { initThemeSystem } from "./modules/themes.js";
 
-// Global access for debugging
 window.state = state;
+window.isLavasrInstalled = false; // SYNCHRONOUS CACHE FIX
 
 async function init() {
-  // 1. Setup PDF.js
   try {
-    if (window.pdfjsLib)
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
-  } catch (e) {
-    console.error("PDF.js init error", e);
-  }
+    if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+  } catch (e) { console.error("PDF.js init error", e); }
 
-  // 2. Load Settings
   try {
     const settings = await fetchJSON(`/api/settings`);
     state.rules = settings.pronunciationRules || [];
     state.ignoreList = settings.ignoreList || [];
     state.headerFooterMode = settings.header_footer_mode || "off";
     state.engineMode = settings.engine_mode || "gpu";
-// FIX: Guarantee it is ALWAYS an object with safe defaults, never undefined!
-    state.pauseSettings = settings.pause_settings || state.pauseSettings || {
-      comma: 1, period: 2, question: 2, exclamation: 2, colon: 1, semicolon: 1
-    };
+    state.pauseSettings = settings.pause_settings || state.pauseSettings || { comma: 1, period: 2, question: 2, exclamation: 2, colon: 1, semicolon: 1 };
     state.uiLanguage = settings.ui_language || "en";
+    
+    state.useUpscaler = settings.use_upscaler === true;
 
-    // Apply UI Settings
     const speedRange = document.getElementById("speedRange");
     if (speedRange && settings.speed) {
       speedRange.value = settings.speed;
@@ -78,12 +42,10 @@ async function init() {
         preview.style.fontSize = `${settings.font_size}px`;
         preview.style.lineHeight = parseInt(settings.font_size) * 1.5 + "px";
       }
-      // Apply to actual text content
       const textContent = document.getElementById("textContent");
       if (textContent) {
         textContent.style.fontSize = `${settings.font_size}px`;
-        textContent.style.lineHeight =
-          parseInt(settings.font_size) * 1.6 + "px";
+        textContent.style.lineHeight = parseInt(settings.font_size) * 1.6 + "px";
       }
     }
     const headerSelect = document.getElementById("headerFooterMode");
@@ -91,33 +53,91 @@ async function init() {
     const engineSelect = document.getElementById("engineMode");
     if (engineSelect) engineSelect.value = state.engineMode;
 
-    // Pause Settings UI
-    [
-      "comma",
-      "period",
-      "question",
-      "exclamation",
-      "colon",
-      "semicolon",
-    ].forEach((key) => {
-      const input = document.getElementById(
-        `pause${key.charAt(0).toUpperCase() + key.slice(1)}`,
-      );
-      const val = document.getElementById(
-        `pause${key.charAt(0).toUpperCase() + key.slice(1)}Val`,
-      );
+    const upscaleToggle = document.getElementById("upscaleAudioToggle");
+    if (upscaleToggle) {
+        upscaleToggle.checked = state.useUpscaler;
+
+        let statusSpan = document.getElementById("lavasrStatusSpan");
+        if (!statusSpan) {
+            statusSpan = document.createElement("span");
+            statusSpan.id = "lavasrStatusSpan";
+            statusSpan.className = "text-[10px] text-zinc-500 ml-1.5 font-mono tracking-wider";
+            upscaleToggle.parentNode.appendChild(statusSpan);
+        }
+
+        const checkInitialStatus = async () => {
+            try {
+                const res = await fetch('/api/lavasr/status');
+                const status = await res.json();
+                
+                window.isLavasrInstalled = status.exists; // Cache it safely
+
+                if (status.is_downloading) {
+                    statusSpan.textContent = `(Downloading: ${status.progress}%)`;
+                    statusSpan.className = "text-[10px] text-blue-400 animate-pulse ml-1.5 font-mono font-bold";
+                    upscaleToggle.disabled = true;
+                    startUpscalerPolling(statusSpan, upscaleToggle);
+                } else {
+                    if (!window.isLavasrInstalled && upscaleToggle.checked) {
+                        upscaleToggle.checked = false;
+                        state.useUpscaler = false;
+                        saveSettings();
+                    }
+                    statusSpan.textContent = window.isLavasrInstalled ? " (Active)" : " (Not Installed)";
+                    statusSpan.className = window.isLavasrInstalled ? "text-[10px] text-green-400 ml-1.5 font-mono font-bold" : "text-[10px] text-zinc-500 ml-1.5 font-mono";
+                    upscaleToggle.disabled = false;
+                }
+            } catch(e){}
+        };
+        checkInitialStatus();
+
+        upscaleToggle.addEventListener('change', async (e) => {
+            if (e.target.checked) {
+                // SURGICAL FIX: Synchronous Check! 
+                // Because there is no "await" before window.confirm, the browser WILL NOT block the popup.
+                if (!window.isLavasrInstalled) {
+                    const dl = window.confirm("You don't have the HD Audio models installed yet.\n\nClick OK to download them now (~35MB), or Cancel to abort.");
+                    
+                    if (dl) {
+                        showToast("Downloading HD Audio models... Please wait.");
+                        statusSpan.textContent = "(Initializing...)";
+                        statusSpan.className = "text-[10px] text-blue-400 animate-pulse ml-1.5 font-mono font-bold";
+                        upscaleToggle.disabled = true;
+                        
+                        await fetch('/api/lavasr/download', { method: 'POST' });
+                        startUpscalerPolling(statusSpan, upscaleToggle);
+                    } else {
+                        e.target.checked = false;
+                    }
+                } else {
+                    state.useUpscaler = true;
+                    statusSpan.textContent = " (Active)";
+                    statusSpan.className = "text-[10px] text-green-400 ml-1.5 font-mono font-bold";
+                    showToast("HD Audio enabled.");
+                    saveSettings();
+                }
+            } else {
+                state.useUpscaler = false;
+                statusSpan.textContent = " (Not Active)";
+                statusSpan.className = "text-[10px] text-zinc-500 ml-1.5 font-mono";
+                saveSettings();
+            }
+        });
+    }
+
+    ["comma", "period", "question", "exclamation", "colon", "semicolon"].forEach((key) => {
+      const input = document.getElementById(`pause${key.charAt(0).toUpperCase() + key.slice(1)}`);
+      const val = document.getElementById(`pause${key.charAt(0).toUpperCase() + key.slice(1)}Val`);
       if (input && val && state.pauseSettings[key] !== undefined) {
         input.value = state.pauseSettings[key];
         val.textContent = state.pauseSettings[key];
       }
     });
 
-    // Language UI Init
     const langToggle = document.getElementById("languageToggle");
     if (langToggle) langToggle.textContent = state.uiLanguage.toUpperCase();
     await updateTranslations(state.uiLanguage);
 
-    // Voice Selection pre-fill
     const voiceSelect = document.getElementById("voiceSelect");
     if (settings.voice_id && voiceSelect) {
       const opt = document.createElement("option");
@@ -131,20 +151,11 @@ async function init() {
     showToast("Settings failed to load: " + e.message);
   }
 
-  // 3. Load Data & UI
   renderIcons();
-  initThemeSystem(); // <-- Installs the hidden trigger
+  initThemeSystem(); 
 
-  try {
-    await loadVoices();
-  } catch (e) {
-    console.error(e);
-  }
-  try {
-    await loadLibrary();
-  } catch (e) {
-    console.error(e);
-  }
+  try { await loadVoices(); } catch (e) { console.error(e); }
+  try { await loadLibrary(); } catch (e) { console.error(e); }
 
   renderRules();
   renderIgnoreList();
@@ -152,11 +163,46 @@ async function init() {
   initTimer();
 }
 
+function startUpscalerPolling(spanElement, toggleElement) {
+    if (window.upscalerPollInterval) clearInterval(window.upscalerPollInterval);
+    
+    window.upscalerPollInterval = setInterval(async () => {
+        try {
+            const res = await fetch('/api/lavasr/status');
+            const status = await res.json();
+            
+            if (status.is_downloading) {
+                spanElement.textContent = `(Downloading: ${status.progress}%)`;
+            } else {
+                clearInterval(window.upscalerPollInterval);
+                toggleElement.disabled = false;
+                
+                if (status.exists) {
+                    window.isLavasrInstalled = true;
+                    spanElement.textContent = " (Active)";
+                    spanElement.className = "text-[10px] text-green-400 ml-1.5 font-mono font-bold";
+                    toggleElement.checked = true;
+                    state.useUpscaler = true;
+                    saveSettings();
+                    showToast("HD Audio weights successfully mapped and activated!");
+                } else {
+                    window.isLavasrInstalled = false;
+                    spanElement.textContent = " (Not Installed)";
+                    spanElement.className = "text-[10px] text-zinc-500 ml-1.5 font-mono";
+                    toggleElement.checked = false;
+                    state.useUpscaler = false;
+                    if (status.error) showToast("Extraction Error: " + status.error);
+                }
+            }
+        } catch(err) {
+            clearInterval(window.upscalerPollInterval);
+            toggleElement.disabled = false;
+        }
+    }, 1500);
+}
+
 document.addEventListener("DOMContentLoaded", init);
 
-// --- Event Listeners ---
-
-// Playback
 document.getElementById("playBtn").onclick = togglePlayback;
 document.getElementById("hidePlaybarBtn").onclick = () => {
   const controls = document.getElementById("controls");
@@ -184,14 +230,8 @@ document.getElementById("skipForward").onclick = async () => {
   }
 };
 
-// Keyboard Shortcuts
 window.addEventListener("keydown", (e) => {
-  if (
-    e.target.tagName === "INPUT" ||
-    e.target.tagName === "TEXTAREA" ||
-    e.target.isContentEditable
-  )
-    return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
   if (e.code === "Space") {
     e.preventDefault();
     togglePlayback();
@@ -208,7 +248,6 @@ window.addEventListener("keydown", (e) => {
     document.getElementById("closeSearchBtn").click();
 });
 
-// Page Navigation (Viewing)
 document.getElementById("prevPage").onclick = async () => {
   if (state.viewPageIndex > 0) {
     state.viewPageIndex--;
@@ -232,17 +271,14 @@ document.getElementById("pageInput").onchange = async (e) => {
   }
 };
 
-// Back to Reading Logic
 document.getElementById("backToReadingBtn").onclick = async () => {
   state.viewPageIndex = state.readingPageIndex;
   state.autoScrollEnabled = true;
   await renderPage();
-  // After render, auto-scroll will center the active sentence
   const active = document.querySelector(".active-sentence");
   if (active) active.scrollIntoView({ behavior: "smooth", block: "center" });
 };
 
-// Auto-Flip on Scroll
 let isAutoFlipping = false;
 const scrollContainer = document.querySelector(".content-area");
 if (scrollContainer) {
@@ -250,43 +286,29 @@ if (scrollContainer) {
     "wheel",
     async (e) => {
       if (isAutoFlipping) return;
-      const bottom =
-        scrollContainer.scrollTop + scrollContainer.clientHeight >=
-        scrollContainer.scrollHeight - 10;
+      const bottom = scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
       const top = scrollContainer.scrollTop <= 10;
 
-      // If user is manually scrolling, disable auto-alignment
-      if (state.autoScrollEnabled) {
-        state.autoScrollEnabled = false;
-      }
+      if (state.autoScrollEnabled) state.autoScrollEnabled = false;
 
-      if (
-        e.deltaY > 0 &&
-        bottom &&
-        state.viewPageIndex < state.currentPages.length - 1
-      ) {
+      if (e.deltaY > 0 && bottom && state.viewPageIndex < state.currentPages.length - 1) {
         isAutoFlipping = true;
         state.viewPageIndex++;
         await renderPage();
         scrollContainer.scrollTop = 0;
-        setTimeout(() => {
-          isAutoFlipping = false;
-        }, 700);
+        setTimeout(() => { isAutoFlipping = false; }, 700);
       } else if (e.deltaY < 0 && top && state.viewPageIndex > 0) {
         isAutoFlipping = true;
         state.viewPageIndex--;
         await renderPage();
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        setTimeout(() => {
-          isAutoFlipping = false;
-        }, 700);
+        setTimeout(() => { isAutoFlipping = false; }, 700);
       }
     },
     { passive: true },
   );
 }
 
-// Upload
 document.getElementById("pdfUpload").onchange = async (e) => {
   const file = e.target.files[0];
   if (file) {
@@ -295,15 +317,11 @@ document.getElementById("pdfUpload").onchange = async (e) => {
       const formData = new FormData();
       formData.append("file", file);
       try {
-        const res = await fetch("/api/convert/epub", {
-          method: "POST",
-          body: formData,
-        });
+        const res = await fetch("/api/convert/epub", { method: "POST", body: formData });
         if (!res.ok) throw new Error("Conversion failed");
         const blob = await res.blob();
         processPdfBlob(blob, file.name.replace(".epub", ".pdf"));
       } catch (err) {
-        console.error(err);
         showToast("EPUB conversion failed: " + err.message);
       }
     } else {
@@ -313,24 +331,10 @@ document.getElementById("pdfUpload").onchange = async (e) => {
   }
 };
 
-// Tabs
-document.getElementById("tabLibrary").onclick = () =>
-  switchTab(
-    document.getElementById("tabLibrary"),
-    document.getElementById("libraryPanel"),
-  );
-document.getElementById("tabRules").onclick = () =>
-  switchTab(
-    document.getElementById("tabRules"),
-    document.getElementById("rulesPanel"),
-  );
-document.getElementById("tabIgnore").onclick = () =>
-  switchTab(
-    document.getElementById("tabIgnore"),
-    document.getElementById("ignorePanel"),
-  );
+document.getElementById("tabLibrary").onclick = () => switchTab(document.getElementById("tabLibrary"), document.getElementById("libraryPanel"));
+document.getElementById("tabRules").onclick = () => switchTab(document.getElementById("tabRules"), document.getElementById("rulesPanel"));
+document.getElementById("tabIgnore").onclick = () => switchTab(document.getElementById("tabIgnore"), document.getElementById("ignorePanel"));
 
-// Settings
 async function saveSettings() {
   try {
     await fetchJSON(`/api/settings`, {
@@ -346,6 +350,7 @@ async function saveSettings() {
         engine_mode: state.engineMode,
         pause_settings: state.pauseSettings,
         ui_language: state.uiLanguage,
+        use_upscaler: state.useUpscaler 
       }),
     });
   } catch (e) {
@@ -354,23 +359,16 @@ async function saveSettings() {
 }
 
 document.getElementById("speedRange").onchange = saveSettings;
-document.getElementById("speedRange").oninput = (e) =>
-  (document.getElementById("speedVal").textContent = parseFloat(
-    e.target.value,
-  ).toFixed(2));
+document.getElementById("speedRange").oninput = (e) => (document.getElementById("speedVal").textContent = parseFloat(e.target.value).toFixed(2));
 document.getElementById("fontSizeSlider").onchange = saveSettings;
 document.getElementById("fontSizeSlider").oninput = (e) => {
   const newSize = e.target.value;
   document.getElementById("textSizeVal").textContent = newSize;
-
-  // Update HUD preview
   const preview = document.getElementById("currentSentencePreview");
   if (preview) {
     preview.style.fontSize = `${newSize}px`;
     preview.style.lineHeight = parseInt(newSize) * 1.5 + "px";
   }
-
-  // Update actual text content
   const textContent = document.getElementById("textContent");
   if (textContent) {
     textContent.style.fontSize = `${newSize}px`;
@@ -380,11 +378,7 @@ document.getElementById("fontSizeSlider").oninput = (e) => {
 document.getElementById("voiceSelect").onchange = async () => {
   stopPlayback();
   state.audioBufferCache.clear();
-  try {
-    await fetchJSON("/api/system/clear-cache", { method: "POST" });
-  } catch (e) {
-    console.error("Failed to clear backend cache", e);
-  }
+  try { await fetchJSON("/api/system/clear-cache", { method: "POST" }); } catch (e) {}
   await saveSettings();
 };
 document.getElementById("headerFooterMode").onchange = async (e) => {
@@ -398,16 +392,11 @@ document.getElementById("engineMode").onchange = async (e) => {
 };
 document.getElementById("setupBtn").onclick = async () => {
   try {
-    await fetchJSON(`/api/system/setup?model_type=${state.engineMode}`, {
-      method: "POST",
-    });
+    await fetchJSON(`/api/system/setup?model_type=${state.engineMode}`, { method: "POST" });
     showToast("Started downloading...");
-  } catch (e) {
-    showToast(e.message);
-  }
+  } catch (e) { showToast(e.message); }
 };
 
-// Drawer & Sidebar Resize
 const toggleDrawer = (open) => {
   const d = document.getElementById("voiceSettingsDrawer");
   const o = document.getElementById("drawerOverlay");
@@ -443,15 +432,11 @@ if (dragHandle && sidebar) {
   });
 }
 
-// Sidebar Collapse / Expand
 const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
 const sidebarExpandBtn = document.getElementById("sidebarExpandBtn");
 if (sidebarCollapseBtn && sidebarExpandBtn && sidebar) {
   const updateSidebarVar = (collapsed) => {
-    document.documentElement.style.setProperty(
-      "--sidebar-width",
-      collapsed ? "0px" : sidebar.style.width || "320px",
-    );
+    document.documentElement.style.setProperty("--sidebar-width", collapsed ? "0px" : sidebar.style.width || "320px");
   };
   sidebarCollapseBtn.onclick = () => {
     sidebar.classList.add("collapsed");
@@ -465,7 +450,6 @@ if (sidebarCollapseBtn && sidebarExpandBtn && sidebar) {
   };
 }
 
-// Drag-and-Drop PDF/EPUB Upload
 let dragCounter = 0;
 const dropOverlay = document.getElementById("dropOverlay");
 document.body.addEventListener("dragenter", (e) => {
@@ -498,15 +482,11 @@ document.body.addEventListener("drop", async (e) => {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await fetch("/api/convert/epub", {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetch("/api/convert/epub", { method: "POST", body: formData });
       if (!res.ok) throw new Error("Conversion failed");
       const blob = await res.blob();
       processPdfBlob(blob, file.name.replace(".epub", ".pdf"));
     } catch (err) {
-      console.error(err);
       showToast("EPUB conversion failed: " + err.message);
     }
   } else {
@@ -514,15 +494,12 @@ document.body.addEventListener("drop", async (e) => {
   }
 });
 
-// Language Toggle
 document.getElementById("languageToggle").onclick = async () => {
   const langs = ["en", "es", "fr", "zh"];
   let cur = langs.includes(state.uiLanguage) ? state.uiLanguage : "en";
   const next = langs[(langs.indexOf(cur) + 1) % langs.length];
-
   state.uiLanguage = next;
   document.getElementById("languageToggle").textContent = next.toUpperCase();
-
   await updateTranslations(next);
   renderIcons();
   saveSettings();
@@ -530,17 +507,12 @@ document.getElementById("languageToggle").onclick = async () => {
   showToast(`Language set to ${next.toUpperCase()}`);
 };
 
-// Search
 document.getElementById("searchBtn").onclick = () => {
-  if (!state.currentDoc) {
-    showToast("No document loaded");
-    return;
-  }
+  if (!state.currentDoc) return showToast("No document loaded");
   document.getElementById("searchModal").classList.remove("hidden");
   document.getElementById("searchInput").focus();
 };
-document.getElementById("closeSearchBtn").onclick = () =>
-  document.getElementById("searchModal").classList.add("hidden");
+document.getElementById("closeSearchBtn").onclick = () => document.getElementById("searchModal").classList.add("hidden");
 
 let searchDebounce = null;
 document.getElementById("searchInput").oninput = (e) => {
@@ -548,14 +520,9 @@ document.getElementById("searchInput").oninput = (e) => {
   searchDebounce = setTimeout(async () => {
     const query = e.target.value.trim();
     const resultsList = document.getElementById("searchResultsList");
-    if (!query || query.length < 2) {
-      resultsList.innerHTML = "";
-      return;
-    }
+    if (!query || query.length < 2) return resultsList.innerHTML = "";
     try {
-      const data = await fetchJSON(
-        `/api/library/search/${state.currentDoc.id}?q=${encodeURIComponent(query)}`,
-      );
+      const data = await fetchJSON(`/api/library/search/${state.currentDoc.id}?q=${encodeURIComponent(query)}`);
       resultsList.innerHTML = "";
       if (data.results.length === 0) {
         document.getElementById("searchEmpty").classList.remove("hidden");
@@ -584,35 +551,25 @@ document.getElementById("searchInput").oninput = (e) => {
   }, 300);
 };
 
-// Export
 document.getElementById("exportBtn").onclick = startExport;
 document.getElementById("cancelExportBtn").onclick = cancelExport;
 document.getElementById("startFFMPEGDownload").onclick = startFFMPEGDownload;
-document.getElementById("cancelFFMPEGBtn").onclick = () =>
-  document.getElementById("ffmpegModal").classList.add("hidden");
+document.getElementById("cancelFFMPEGBtn").onclick = () => document.getElementById("ffmpegModal").classList.add("hidden");
 document.getElementById("openFileLocationBtn").onclick = openExportLocation;
 
-// Rules
 document.getElementById("rulesList").addEventListener("input", (e) => {
   if (e.target.dataset.action === "update-rule") {
-    const id = e.target.dataset.id,
-      field = e.target.dataset.field,
-      val = e.target.type === "checkbox" ? e.target.checked : e.target.value;
-    state.rules = state.rules.map((r) =>
-      r.id === id ? { ...r, [field]: val } : r,
-    );
+    const id = e.target.dataset.id, field = e.target.dataset.field, val = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+    state.rules = state.rules.map((r) => r.id === id ? { ...r, [field]: val } : r);
     saveSettings();
   }
 });
 document.getElementById("rulesList").addEventListener("click", (e) => {
   const t = e.target.closest("[data-action]");
   if (!t) return;
-  const action = t.dataset.action,
-    id = t.dataset.id;
+  const action = t.dataset.action, id = t.dataset.id;
   if (action === "toggle-rule") {
-    state.rules = state.rules.map((r) =>
-      r.id === id ? { ...r, isExpanded: !r.isExpanded } : r,
-    );
+    state.rules = state.rules.map((r) => r.id === id ? { ...r, isExpanded: !r.isExpanded } : r);
     renderRules();
   } else if (action === "delete-rule") {
     state.rules = state.rules.filter((r) => r.id !== id);
@@ -621,20 +578,11 @@ document.getElementById("rulesList").addEventListener("click", (e) => {
   }
 });
 document.getElementById("addRuleBtn").onclick = () => {
-  state.rules.push({
-    id: crypto.randomUUID(),
-    original: "",
-    replacement: "",
-    match_case: false,
-    word_boundary: true,
-    is_regex: false,
-    isExpanded: true,
-  });
+  state.rules.push({ id: crypto.randomUUID(), original: "", replacement: "", match_case: false, word_boundary: true, is_regex: false, isExpanded: true });
   renderRules();
   saveSettings();
 };
 
-// Ignore List
 document.getElementById("addIgnoreBtn").onclick = () => {
   state.ignoreList.push("");
   renderIgnoreList();
@@ -655,21 +603,14 @@ document.getElementById("ignoreListUI").addEventListener("click", (e) => {
   }
 });
 
-// Library
 document.getElementById("libraryPanel").addEventListener("click", (e) => {
   const st = e.target.closest('[data-action="select-doc"]');
-  if (st) {
-    selectDocById(st.dataset.id);
-    return;
-  }
+  if (st) return selectDocById(st.dataset.id);
   const dt = e.target.closest('[data-action="delete-doc"]');
   if (dt && confirm("Delete?")) {
-    fetchJSON(`/api/library/${dt.dataset.id}`, { method: "DELETE" }).then(
-      () => {
-        if (state.currentDoc?.id === dt.dataset.id) location.reload();
-        else loadLibrary();
-      },
-    );
+    fetchJSON(`/api/library/${dt.dataset.id}`, { method: "DELETE" }).then(() => {
+      if (state.currentDoc?.id === dt.dataset.id) location.reload(); else loadLibrary();
+    });
   }
 });
 
@@ -679,27 +620,19 @@ window.selectDocById = async (id) => {
   if (item) selectDocument(item);
 };
 
-// Pause Settings
-["Comma", "Period", "Question", "Exclamation", "Colon", "Semicolon"].forEach(
-  (k) => {
-    const el = document.getElementById(`pause${k}`);
-    if (el) {
-      el.oninput = (e) => {
-        // 1. Ensure the object exists before trying to write to it!
-        if (!state.pauseSettings) state.pauseSettings = {};
-        
-        state.pauseSettings[k.toLowerCase()] = parseInt(e.target.value);
-        
-        // 2. Safely update the text number next to the slider
-        const valEl = document.getElementById(`pause${k}Val`);
-        if (valEl) valEl.textContent = e.target.value;
-      };
-      el.onchange = saveSettings;
-    }
-  },
-);
+["Comma", "Period", "Question", "Exclamation", "Colon", "Semicolon"].forEach((k) => {
+  const el = document.getElementById(`pause${k}`);
+  if (el) {
+    el.oninput = (e) => {
+      if (!state.pauseSettings) state.pauseSettings = {};
+      state.pauseSettings[k.toLowerCase()] = parseInt(e.target.value);
+      const valEl = document.getElementById(`pause${k}Val`);
+      if (valEl) valEl.textContent = e.target.value;
+    };
+    el.onchange = saveSettings;
+  }
+});
 
-// Safe Toggle: Only attach the click event if the button actually exists in the HTML
 const pauseToggleBtn = document.getElementById("pauseSettingsToggle");
 if (pauseToggleBtn) {
   pauseToggleBtn.onclick = () => {
@@ -710,17 +643,13 @@ if (pauseToggleBtn) {
 
 window.addEventListener("jump-to-sentence", (e) => jumpToSentence(e.detail));
 
-// Status Polling
 let lastSysState = null;
 async function startStatusPolling() {
   const poll = async () => {
     try {
       const status = await fetchJSON(`/api/system/status?t=${Date.now()}`);
       window.isEngineReady = status.model_loaded;
-      const selModel =
-        state.engineMode === "gpu"
-          ? status.available_models?.gpu
-          : status.available_models?.cpu;
+      const selModel = state.engineMode === "gpu" ? status.available_models?.gpu : status.available_models?.cpu;
       const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${selModel}`;
       if (curState !== lastSysState) {
         lastSysState = curState;

@@ -1,15 +1,14 @@
 import os
+import shutil
 from fastapi import APIRouter, BackgroundTasks
 from huggingface_hub import snapshot_download
 
 router = APIRouter(prefix="/api/lavasr", tags=["LavaSR"])
 
-# Target directory: dist/models/LavaSR
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
-LAVASR_DIR = os.path.join(MODELS_DIR, "LavaSR")
+LAVASR_DIR = os.path.abspath(os.path.join(MODELS_DIR, "LavaSR"))
 
-# In-memory state for the UI progress bar
 download_state = {
     "is_downloading": False,
     "progress": 0,
@@ -19,8 +18,11 @@ download_state = {
 
 @router.get("/status")
 def get_status():
-    # Check if the core weights and code exist in our custom folder
-    exists = os.path.exists(os.path.join(LAVASR_DIR, "enhancer_v2", "generator.bin"))
+    # STRICT FIX: Must have both the heavy weight file AND the config file
+    target_bin = os.path.join(LAVASR_DIR, "enhancer_v2", "pytorch_model.bin")
+    target_yaml = os.path.join(LAVASR_DIR, "enhancer_v2", "config.yaml")
+    
+    exists = (os.path.exists(target_bin) and os.path.getsize(target_bin) > 1000000) and os.path.exists(target_yaml)
     
     return {
         "exists": exists and not download_state["is_downloading"],
@@ -36,20 +38,27 @@ def do_download():
     
     try:
         os.makedirs(LAVASR_DIR, exist_ok=True)
-        download_state["status_msg"] = "Downloading LavaSR code and weights..."
-        download_state["progress"] = 30
+        print(f"[LavaSR] Starting brute-force download sequence...")
         
-        # Download EVERYTHING directly into our local folder, skipping the global cache
-        snapshot_download(
-            repo_id="YatharthS/LavaSR",
-            local_dir=LAVASR_DIR,
-            local_dir_use_symlinks=False
-        )
+        download_state["status_msg"] = "Fetching files from HuggingFace..."
+        download_state["progress"] = 20
+        
+        cache_dir = snapshot_download(repo_id="YatharthS/LavaSR")
+        
+        download_state["status_msg"] = "Extracting files to models directory..."
+        download_state["progress"] = 70
+        print(f"[LavaSR] Downloaded to temporary cache: {cache_dir}")
+        print(f"[LavaSR] Moving files to local folder asset: {LAVASR_DIR}")
+        
+        shutil.copytree(cache_dir, LAVASR_DIR, dirs_exist_ok=True)
         
         download_state["progress"] = 100
         download_state["status_msg"] = "Complete!"
+        print(f"[LavaSR] Success! All files placed inside {LAVASR_DIR}")
+        
     except Exception as e:
         download_state["error"] = str(e)
+        print(f"[LavaSR] Download processing error encountered: {e}")
     finally:
         download_state["is_downloading"] = False
 

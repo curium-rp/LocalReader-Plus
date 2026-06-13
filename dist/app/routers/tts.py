@@ -5,7 +5,6 @@ import io
 import re
 import hashlib
 import soundfile as sf
-import concurrent.futures
 from typing import Dict
 import sys
 import json
@@ -20,12 +19,12 @@ if str(base_dir_parent) not in sys.path:
 try:
     from logic.smart_content_detector import filter_text_for_tts
     from logic.text_normalizer import apply_custom_pronunciations, fix_special_formats
-    from logic.syllable import estimate_phonemes  # <-- link syllable 
+    from logic.syllable import estimate_phonemes
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from smart_content_detector import filter_text_for_tts
     from text_normalizer import apply_custom_pronunciations, fix_special_formats
-    from syllable import estimate_phonemes  # <-- Link syllable
+    from syllable import estimate_phonemes
 
 from ..state import audio_cache, kokoro
 from ..models import SynthesisRequest
@@ -35,8 +34,6 @@ from kokoro_onnx import SAMPLE_RATE
 
 router = APIRouter()
 
-
-# --- Helpers moved from server.py ---
 def safe_concat(audio_list):
     clean_list = []
     for a in audio_list:
@@ -50,10 +47,7 @@ def safe_concat(audio_list):
         return np.array([], dtype=np.float32)
     return np.concatenate(clean_list)
 
-
-    # Kororo onnx tts has limit max phonemes=510 use english to ipa to culcalate, Buffer 20 for safety
 def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
-    # Micro-cache to prevent duplicate calculations with syllable.py
     ph_cache = {}
     def get_ph(t):
         t_strip = t.strip()
@@ -62,17 +56,15 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
             ph_cache[t_strip] = estimate_phonemes(t_strip)
         return ph_cache[t_strip]
 
-    # 1. First cut: Natural newlines
     paragraphs = text.strip().split('\n')
     final_chunks = []
 
-    # The step-by-step fallback cascade (5 Levels)
     split_patterns = [
-        r'(?<=\.)\s+',                                # Level 1: Full stops only
-        r'(?<=,)\s+',                                 # Level 2: Commas only
-        r'(?<=[!?;:\(\)\-–—])\s+',                    # Level 3: Exclamations, questions, colons, brackets, hyphens, and long dashes (—)
-        r'\s+(?=\b(?:and|but|or|because|however|therefore|although|which|that|if|when|where|who)\b)', # Level 4: Pause/Breath words
-        r'\s+'                                        # Level 5: Spaces between words (Emergency)
+        r'(?<=\.)\s+',                                
+        r'(?<=,)\s+',                                 
+        r'(?<=[!?;:\(\)\-–—])\s+',                    
+        r'\s+(?=\b(?:and|but|or|because|however|therefore|although|which|that|if|when|where|who)\b)', 
+        r'\s+'                                        
     ]
     
     for para in paragraphs:
@@ -80,16 +72,10 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
         if not para:
             continue
             
-        # ==========================================
-        # THE SMART CHECK (The Fast Lane)
-        # ==========================================
         if get_ph(para) <= soft_limit:
             final_chunks.append(para)
             continue
             
-        # ==========================================
-        # THE FALLBACK (The Danger Zone)
-        # ==========================================
         pieces_to_process = [para]
         
         for pattern in split_patterns:
@@ -125,49 +111,31 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
             
     return final_chunks
 
-def synthesize_with_pauses(
-    text: str, voice: str, speed: float, pause_settings: Dict[str, int]
-):
+def synthesize_with_pauses(text: str, voice: str, speed: float, pause_settings: Dict[str, int]):
     import app.state as state_module
 
     lang = get_language_from_voice(voice)
     segments = re.split(r"([,\.!\?:;。，！？：；、]+|\n)", text)
     sample_rate = SAMPLE_RATE
     plan = []
-    last_was_punctuation = False
 
     char_map = {
-        ",": "comma",
-        "，": "comma",
-        "、": "comma",
-        ".": "period",
-        "。": "period",
-        "?": "question",
-        "？": "question",
-        "!": "exclamation",
-        "！": "exclamation",
-        ":": "colon",
-        "：": "colon",
-        ";": "semicolon",
-        "；": "semicolon",
+        ",": "comma", "，": "comma", "、": "comma",
+        ".": "period", "。": "period",
+        "?": "question", "？": "question",
+        "!": "exclamation", "！": "exclamation",
+        ":": "colon", "：": "colon",
+        ";": "semicolon", "；": "semicolon",
     }
 
     for i, segment in enumerate(segments):
         clean_segment = segment.strip()
-        # --- newline dynamics adjust ---
         if segment == "\n":
             speed_map = [0.50, 0.75, 1.00, 1.20, 1.35, 1.50, 1.75, 2.00, 2.50, 3.00]
             pause_map = [800,  550,  400,  320,  100,  85,   70,   50,   35,   25]
-            
-            # Use the speed variable passed into the function for the math
             dynamic_newline_ms = int(np.interp(speed, speed_map, pause_map))
-            
-            # A paragraph break always gets its silence, period or not
             plan.append({"type": "silence", "ms": dynamic_newline_ms})
-            
-            last_was_punctuation = False
             continue
-        # --- END OF NEWLINE HANDLING ---
 
         if not clean_segment:
             continue
@@ -175,24 +143,15 @@ def synthesize_with_pauses(
         if re.match(r"^[,\.!\?:;。，！？：；、]+$", clean_segment):
             last_char = clean_segment[-1]
             pause_ms = 0
-
             vocab_key = char_map.get(last_char)
             if vocab_key:
                 pause_ms = pause_settings.get(vocab_key, 100)
-            
             plan.append({"type": "silence", "ms": pause_ms})
-            last_was_punctuation = True
         else:
-            if re.search(
-                r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]",
-                clean_segment,
-            ):
+            if re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", clean_segment):
                 sub_chunks = graceful_chunk_for_tts(clean_segment)
                 for sc_idx, sub_chunk in enumerate(sub_chunks):
-                    plan.append(
-                        {"type": "tts", "text": sub_chunk, "index": f"{i}_{sc_idx}"}
-                    )
-                last_was_punctuation = False
+                    plan.append({"type": "tts", "text": sub_chunk, "index": f"{i}_{sc_idx}"})
 
     tts_tasks = [p for p in plan if p["type"] == "tts"]
     audio_map = {}
@@ -201,12 +160,7 @@ def synthesize_with_pauses(
         for t in tts_tasks:
             idx = t["index"]
             try:
-                samples, _ = state_module.kokoro.create(
-                    t["text"],
-                    voice=voice,
-                    speed=speed,
-                    lang=lang,
-                )
+                samples, _ = state_module.kokoro.create(t["text"], voice=voice, speed=speed, lang=lang)
                 audio_map[idx] = samples.flatten()
             except Exception as e:
                 print(f"Segment {idx} failed: {e}")
@@ -227,7 +181,7 @@ def synthesize_with_pauses(
         return safe_concat(final_segments), sample_rate
     return np.zeros(int(sample_rate * 0.1), dtype=np.float32), sample_rate
 
-def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list):
+def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list, use_upscaler):
     lang = get_language_from_voice(voice)
     cache_data = {
         "text": text,
@@ -237,12 +191,10 @@ def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list):
         "pause_settings": pause_settings,
         "rules": [str(r) for r in rules],
         "ignore_list": sorted(ignore_list),
-        "upscale": upscale
+        "upscale": use_upscaler
     }
     cache_string = json.dumps(cache_data, sort_keys=True)
     return hashlib.md5(cache_string.encode("utf-8")).hexdigest()
-
-# --- API Endpoints ---
 
 @router.get("/api/voices/available")
 async def get_voices():
@@ -263,14 +215,9 @@ async def get_voices():
 
         def get_lang_label(code):
             maps = {
-                "en-us": "English (US)",
-                "en-gb": "English (UK)",
-                "fr-fr": "French",
-                "es": "Spanish",
-                "cmn": "Chinese (Mandarin)",
-                "it": "Italian",
-                "pt-br": "Portuguese (Brazil)",
-                "ja": "Japanese",
+                "en-us": "English (US)", "en-gb": "English (UK)", "fr-fr": "French",
+                "es": "Spanish", "cmn": "Chinese (Mandarin)", "it": "Italian",
+                "pt-br": "Portuguese (Brazil)", "ja": "Japanese",
             }
             return maps.get(code, "Other")
 
@@ -286,16 +233,12 @@ async def get_voices():
             if lang_code not in categories:
                 categories[lang_code] = {"label": label, "voices": []}
 
-            categories[lang_code]["voices"].append(
-                {"id": voice_id, "name": get_voice_name(voice_id)}
-            )
-
+            categories[lang_code]["voices"].append({"id": voice_id, "name": get_voice_name(voice_id)})
 
         for code in categories:
             categories[code]["voices"].sort(key=lambda x: x["name"])
 
         return {"categories": categories}
-
     except Exception as e:
         return {"categories": {}}
 
@@ -319,7 +262,6 @@ def synthesize(request: SynthesisRequest):
         raise HTTPException(status_code=503, detail="TTS Engine not initialized.")
 
     try:
-        # Perfectly indented logic flow
         text = fix_special_formats(request.text)
         text = filter_text_for_tts(text)
         rules_data = [r.model_dump() for r in request.rules]
@@ -331,17 +273,13 @@ def synthesize(request: SynthesisRequest):
     try:
         voices = state_module.kokoro.get_voices()
         selected_voice = request.voice if request.voice in voices else "af_sky"
-        
         pause_settings = request.pause_settings or {}
         
+        upscale_requested = getattr(request, "use_upscaler", False)
+        
         cache_key = generate_cache_key(
-            text,
-            selected_voice,
-            float(request.speed or 1.0),
-            pause_settings,
-            request.rules,
-            request.ignore_list,
-            upscale_requested
+            text, selected_voice, float(request.speed or 1.0),
+            pause_settings, request.rules, request.ignore_list, upscale_requested
         )
 
         cached_audio = audio_cache.get(cache_key)
@@ -352,60 +290,42 @@ def synthesize(request: SynthesisRequest):
                 headers={"Content-Length": str(len(cached_audio))},
             )
 
-        has_pause_settings = pause_settings and isinstance(pause_settings, dict)
-        punctuation_chars = [
-            ",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、",
-        ]
-        has_punctuation = any(p in text for p in punctuation_chars)
         lang = get_language_from_voice(selected_voice)
+        has_punctuation = any(p in text for p in [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"])
 
-        if not re.search(
-            r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]",
-            text,
-        ):
+        if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text):
             samples = np.zeros(int(24000 * 0.1), dtype=np.float32)
             sample_rate = 24000
         else:
-            if has_pause_settings and has_punctuation:
-                samples, sample_rate = synthesize_with_pauses(
-                    text, selected_voice, float(request.speed or 1.0), pause_settings
-                )
+            if pause_settings and has_punctuation:
+                samples, sample_rate = synthesize_with_pauses(text, selected_voice, float(request.speed or 1.0), pause_settings)
             else:
                 sub_chunks = graceful_chunk_for_tts(text)
                 if len(sub_chunks) == 1:
-                    samples, sample_rate = state_module.kokoro.create(
-                        text,
-                        voice=selected_voice,
-                        speed=float(request.speed or 1.0),
-                        lang=lang,
-                    )
+                    samples, sample_rate = state_module.kokoro.create(text, voice=selected_voice, speed=float(request.speed or 1.0), lang=lang)
                 else:
                     chunk_audios = []
                     sample_rate = SAMPLE_RATE
                     for chunk in sub_chunks:
-                        chunk_samples, sr = state_module.kokoro.create(
-                            chunk,
-                            voice=selected_voice,
-                            speed=float(request.speed or 1.0),
-                            lang=lang,
-                        )
+                        chunk_samples, sr = state_module.kokoro.create(chunk, voice=selected_voice, speed=float(request.speed or 1.0), lang=lang)
                         chunk_audios.append(chunk_samples.flatten())
                         sample_rate = sr
                     samples = safe_concat(chunk_audios)
 
-        if upscale_requested:
+        # SURGICAL FIX: LavaSR processing with Anti-Clipping normalizer
+        if upscale_requested and len(samples) > 0:
             try:
-                # Apply the upscale to the flattened array
                 samples, sample_rate = apply_upscale(samples.flatten(), sample_rate)
+                # Ensure the enhanced audio stays between -1.0 and 1.0 so the UI can link/decode properly
+                max_val = np.max(np.abs(samples))
+                if max_val > 1.0:
+                    samples = samples / max_val
             except Exception as e:
                 print(f"[TTS] Upscale failed: {e}")
 
         buffer = io.BytesIO()
         sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")
-        buffer = io.BytesIO()
-        sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")
         audio_bytes = buffer.getvalue()
-
         audio_cache.put(cache_key, audio_bytes)
 
         return StreamingResponse(

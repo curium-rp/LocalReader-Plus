@@ -1,18 +1,13 @@
-
 import { state } from './state.js';
 import { fetchJSON, API_URL } from './api.js';
 
-
-// --- Icon Management ---
 export function renderIcons() {
-    // Debounced icon rendering
     if (window.iconRenderTimeout) clearTimeout(window.iconRenderTimeout);
     window.iconRenderTimeout = setTimeout(() => {
         if (window.lucide) window.lucide.createIcons();
     }, 50);
 }
 
-// --- Text Helpers ---
 export function stripHTML(text) {
     if (!text) return '';
     text = text.replace(/<[^>]*>/g, '');
@@ -20,7 +15,6 @@ export function stripHTML(text) {
     return text.trim();
 }
 
-// --- Toast ---
 export function showToast(msg) {
     const toast = document.getElementById('toast');
     const toastMsg = document.getElementById('toastMsg');
@@ -31,7 +25,6 @@ export function showToast(msg) {
     }
 }
 
-// --- Tabs ---
 export function switchTab(activeTab, activePanel) {
     const tabs = [document.getElementById('tabLibrary'), document.getElementById('tabRules'), document.getElementById('tabIgnore')];
     const panels = [document.getElementById('libraryPanel'), document.getElementById('rulesPanel'), document.getElementById('ignorePanel')];
@@ -47,7 +40,6 @@ export function switchTab(activeTab, activePanel) {
     renderIcons();
 }
 
-// --- Rules Rendering ---
 export function renderRules() {
     const rulesList = document.getElementById('rulesList');
     if (!rulesList) return;
@@ -124,14 +116,8 @@ export function renderRules() {
     rulesList.innerHTML = '';
     rulesList.appendChild(fragment);
     renderIcons();
-
-    // Attach event listeners for the newly created elements
-    // Note: We use global delegation in app.js for better performance, 
-    // but the inputs need 'change' events. 
-    // We'll rely on app.js to handle these via delegation on #rulesList
 }
 
-// --- Ignore List Rendering ---
 export function renderIgnoreList() {
     const ignoreListUI = document.getElementById('ignoreListUI');
     if (!ignoreListUI) return;
@@ -149,7 +135,6 @@ export function renderIgnoreList() {
     renderIcons();
 }
 
-// --- Search ---
 export function escapeRegex(str) {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -196,12 +181,10 @@ function highlightTextNodes(node, regex) {
     });
 }
 
-// --- Setup/Status ---
-// --- Translations ---
 export async function updateTranslations(lang) {
     try {
         const translations = await fetchJSON(`/api/locale/${lang}`);
-        state.translations = translations; // Store in global state
+        state.translations = translations; 
         document.querySelectorAll('[data-i18n]').forEach(el => {
             const key = el.dataset.i18n;
             const keys = key.split('.');
@@ -231,7 +214,6 @@ export function updateEngineStatusUI(status, selectedModelExists) {
     const exportArea = document.getElementById('exportArea');
     const textSizeArea = document.getElementById('textSizeArea');
 
-    // Update model status text (GPU/CPU)
     const gpuStatusEl = document.getElementById('gpuStatus');
     const cpuStatusEl = document.getElementById('cpuStatus');
 
@@ -273,74 +255,7 @@ export function updateEngineStatusUI(status, selectedModelExists) {
         if (setupBtn) {
             setupBtn.disabled = false;
             setupBtn.innerHTML = '<i data-lucide="download-cloud" class="w-4 h-4"></i><span class="text-sm font-bold">Setup Voice Engine</span>';
-            // Start polling to detect when download finishes if initiated externally or previously
         }
         renderIcons();
     }
-}
-
-
-// Remove the circular import completely.
-
-const upscaleToggle = document.getElementById('upscaleAudioToggle');
-
-if (upscaleToggle) {
-    // Use a direct state property instead of the undefined appSettings
-    upscaleToggle.checked = state.useUpscaler || false;
-
-    upscaleToggle.addEventListener('change', async (e) => {
-        if (e.target.checked) {
-            try {
-                const res = await fetch('/api/lavasr/status');
-                const status = await res.json();
-                
-                if (!status.exists) {
-                    const downloadConfirmed = window.confirm(
-                        "You don't have the HD Audio models installed yet.\n\nClick OK to download them now (~35MB), or Cancel to abort."
-                    );
-                    
-                    if (downloadConfirmed) {
-                        showToast("Downloading HD Audio models... Please wait.");
-                        await fetch('/api/lavasr/download', { method: 'POST' });
-                        pollLavasrProgress();
-                    } else {
-                        e.target.checked = false;
-                    }
-                } else {
-                    state.useUpscaler = true;
-                }
-            } catch (err) {
-                console.error("Failed to check LavaSR status", err);
-                showToast("Error checking model status.");
-                e.target.checked = false; 
-            }
-        } else {
-            state.useUpscaler = false;
-        }
-    });
-}
-
-let lavasrPollInterval;
-async function pollLavasrProgress() {
-    clearInterval(lavasrPollInterval);
-    
-    lavasrPollInterval = setInterval(async () => {
-        try {
-            const res = await fetch('/api/lavasr/status');
-            const status = await res.json();
-            
-            if (status.exists) {
-                clearInterval(lavasrPollInterval);
-                showToast("HD Audio models downloaded successfully! HD Audio is now active.");
-                state.useUpscaler = true;
-            } else if (status.error) {
-                clearInterval(lavasrPollInterval);
-                showToast("Error downloading models: " + status.error);
-                const toggle = document.getElementById('upscaleAudioToggle');
-                if (toggle) toggle.checked = false;
-            }
-        } catch (e) {
-            console.error("Polling error:", e);
-        }
-    }, 2000);
 }
