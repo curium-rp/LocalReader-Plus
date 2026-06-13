@@ -23,12 +23,14 @@ if str(base_dir_parent) not in sys.path:
 try:
     from logic.smart_content_detector import filter_text_for_tts
     from logic.text_normalizer import apply_custom_pronunciations, fix_special_formats
-    from logic.syllable import estimate_phonemes  # <-- link syllable 
+    from logic.syllable import estimate_phonemes 
+    from logic.dependency_manager import get_ffmpeg_path  
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from smart_content_detector import filter_text_for_tts
     from text_normalizer import apply_custom_pronunciations, fix_special_formats
-    from syllable import estimate_phonemes  # <-- Link syllable
+    from syllable import estimate_phonemes 
+    from dependency_manager import get_ffmpeg_path  
 
 from ..state import audio_cache, kokoro
 from ..models import SynthesisRequest
@@ -422,24 +424,43 @@ async def synthesize_fish_logic(text, request, state_module):
                 elif result.code == "error":
                     raise Exception(str(result.error))
 
-            # 4. Smart Pause Injection (Tail-end padding)
-        # --- UPDATE INSIDE tts.py (synthesize_fish_logic) ---
-
-            # 4. Smart Speed & Pause Injection
+# 4. Smart Speed & Pause Injection
             if audio_chunks:
                 final_audio = np.concatenate(audio_chunks)
                 
                 # ==========================================
-                # SURGICAL FIX: Post-Process Speed for Fish
+                # SURGICAL FIX: FFMPEG High-Quality Time Stretch (Lossless Pipe)
                 # ==========================================
                 target_speed = float(getattr(request, 'speed', 1.0))
                 if target_speed != 1.0:
                     try:
-                        import librosa
-                        # Pitch-preserving time stretch
-                        final_audio = librosa.effects.time_stretch(final_audio, rate=target_speed)
-                    except ImportError:
-                        print("[FISH-TTS WARNING] 'librosa' is not installed. Cannot adjust speed. Run: pip install librosa")
+                        import subprocess
+                        ffmpeg_exe = get_ffmpeg_path()
+                        if ffmpeg_exe:
+                            # Convert numpy float32 array to raw PCM bytes
+                            input_bytes = final_audio.tobytes()
+                            
+                            # Pipe raw bytes into FFMPEG and catch the processed bytes
+                            cmd = [
+                                str(ffmpeg_exe),
+                                "-f", "f32le", "-ar", str(sample_rate), "-ac", "1",
+                                "-i", "pipe:0",
+                                "-filter:a", f"atempo={target_speed}",
+                                "-f", "f32le", "-ar", str(sample_rate), "-ac", "1",
+                                "pipe:1"
+                            ]
+                            process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                            output_bytes, _ = process.communicate(input=input_bytes)
+                            
+                            if process.returncode == 0 and output_bytes:
+                                # Convert processed PCM bytes back to numpy array
+                                final_audio = np.frombuffer(output_bytes, dtype=np.float32)
+                            else:
+                                print("[FISH-TTS WARNING] FFMPEG failed to process speed. Falling back to 1.0x.")
+                        else:
+                            print("[FISH-TTS WARNING] FFMPEG not found. Skipping speed adjustment.")
+                    except Exception as e:
+                        print(f"[FISH-TTS WARNING] FFMPEG pipe error: {str(e)}. Skipping speed adjustment.")
                 
                 # Fetch pause settings from the frontend request
                 pause_settings = getattr(request, 'pause_settings', {}) or {}

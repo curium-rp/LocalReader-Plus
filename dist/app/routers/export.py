@@ -252,15 +252,35 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                             sample_rate = sr
                             
                             # ==========================================
-                            # SURGICAL FIX: Post-Process Speed for Fish
+                            # SURGICAL FIX: FFMPEG High-Quality Time Stretch (Lossless Pipe)
                             # ==========================================
                             target_speed = float(request.speed)
                             if target_speed != 1.0:
                                 try:
-                                    import librosa
-                                    samples = librosa.effects.time_stretch(samples, rate=target_speed)
-                                except ImportError:
-                                    print("[FISH-TTS WARNING] 'librosa' is not installed. Exporting at 1.0x speed.")
+                                    import subprocess
+                                    ffmpeg_exe = get_ffmpeg_path()
+                                    if ffmpeg_exe:
+                                        input_bytes = samples.tobytes()
+                                        
+                                        cmd = [
+                                            str(ffmpeg_exe),
+                                            "-f", "f32le", "-ar", str(sample_rate), "-ac", "1",
+                                            "-i", "pipe:0",
+                                            "-filter:a", f"atempo={target_speed}",
+                                            "-f", "f32le", "-ar", str(sample_rate), "-ac", "1",
+                                            "pipe:1"
+                                        ]
+                                        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                        output_bytes, _ = process.communicate(input=input_bytes)
+                                        
+                                        if process.returncode == 0 and output_bytes:
+                                            samples = np.frombuffer(output_bytes, dtype=np.float32)
+                                        else:
+                                            print("[FISH-TTS WARNING] FFMPEG failed to process speed. Falling back to 1.0x.")
+                                    else:
+                                        print("[FISH-TTS WARNING] FFMPEG not found. Skipping speed adjustment.")
+                                except Exception as e:
+                                    print(f"[FISH-TTS WARNING] FFMPEG pipe error: {str(e)}. Skipping speed adjustment.")
                             
                             # Fish Smart Pauses
                             extra_silence_ms = 0

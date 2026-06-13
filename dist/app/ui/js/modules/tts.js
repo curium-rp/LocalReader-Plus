@@ -63,7 +63,6 @@ export function stopPlayback() {
 export async function playNext() {
   const targetIndex = state.currentSentenceIndex;
   if (!state.isPlaying || !window.isEngineReady) {
-    // isEngineReady is global/window for now
     stopPlayback();
     return;
   }
@@ -73,17 +72,13 @@ export async function playNext() {
     if (state.readingPageIndex < state.currentPages.length - 1) {
       state.readingPageIndex++;
       state.currentSentenceIndex = 0;
-      state.audioBufferCache.clear(); // Prevent stale cross-page cache hits
-      state.readingSentences = await getSentencesForPage(
-        state.readingPageIndex,
-      );
+      state.audioBufferCache.clear(); 
+      state.readingSentences = await getSentencesForPage(state.readingPageIndex);
 
-      // If auto-scroll is on, force the view to follow the reader
       if (state.autoScrollEnabled) {
         state.viewPageIndex = state.readingPageIndex;
         await renderPage();
       } else if (state.viewPageIndex === state.readingPageIndex) {
-        // If we aren't following but happen to be viewing the same page, just refresh highlights
         await renderPage();
       }
       await playNext();
@@ -93,7 +88,6 @@ export async function playNext() {
     return;
   }
 
-  // Update UI Highlight (only if viewing the reading page)
   if (state.viewPageIndex === state.readingPageIndex) {
     state.sentenceElements.forEach(
       (el, i) =>
@@ -104,19 +98,14 @@ export async function playNext() {
       active.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  const currentSentencePreview = document.getElementById(
-    "currentSentencePreview",
-  );
-  if (currentSentencePreview)
-    currentSentencePreview.textContent = stripHTML(text);
+  const currentSentencePreview = document.getElementById("currentSentencePreview");
+  if (currentSentencePreview) currentSentencePreview.textContent = stripHTML(text);
 
   saveProgress();
 
   let cleanText = stripHTML(text);
-  if (text.endsWith('\n')) cleanText += '\n'; // <-- Keep it for the backend
-  console.log(
-    `Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..."`,
-  );
+  if (text.endsWith('\n')) cleanText += '\n'; 
+  console.log(`Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..."`);
 
   const voiceSelect = document.getElementById("voiceSelect");
   const speedRange = document.getElementById("speedRange");
@@ -128,7 +117,18 @@ export async function playNext() {
     playAudioBuffer(state.audioBufferCache.get(lookupKey));
     return;
   }
-  state.fetchingKeys.add(lookupKey);
+
+  // ==========================================
+  // SURGICAL FIX: Prevent GPU Double-Tap 
+  // ==========================================
+  if (!state.fetchingKeys) state.fetchingKeys = new Set();
+  if (state.fetchingKeys.has(lookupKey)) {
+    console.log(`[TTS] Preloader is currently working on this sentence. Waiting 500ms...`);
+    setTimeout(() => playNext(), 500); 
+    return;
+  }
+  
+  state.fetchingKeys.add(lookupKey); 
 
   try {
     const res = await fetch(`${API_URL}/api/synthesize`, {
@@ -141,6 +141,7 @@ export async function playNext() {
         rules: state.rules,
         ignore_list: state.ignoreList,
         pause_settings: state.pauseSettings,
+        engine: state.ttsEngine || "kokoro"
       }),
     });
 
@@ -154,11 +155,8 @@ export async function playNext() {
 
     const arrayBuffer = await blob.arrayBuffer();
 
-    // Safety check: Has the user jumped or stopped while we were synthesizing?
     if (!state.isPlaying || state.currentSentenceIndex !== targetIndex) {
-      console.log(
-        `[TTS] Discarding synthesis result - Index mismatch (${state.currentSentenceIndex} vs ${targetIndex})`,
-      );
+      console.log(`[TTS] Discarding synthesis result - Index mismatch`);
       return;
     }
 
@@ -176,34 +174,10 @@ export async function playNext() {
     showToast(e.message);
     stopPlayback();
   } finally {
-    // SURGICAL FIX: Respect the Lock
-      // ==========================================
-      if (!state.fetchingKeys) state.fetchingKeys = new Set();
-      
-      // If we already have it in RAM, or are currently fetching it, skip it!
-      if (state.audioBufferCache.has(cacheKey) || state.fetchingKeys.has(cacheKey)) continue;
-
-      // Lock the key so playNext() knows we are working on it
-      state.fetchingKeys.add(cacheKey);
-
-      // ==========================================
-      // AWAIT FETCH: Wait for the GPU to finish before asking for the next one
-      // ==========================================
-      const res = await fetch(`/api/synthesize`, {
-// ... (Keep the rest of your fetch code exactly the same until the end of the if(res.ok) block)
-
-      if (res.ok) {
-        const blob = await res.blob();
-        const arrayBuffer = await blob.arrayBuffer();
-        const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
-        state.audioBufferCache.set(cacheKey, audioBuffer);
-        console.log(`[Sliding Window] Ready: Page ${targetPageIndex}, Sentence ${targetSentenceIndex}`);
-      }
-      
-      // ALWAYS unlock the key when finished
-      state.fetchingKeys.delete(cacheKey);
-    }
-
+    // ALWAYS unlock when finished or failed
+    state.fetchingKeys.delete(lookupKey);
+  }
+}
 export function togglePlayback() {
   const playIcon = document.getElementById("playIcon");
   if (state.isPlaying) {
@@ -366,6 +340,7 @@ export async function preCacheNextSentences() {
           rules: state.rules,
           ignore_list: state.ignoreList,
           pause_settings: state.pauseSettings,
+          engine: state.ttsEngine
         }),
       });
 

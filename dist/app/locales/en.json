@@ -47,6 +47,7 @@
     "header_footer_dim": "Dim",
     "header_footer_desc": "Automatically hide repeated page headers & footers",
     "processing_mode": "Processing Mode",
+    "fish_mode": "fish speech",
     "f5_mode": "F5 TTS (GPU)",
     "gpu_mode": "Kokoro Quality (GPU)",
     "cpu_mode": "Kokoro Performance (CPU)",

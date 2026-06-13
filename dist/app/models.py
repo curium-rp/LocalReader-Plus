@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Optional, Literal
 
 
 class LibraryItem(BaseModel):
@@ -75,3 +75,4 @@ class SynthesisRequest(BaseModel):
         "semicolon": 400,
         "newline": 800,
     }
+    engine: Optional[str] = "kokoro"

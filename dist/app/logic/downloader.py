@@ -207,15 +207,16 @@ def start_fish_setup():
     Downloads the Fish-Speech 1.5 model from HuggingFace to the local models directory.
     This runs in a background thread triggered by the UI Setup button.
     """
-    from ..config import base_dir
+    # SURGICAL FIX: Use Absolute Imports to prevent the Relative Import Crash!
+    from app.config import base_dir
+    from huggingface_hub import snapshot_download
+    
     model_dir = base_dir / "models" / "fish" / "fish-speech-1.5"
     model_dir.mkdir(parents=True, exist_ok=True)
     
     print("[FISH-SETUP] Starting download for Fish-Speech 1.5 weights...")
     try:
-        # Download the official 1.5 weights
-        # We ignore .pth if safetensors are available to save space, 
-        # but Fish often uses safetensors by default now.
+        # Downloads the core LLM and the Firefly VQ decoder together
         snapshot_download(
             repo_id="fishaudio/fish-speech-1.5",
             local_dir=str(model_dir),
@@ -233,35 +234,142 @@ def start_fish_setup():
 
 def load_fish_into_memory():
     """
-    Instantiates the Fish-TTS engine into VRAM.
+    Instantiates the Fish-TTS engine into VRAM using the self-healing GitHub v1.5.0 bypass.
     """
-    from ..config import base_dir
+    from app.config import base_dir
     import app.state as state_module
-    from fish_speech.inference_engine import TTSInferenceEngine
-    
+    import torch
+    from pathlib import Path
+    import sys
+    import os
+    import subprocess
+    import importlib
+
+    # ==========================================
+    # SURGICAL FIX 1: Auto-Install Tokenizers (Prevents Silence)
+    # Automatically installs tiktoken/sentencepiece and clears the import cache
+    # so Python instantly recognizes them without needing a server restart.
+    # ==========================================
+try:
+        import tiktoken
+        import sentencepiece
+        import funasr
+    except ImportError:
+        print("[FISH-TTS] Missing dependencies detected! Auto-installing tiktoken, sentencepiece, and funasr...")
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", 
+                "tiktoken", "sentencepiece", "transformers", "funasr", "modelscope"
+            ])
+            importlib.invalidate_caches()  # Force Python to reload available packages
+            print("[FISH-TTS] Dependencies installed successfully!")
+        except Exception as e:
+            print(f"[FISH-TTS ERROR] Failed to auto-install dependencies: {e}")
+
+    import urllib.request
+    import zipfile
+    import io
+    import shutil
+
     model_dir = base_dir / "models" / "fish" / "fish-speech-1.5"
-    
+    repo_dir = base_dir / "models" / "fish" / "fish-speech-repo"
+
     if not model_dir.exists():
         raise FileNotFoundError(f"Fish-TTS model directory not found at {model_dir}. Please run setup.")
 
-    print(f"[FISH-TTS] Loading model from {model_dir} into GPU Memory...")
-    
+    # ==========================================
+    # SURGICAL FIX 2: Pin GitHub Version to v1.5.0 (Cures Missing Config)
+    # The 'main' branch updated to 'dual_ar'. We specifically download the v1.5.0
+    # release so the 'firefly_gan_vq' configs perfectly match your weights.
+    # ==========================================
+    if not repo_dir.exists() or not (repo_dir / "configs").exists():
+        print("[FISH-TTS] Downloading pristine GitHub v1.5.0 repository to fix config compatibility...")
+        url = "https://github.com/fishaudio/fish-speech/archive/refs/tags/v1.5.0.zip"
+        try:
+            with urllib.request.urlopen(url) as response:
+                with zipfile.ZipFile(io.BytesIO(response.read())) as zip_ref:
+                    zip_ref.extractall(base_dir / "models" / "fish")
+            
+            # The extracted folder from the v1.5.0 tag zip is named 'fish-speech-1.5.0'
+            extracted_dir = base_dir / "models" / "fish" / "fish-speech-1.5.0"
+            
+            # Safe fallback just in case GitHub changes the zip structure
+            if not extracted_dir.exists():
+                dirs = [d for d in (base_dir / "models" / "fish").iterdir() if d.is_dir() and "fish-speech" in d.name and d.name not in ["fish-speech-1.5", "fish-speech-repo"]]
+                if dirs:
+                    extracted_dir = dirs[0]
+
+            if extracted_dir.exists():
+                if repo_dir.exists():
+                    shutil.rmtree(repo_dir)
+                extracted_dir.rename(repo_dir)
+        except Exception as e:
+            raise RuntimeError(f"Failed to download v1.5.0 repository: {e}")
+
+    # ==========================================
+    # SURGICAL FIX 3: Memory Purge & Path Injection
+    # Force Python to use the pristine GitHub repo instead of pip
+    # ==========================================
+    if str(repo_dir) not in sys.path:
+        sys.path.insert(0, str(repo_dir))
+
+    keys_to_remove = [k for k in sys.modules.keys() if k.startswith("fish_speech") or k.startswith("tools")]
+    for k in keys_to_remove:
+        del sys.modules[k]
+
+    # Bypass pyrootutils crash for local installations
     try:
-        # Initialize the Fish engine. 
-        # compile=False is safer for standard Windows/Mac setups. 
-        # We auto-detect bf16 support for optimal VRAM usage.
-        engine = TTSInferenceEngine(
-            llama_path=str(model_dir),
-            decoder_path=str(model_dir),
-            compile=False, 
-            precision="bf16" if torch.cuda.is_bf16_supported() else "fp16"
-        )
+        import pyrootutils
+        pyrootutils.setup_root = lambda *args, **kwargs: repo_dir
+    except ImportError:
+        pass
+
+    print(f"[FISH-TTS] Loading model from {model_dir} into GPU Memory...")
+
+    try:
+        from tools.server.model_manager import ModelManager
         
-        # Lock it into the global state so tts.py can access it
-        state_module.fish_engine = engine
+        # 1. Find the exact Firefly decoder dynamically
+        decoder_path = model_dir / "firefly-gan-vq-fsq-8x1024-21hz-generator.pth"
+        if not decoder_path.exists():
+            pth_files = list(model_dir.glob("*.pth"))
+            if pth_files:
+                decoder_path = pth_files[0]
+            else:
+                raise FileNotFoundError(f"Could not find decoder .pth file in {model_dir}")
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        is_half = not (torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+
+        print(f"[FISH-TTS] Booting ModelManager with LLAMA Queue & {decoder_path.name}...")
+
+        # ==========================================
+        # SURGICAL FIX 4: The Hydra Config Anchor
+        # Anchor the execution directory so Hydra perfectly loads the config file
+        # ==========================================
+        original_cwd = os.getcwd()
+        os.chdir(str(repo_dir))
+
+        try:
+            manager = ModelManager(
+                mode="tts",
+                device=device,
+                half=is_half,
+                compile=False,
+                llama_checkpoint_path=str(model_dir),
+                decoder_checkpoint_path=str(decoder_path),
+                decoder_config_name="firefly_gan_vq"
+            )
+        finally:
+            # ALWAYS restore the working directory so LocalReader doesn't break
+            os.chdir(original_cwd)
+
+        # Extract the fully initialized and warmed-up engine
+        state_module.fish_engine = manager.tts_inference_engine
         state_module.fish_model_loaded = True
-        print("[FISH-TTS] Engine successfully loaded into VRAM!")
         
+        print("[FISH-TTS] Engine successfully loaded and warmed up in VRAM!")
+
     except Exception as e:
         state_module.fish_engine = None
         state_module.fish_model_loaded = False

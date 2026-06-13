@@ -5,6 +5,8 @@
 if not work yet but it nealy work now with f5 tts and kokoro back to online mormally should
 has problem with gui clone voice did not works as expect 
 
+fish speech hole hole hole state.
+
 ```
 LocalReader-Plus
 ├── README.md

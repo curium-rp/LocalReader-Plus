@@ -814,11 +814,20 @@ document.addEventListener("change", async (e) => {
 window.refreshVoiceDropdown = async () => {
   try {
     const engineToFetch = state.ttsEngine || "kokoro";
+
+    // 1. If F5 is active, safely mount the studio
+    if (engineToFetch === "f5") {
+      if (window.f5Studio) await window.f5Studio.mount();
+      return;
+    }
+
+    // 2. Safely unmount F5 studio if switching engines
+    if (window.f5Studio) window.f5Studio.unmount();
     
     // SURGICAL FIX: Connect to the universal Python API!
     const response = await fetch(`/api/voices/available?engine=${engineToFetch}`);
     const data = await response.json();
-    
+ 
     const voiceSelect = document.getElementById("voiceSelect");
     const cloneBtn = document.getElementById("openCloneModalBtn"); 
     if (!voiceSelect) return;
@@ -876,3 +885,151 @@ window.refreshVoiceDropdown = async () => {
     console.error("Failed to refresh voices:", e);
   }
 };
+
+// ==========================================
+// VOICE CLONE GATEKEEPER & API ROUTER
+// ==========================================
+
+const openCloneModalBtn = document.getElementById("openCloneModalBtn");
+const submitCloneBtn = document.getElementById("submitCloneBtn");
+const cloneVoiceForm = document.getElementById("cloneVoiceForm");
+
+// 1. DYNAMIC UI WARNINGS
+if (openCloneModalBtn) {
+    openCloneModalBtn.addEventListener("click", () => {
+        const engine = state.ttsEngine || "kokoro";
+        let instructionsBox = document.getElementById("dynamicCloneRules");
+        
+        // Inject the instruction box into the modal if it doesn't exist
+        if (!instructionsBox) {
+            const form = document.getElementById("cloneVoiceForm");
+            if (form) {
+                instructionsBox = document.createElement("div");
+                instructionsBox.id = "dynamicCloneRules";
+                form.prepend(instructionsBox);
+            }
+        }
+
+        // Apply Official Fish Audio Guidelines
+        if (instructionsBox) {
+            if (engine === "fish") {
+                instructionsBox.className = "text-xs p-3 rounded mb-4 bg-blue-900/20 border border-blue-500/30 text-blue-300";
+                instructionsBox.innerHTML = `
+                    <strong class="text-blue-400 block mb-1">Fish-TTS Voice Memory Rules:</strong>
+                    <ul class="list-disc pl-4 space-y-1">
+                        <li><strong>Length:</strong> Optimal is <span class="text-white">8 to 20 seconds</span>.</li>
+                        <li class="text-red-400"><strong>Strict Limit:</strong> Do NOT exceed 30 seconds (Prevents GPU crashes).</li>
+                        <li><strong>Quality:</strong> Must have clear speech with NO background noise.</li>
+                        <li><strong>Transcript:</strong> Must match the audio 100% perfectly, including punctuation.</li>
+                    </ul>
+                `;
+            } else if (engine === "f5") {
+                instructionsBox.className = "text-xs p-3 rounded mb-4 bg-purple-900/20 border border-purple-500/30 text-purple-300";
+                instructionsBox.innerHTML = `
+                    <strong class="text-purple-400 block mb-1">F5-TTS Voice Memory Rules:</strong>
+                    <ul class="list-disc pl-4 space-y-1">
+                        <li>Provide a clear, 10-15 second clean audio sample.</li>
+                        <li>Ensure the transcript matches exactly.</li>
+                    </ul>
+                `;
+            }
+        }
+    });
+}
+
+// 2. THE AUDIO DURATION VALIDATOR (Memory Crash Prevention)
+const cloneFileInput = document.querySelector('#cloneVoiceModal input[type="file"]');
+if (cloneFileInput && submitCloneBtn) {
+    cloneFileInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Only enforce strict duration limits for Fish-TTS
+        if (state.ttsEngine === "fish") {
+            try {
+                // Create an invisible audio element to check duration instantly
+                const audio = document.createElement('audio');
+                const objectUrl = URL.createObjectURL(file);
+                
+                audio.addEventListener('loadedmetadata', () => {
+                    const duration = audio.duration;
+                    URL.revokeObjectURL(objectUrl); // Clean up memory
+                    
+                    if (duration < 8) {
+                        showToast(`Audio is ${duration.toFixed(1)}s. Minimum 8s recommended for Fish-TTS.`, "error");
+                        submitCloneBtn.disabled = true;
+                        submitCloneBtn.classList.add("opacity-50", "cursor-not-allowed");
+                        submitCloneBtn.textContent = "Audio Too Short";
+                    } else if (duration > 30) {
+                        showToast(`Audio is ${duration.toFixed(1)}s! Exceeds 30s strict limit. Please trim it.`, "error");
+                        submitCloneBtn.disabled = true;
+                        submitCloneBtn.classList.add("opacity-50", "cursor-not-allowed");
+                        submitCloneBtn.textContent = "Exceeds 30s Limit";
+                    } else {
+                        submitCloneBtn.disabled = false;
+                        submitCloneBtn.classList.remove("opacity-50", "cursor-not-allowed");
+                        submitCloneBtn.textContent = "Create Voice Clone";
+                        
+                        if (duration > 20) {
+                            showToast(`Audio is ${duration.toFixed(1)}s. Acceptable, but 8-20s is optimal.`, "warning");
+                        } else {
+                            showToast(`Audio is ${duration.toFixed(1)}s. Perfect length for Fish-TTS!`, "success");
+                        }
+                    }
+                });
+                
+                audio.src = objectUrl;
+            } catch (err) {
+                console.error("Failed to parse audio duration", err);
+            }
+        } else {
+            // Restore button for F5
+            submitCloneBtn.disabled = false;
+            submitCloneBtn.classList.remove("opacity-50", "cursor-not-allowed");
+            submitCloneBtn.textContent = "Create Voice Clone";
+        }
+    });
+}
+
+// 3. API SUBMISSION & ROUTER
+if (cloneVoiceForm) {
+    cloneVoiceForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const originalText = submitCloneBtn.innerHTML;
+        
+        submitCloneBtn.disabled = true;
+        submitCloneBtn.innerHTML = 'Processing...';
+        
+        try {
+            const formData = new FormData(cloneVoiceForm);
+            
+            // SURGICAL FIX: Tell the backend which engine to route this memory to!
+            formData.append("engine", state.ttsEngine || "kokoro");
+
+            const res = await fetch("/api/voices/clone", {
+                method: "POST",
+                body: formData
+            });
+            
+            const data = await res.json();
+            
+            if (res.ok) {
+                showToast(data.message || "Voice cloned successfully!", "success");
+                document.getElementById("cloneVoiceModal").classList.add("hidden");
+                cloneVoiceForm.reset();
+                
+                // Instantly update the dropdown so the user can use the voice right away
+                if (typeof window.refreshVoiceDropdown === 'function') {
+                    await window.refreshVoiceDropdown();
+                }
+            } else {
+                throw new Error(data.detail || "Failed to clone voice");
+            }
+        } catch (err) {
+            showToast("Cloning Error: " + err.message, "error");
+        } finally {
+            submitCloneBtn.disabled = false;
+            submitCloneBtn.innerHTML = originalText;
+        }
+    };
+}
