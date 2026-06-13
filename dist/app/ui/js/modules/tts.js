@@ -112,23 +112,22 @@ export async function playNext() {
 
   saveProgress();
 
-  let cleanText = stripHTML(text);
-  if (text.endsWith('\n')) cleanText += '\n'; // <-- Keep it for the backend
+let cleanText = stripHTML(text);
+  if (text.endsWith('\n')) cleanText += '\n'; 
   console.log(
     `Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..."`,
   );
-//  upscale state
-  const upscaleToggle = document.getElementById("upscaleAudioToggle");
-  const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
 
-  // SURGICAL MODIFICATION: Add useUpscaler to the cache key
-  const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}_${useUpscaler}`;
-
+  // 1. Declare DOM elements first
   const voiceSelect = document.getElementById("voiceSelect");
   const speedRange = document.getElementById("speedRange");
+  const upscaleToggle = document.getElementById("upscaleAudioToggle");
+  
+  // 2. Get the upscaler state
+  const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
 
-
-  const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}`;
+  // 3. Create the lookup key ONCE
+  const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}_${useUpscaler}`;
 
   if (state.audioBufferCache.has(lookupKey)) {
     console.log(`[WebAudio] CACHE HIT - Playing cached buffer instantly`);
@@ -147,7 +146,7 @@ export async function playNext() {
         rules: state.rules,
         ignore_list: state.ignoreList,
         pause_settings: state.pauseSettings,
-        use_upscaler: useUpscaler
+        upscale: useUpscaler // Changed from use_upscaler to match models.py
       }),
     });
 
@@ -282,6 +281,8 @@ export async function preCacheNextSentences() {
   try {
     const voiceSelect = document.getElementById("voiceSelect");
     const speedRange = document.getElementById("speedRange");
+    const upscaleToggle = document.getElementById("upscaleAudioToggle"); 
+    const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
 
     // ==========================================
     // 1. GARBAGE COLLECTION (The 3-Sentence Rewind)
@@ -304,9 +305,14 @@ export async function preCacheNextSentences() {
     for (let i = 1; i <= MAX_FORWARD; i++) {
       targetSentenceIndex++; 
 
+// SURGICAL FIX: Abort obsolete upscaling if the user jumped to a different part of the book
+      if (Math.abs(state.currentSentenceIndex - targetSentenceIndex) > MAX_FORWARD + 2) {
+          console.log("[Preloader] User jumped. Aborting obsolete background upscale.");
+          break;
+      }
+
       // Safely cross the page boundary if needed
       if (targetSentenceIndex >= targetSentences.length) {
-        if (targetPageIndex < state.currentPages.length - 1) {
           targetPageIndex++;
           targetSentenceIndex = 0; 
           try {

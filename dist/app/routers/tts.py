@@ -237,6 +237,7 @@ def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list):
         "pause_settings": pause_settings,
         "rules": [str(r) for r in rules],
         "ignore_list": sorted(ignore_list),
+        "upscale": upscale
     }
     cache_string = json.dumps(cache_data, sort_keys=True)
     return hashlib.md5(cache_string.encode("utf-8")).hexdigest()
@@ -288,7 +289,7 @@ async def get_voices():
             categories[lang_code]["voices"].append(
                 {"id": voice_id, "name": get_voice_name(voice_id)}
             )
-            
+
 
         for code in categories:
             categories[code]["voices"].sort(key=lambda x: x["name"])
@@ -311,7 +312,7 @@ async def get_locale(lang: str):
         return {}
 
 @router.post("/api/synthesize")
-async def synthesize(request: SynthesisRequest):
+def synthesize(request: SynthesisRequest):
     import app.state as state_module
 
     if state_module.kokoro is None:
@@ -340,6 +341,7 @@ async def synthesize(request: SynthesisRequest):
             pause_settings,
             request.rules,
             request.ignore_list,
+            upscale_requested
         )
 
         cached_audio = audio_cache.get(cache_key)
@@ -391,6 +393,15 @@ async def synthesize(request: SynthesisRequest):
                         sample_rate = sr
                     samples = safe_concat(chunk_audios)
 
+        if upscale_requested:
+            try:
+                # Apply the upscale to the flattened array
+                samples, sample_rate = apply_upscale(samples.flatten(), sample_rate)
+            except Exception as e:
+                print(f"[TTS] Upscale failed: {e}")
+
+        buffer = io.BytesIO()
+        sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")
         buffer = io.BytesIO()
         sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")
         audio_bytes = buffer.getvalue()

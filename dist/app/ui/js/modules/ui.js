@@ -279,63 +279,47 @@ export function updateEngineStatusUI(status, selectedModelExists) {
     }
 }
 
-import { showToast } from './ui.js';
+
+// Remove the circular import completely.
 
 const upscaleToggle = document.getElementById('upscaleAudioToggle');
 
 if (upscaleToggle) {
-    // 1. Initial Load (Memory)
-    // Assuming 'state.appSettings' holds your loaded config
-    upscaleToggle.checked = state.appSettings?.use_upscaler || false;
+    // Use a direct state property instead of the undefined appSettings
+    upscaleToggle.checked = state.useUpscaler || false;
 
-    // 2. Listen for the toggle flip
     upscaleToggle.addEventListener('change', async (e) => {
         if (e.target.checked) {
             try {
-                // Check if the backend already has the models
                 const res = await fetch('/api/lavasr/status');
                 const status = await res.json();
                 
                 if (!status.exists) {
-                    // NATIVE BROWSER POPUP!
                     const downloadConfirmed = window.confirm(
                         "You don't have the HD Audio models installed yet.\n\nClick OK to download them now (~35MB), or Cancel to abort."
                     );
                     
                     if (downloadConfirmed) {
-                        // User clicked OK
                         showToast("Downloading HD Audio models... Please wait.");
-                        
-                        // Tell backend to start downloading
                         await fetch('/api/lavasr/download', { method: 'POST' });
-                        
-                        // Start polling in the background
                         pollLavasrProgress();
                     } else {
-                        // User clicked Cancel - forcefully turn the toggle back off
                         e.target.checked = false;
                     }
                 } else {
-                    // Model already exists. Save the toggle memory.
-                    state.appSettings.use_upscaler = true;
-                    // Trigger your existing save function here:
-                    // saveSettings(state.appSettings); 
+                    state.useUpscaler = true;
                 }
             } catch (err) {
                 console.error("Failed to check LavaSR status", err);
                 showToast("Error checking model status.");
-                e.target.checked = false; // Revert on failure
+                e.target.checked = false; 
             }
         } else {
-            // User manually turned it off. Save memory.
-            state.appSettings.use_upscaler = false;
-            // Trigger your existing save function here:
-            // saveSettings(state.appSettings);
+            state.useUpscaler = false;
         }
     });
 }
 
-// 3. Simple Polling Function
 let lavasrPollInterval;
 async function pollLavasrProgress() {
     clearInterval(lavasrPollInterval);
@@ -346,26 +330,17 @@ async function pollLavasrProgress() {
             const status = await res.json();
             
             if (status.exists) {
-                // Download finished!
                 clearInterval(lavasrPollInterval);
                 showToast("HD Audio models downloaded successfully! HD Audio is now active.");
-                
-                // Save memory
-                state.appSettings.use_upscaler = true;
-                // saveSettings(state.appSettings);
-                
+                state.useUpscaler = true;
             } else if (status.error) {
-                // Download failed
                 clearInterval(lavasrPollInterval);
                 showToast("Error downloading models: " + status.error);
-                
-                // Force toggle off
                 const toggle = document.getElementById('upscaleAudioToggle');
                 if (toggle) toggle.checked = false;
             }
-            // If still downloading, do nothing and check again in 2 seconds
         } catch (e) {
             console.error("Polling error:", e);
         }
-    }, 2000); // Check every 2 seconds
+    }, 2000);
 }

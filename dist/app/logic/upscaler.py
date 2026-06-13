@@ -19,13 +19,23 @@ def get_upscaler():
             from LavaSR.model import LavaEnhance2
             import torch
             
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            # Hardware acceleration check (Nvidia -> Apple Silicon -> CPU)
+            if torch.cuda.is_available():
+                device = 'cuda'
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = 'mps'
+            else:
+                device = 'cpu'
+                
             # Pass our custom folder path so it skips HuggingFace and loads locally
             _upscaler_instance = LavaEnhance2(model_path=LAVASR_DIR, device=device)
             print(f"[LavaSR] Loaded successfully on {device}")
+            
         except ImportError:
+            # This is the line that went missing or lost its indentation!
             print("[LavaSR] Code not found. Please download via the UI.")
             return None
+            
     return _upscaler_instance
 
 def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray, int]:
@@ -46,5 +56,5 @@ def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray,
     # 3. Enhance! (We turn denoise=False because Kokoro output is already noise-free)
     enhanced_tensor = upscaler.enhance(wav_tensor, enhance=True, denoise=False)
     
-    # 4. LavaSR always outputs 48kHz
-    return enhanced_tensor.cpu().numpy(), 48000
+    # 4. LavaSR always outputs 48kHz. Squeeze/flatten to ensure 1D shape (time,)
+    return enhanced_tensor.cpu().numpy().squeeze(), 48000

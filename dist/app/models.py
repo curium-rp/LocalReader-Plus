@@ -1,7 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
-
 class LibraryItem(BaseModel):
     id: str
     fileName: str
@@ -10,11 +9,9 @@ class LibraryItem(BaseModel):
     lastSentenceIndex: int
     lastAccessed: float
 
-
 class ContentItem(BaseModel):
     id: str
     pages: List[str]
-
 
 class PronunciationRule(BaseModel):
     id: str
@@ -23,7 +20,6 @@ class PronunciationRule(BaseModel):
     match_case: bool
     word_boundary: bool
     is_regex: Optional[bool] = False
-
 
 class AppSettings(BaseModel):
     pronunciationRules: List[PronunciationRule]
@@ -45,27 +41,24 @@ class AppSettings(BaseModel):
         "newline": 800,
     }
 
-
 class TimerRequest(BaseModel):
     minutes: int
 
-
 class ExportRequest(BaseModel):
     doc_id: str
+    rules: List[PronunciationRule]
     voice: str = "af_bella"
     speed: float = 1.0
-    rules: List[PronunciationRule]
     ignore_list: List[str] = []
     format: str = "wav"  
 
-
 class SynthesisRequest(BaseModel):
     text: str
+    rules: List[PronunciationRule]
     voice: str = "af_sky"
     speed: float = 1.0
-    rules: List[PronunciationRule]
     ignore_list: List[str] = []
-    use_upscaler: Optional[bool] = False
+    use_upscaler: bool = False
     pause_settings: Optional[Dict[str, int]] = {
         "comma": 300,
         "period": 600,
