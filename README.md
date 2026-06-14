@@ -1,11 +1,13 @@
-#Test base for try difference models voice don't download it has many bug super annoying with torch
+
+###***Test base for try difference models voice don't download it has many bug super annoying with torch***###
 
 #first try with marvis tts due to annoying torch cuda fail for add it
 
 if not work yet but it nealy work now with f5 tts and kokoro back to online mormally should
 has problem with gui clone voice did not works as expect 
 
-fish speech hole hole hole state.
+***fish speech hole/abandon state.***
+***Didn't have Powerfully GPU to test and it not function yet***
 
 ```
 LocalReader-Plus
