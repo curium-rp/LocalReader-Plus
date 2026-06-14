@@ -58,66 +58,78 @@ if code_parent_path and code_parent_path not in sys.path:
 
 _upscaler_instance = None
 _force_cpu_fallback = False
+_init_failed = False
 upscale_lock = threading.Lock()
 
 def get_upscaler():
-    global _upscaler_instance, _force_cpu_fallback
+    global _upscaler_instance, _force_cpu_fallback, _init_failed
+    
+    # If it permanently failed once, don't keep trying and crashing
+    if _init_failed:
+        return None
+
     if _upscaler_instance is None:
-        try:
-            # Vocoder Dependency Check
-            try:
-                import vocos
-            except ImportError:
-                raise ImportError("CRITICAL MISSING DEPENDENCY: 'vocos' is not installed. Open your terminal and run: pip install vocos")
+        with upscale_lock:
+            # Double-checked locking to prevent the browser's 3x preloader from hammering RAM
+            if _upscaler_instance is None:
+                try:
+                    # Vocoder Dependency Check
+                    try:
+                        import vocos
+                    except ImportError:
+                        raise ImportError("CRITICAL MISSING DEPENDENCY: 'vocos' is not installed. Open your terminal and run: pip install vocos")
 
-            if not code_parent_path or not weights_root_path:
-                raise FileNotFoundError("Omni-Scanner failed to locate all 4 required files (model.py, pytorch_model.bin, config.yaml, denoiser.bin).")
-                
-            from LavaSR.model import LavaEnhance2
-            from LavaSR.enhancer.linkwitz_merge import FastLRMerge
-            import torch
-            
-            # Hardware Detection
-            if torch.cuda.is_available() and not _force_cpu_fallback:
-                primary_device = 'cuda'
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and not _force_cpu_fallback:
-                primary_device = 'mps'
-            else:
-                primary_device = 'cpu'
-                
-            # Helper function to initialize so we can attempt it multiple times
-            def _init_model(target_device):
-                instance = LavaEnhance2(model_path=weights_root_path, device=target_device)
-                instance.bwe_model.lr_refiner = FastLRMerge(
-                    cutoff=8000, 
-                    device=target_device
-                )
-                return instance
-
-            # ATTEMPT 1: Load on Primary Hardware Accelerator
-            try:
-                _upscaler_instance = _init_model(primary_device)
-                print(f"[LavaSR] Loaded successfully on {primary_device.upper()}")
-            except Exception as load_e:
-                # ATTEMPT 2: Fallback to CPU if GPU initialization fails (e.g., Driver issue)
-                if primary_device != 'cpu':
-                    print(f"\n[LavaSR WARNING] Failed to initialize on {primary_device.upper()}: {load_e}")
-                    print("[LavaSR] Attempting CPU Fallback for initialization...")
-                    
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    if not code_parent_path or not weights_root_path:
+                        raise FileNotFoundError("Omni-Scanner failed to locate all 4 required files (model.py, pytorch_model.bin, config.yaml, denoiser.bin).")
                         
-                    _force_cpu_fallback = True
-                    _upscaler_instance = _init_model('cpu')
-                    print("[LavaSR] Loaded successfully on CPU (Fallback Active)\n")
-                else:
-                    raise load_e
-            
-        except Exception as e:
-            print(f"\n[LavaSR CRITICAL] INITIALIZATION COMPLETELY FAILED")
-            print(f"Error details: {e}")
-            traceback.print_exc()
-            return None
+                    from LavaSR.model import LavaEnhance2
+                    from LavaSR.enhancer.linkwitz_merge import FastLRMerge
+                    import torch
+                    
+                    # Hardware Detection
+                    if torch.cuda.is_available() and not _force_cpu_fallback:
+                        primary_device = 'cuda'
+                    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and not _force_cpu_fallback:
+                        primary_device = 'mps'
+                    else:
+                        primary_device = 'cpu'
+                        
+                    # Helper function to initialize so we can attempt it multiple times
+                    def _init_model(target_device):
+                        instance = LavaEnhance2(model_path=weights_root_path, device="cpu")
+                        instance.bwe_model.lr_refiner = FastLRMerge(
+                            cutoff=8000, 
+                            device=target_device,
+                            device="cpu"
+                        )
+                        return instance
+
+                    # ATTEMPT 1: Load on Primary Hardware Accelerator
+                    try:
+                        _upscaler_instance = _init_model(primary_device)
+                        print(f"[LavaSR] Loaded successfully on {primary_device.upper()}")
+                    except Exception as load_e:
+                        # ATTEMPT 2: Fallback to CPU if GPU initialization fails (e.g., Driver issue)
+                        if primary_device != 'cpu':
+                            print(f"\n[LavaSR WARNING] Failed to initialize on {primary_device.upper()}: {load_e}")
+                            print("[LavaSR] Attempting CPU Fallback for initialization...")
+                            
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                
+                            _force_cpu_fallback = True
+                            _upscaler_instance = _init_model('cpu')
+                            print("[LavaSR] Loaded successfully on CPU (Fallback Active)\n")
+                        else:
+                            raise load_e
+                    
+                except Exception as e:
+                    print(f"\n[LavaSR CRITICAL] INITIALIZATION COMPLETELY FAILED")
+                    print(f"Error details: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    _init_failed = True
+                    return None
             
     return _upscaler_instance
 
@@ -137,7 +149,8 @@ def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray,
     
     with upscale_lock:
         try:
-            wav_tensor = torch.from_numpy(audio_array).float().to(upscaler.device)
+            # Force tensor strictly to CPU, ignoring whatever the upscaler object claims
+            wav_tensor = torch.from_numpy(audio_array).float().to('cpu')
             
             if wav_tensor.dim() == 1:
                 wav_tensor = wav_tensor.unsqueeze(0)
@@ -145,7 +158,6 @@ def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray,
             if current_sr != 16000:
                 wav_tensor = torchaudio.functional.resample(wav_tensor, current_sr, 16000)
             
-            # Massively expand chunk limits. 60 seconds of buffer to prevent "mic turn off" popping artifacts
             chunk_size = 16000 * 60
             total_length = wav_tensor.shape[-1]
             enhanced_chunks = []
@@ -168,7 +180,6 @@ def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray,
                 
             output_array = output_tensor.squeeze().numpy()
             
-            # Final temporal bounds check to completely eliminate any WebAudio pitch stretching
             if len(output_array) > exact_target_length:
                 output_array = output_array[:exact_target_length]
             elif len(output_array) < exact_target_length:
@@ -178,25 +189,16 @@ def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray,
             return output_array, FINAL_SR
             
         except Exception as e:
-            print(f"\n[LavaSR CRITICAL] Tensor Math crashed during execution!")
+            print(f"\n[LavaSR CRITICAL] CPU Math crashed during execution!")
             print(f"[Error Type] {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
-            
-            if upscaler.device != 'cpu':
-                print("[LavaSR] Hardware execution failed. Forcing CPU mode for all future requests.")
-                _upscaler_instance = None
-                _force_cpu_fallback = True
                 
             return audio_array, current_sr
             
         finally:
+            # Clean up standard RAM only. CUDA/MPS hardware cache clears have been completely removed.
             if 'wav_tensor' in locals(): del wav_tensor
             if 'chunk' in locals(): del chunk
             if 'enhanced_chunk' in locals(): del enhanced_chunk
             if 'output_tensor' in locals(): del output_tensor
-            
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                torch.mps.empty_cache()

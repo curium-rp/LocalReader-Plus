@@ -33,9 +33,10 @@ def custom_forward(self, x: torch.Tensor) -> torch.Tensor:
   
 class LavaBWE:
     def __init__(self, model_path, device='cpu'):
-      
-        self.device = device
-        self.lr_refiner = FastLRMerge(device=device)
+        # --- STRICT CPU LOCK ---
+        self.device = 'cpu'
+        self.lr_refiner = FastLRMerge(device=self.device)
+        self.sample_rate = 44100  # Default safe fallback config state
 
         state_dict = torch.load(f"{model_path}/pytorch_model.bin", map_location="cpu")
         
@@ -49,8 +50,11 @@ class LavaBWE:
                 needs_save = False
                 init_args = config_data.get("feature_extractor", {}).get("init_args", {})
                 
-                # Aggressively strip both 'norm' and 'mel_scale' to prevent Vocos TypeError crashes
-                for problematic_arg in ["norm", "mel_scale"]:
+                if "sample_rate" in init_args:
+                    self.sample_rate = init_args["sample_rate"]
+                
+                # Aggressively strip unsupported arguments
+                for problematic_arg in ["norm", "mel_scale", "f_max"]:
                     if problematic_arg in init_args:
                         del init_args[problematic_arg]
                         needs_save = True
@@ -65,24 +69,23 @@ class LavaBWE:
         self.bwe_model = Vocos.from_hparams(config_path)
 
         self.bwe_model.load_state_dict(state_dict)
-        self.bwe_model = self.bwe_model.eval().to(device)
+        self.bwe_model = self.bwe_model.eval().to(self.device)
     
         self.bwe_model.head.forward = types.MethodType(custom_forward, self.bwe_model.head)
 
     def infer(self, wav, autocast=False):
-        """Inference function for bwe. Native 48kHz processing restored."""
+        """Inference function for bwe. Pure CPU processing."""
       
         wav = wav.to(self.device)
-        dev_type = 'cuda' if 'cuda' in str(self.device) else ('mps' if 'mps' in str(self.device) else 'cpu')
         
-        with torch.no_grad(), torch.autocast(device_type=dev_type, dtype=torch.float16, enabled=autocast):
+        # Stripped out all mixed-precision and CUDA autocasting. Pure CPU execution.
+        with torch.no_grad():
             features_input = self.bwe_model.feature_extractor(wav)
             features = self.bwe_model.backbone(features_input)
             pred_audio = self.bwe_model.head(features)
             
-            with torch.autocast(device_type=dev_type, enabled=False):
-                # Flawless 1:1 length matching
-                min_len = min(pred_audio.shape[1], wav.shape[1])
-                pred_audio = self.lr_refiner(pred_audio[:, :min_len].float(), wav[:, :min_len].float())
+            # Flawless 1:1 length matching
+            min_len = min(pred_audio.shape[1], wav.shape[1])
+            pred_audio = self.lr_refiner(pred_audio[:, :min_len].float(), wav[:, :min_len].float())
 
         return pred_audio

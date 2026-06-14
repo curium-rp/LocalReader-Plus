@@ -6,14 +6,17 @@ import { renderPage, getSentencesForPage } from "./library.js";
 if (!state.audioBufferCache) state.audioBufferCache = new Map();
 if (!state.inFlightRequests) state.inFlightRequests = new Map();
 
+// --- EXECUTION LOCK ---
+// Prevents the "restart over" bug by tracking the absolute latest playback request
+let playNextSessionId = 0; 
+
 export function initAudioContext() {
   if (!state.audioContext || state.audioContext.state === 'closed') {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     try {
-      // Force strict 48kHz hardware clock to prevent browser downsampling desyncs
       state.audioContext = new AudioCtx({ sampleRate: 48000 });
     } catch (e) {
-      state.audioContext = new AudioCtx(); // Fallback
+      state.audioContext = new AudioCtx(); 
     }
   }
   if (state.audioContext.state === "suspended") {
@@ -31,7 +34,7 @@ export function playAudioBuffer(audioBuffer) {
 
   const source = state.audioContext.createBufferSource();
   source.buffer = audioBuffer;
-  source.playbackRate.value = 1.0; // Enforce natural speed to prevent "blur"
+  source.playbackRate.value = 1.0; 
   source.connect(state.audioContext.destination);
 
   source.onended = async () => {
@@ -136,6 +139,9 @@ async function getSynthesizedAudio(lookupKey, payload, priority = "preload") {
 
 export async function playNext() {
   const targetIndex = state.currentSentenceIndex;
+  playNextSessionId++; // Register a unique ID for this specific execution
+  const currentSession = playNextSessionId;
+
   if (!state.isPlaying || !window.isEngineReady) {
     stopPlayback();
     return;
@@ -199,8 +205,9 @@ export async function playNext() {
   try {
     const audioBuffer = await getSynthesizedAudio(lookupKey, payload, "high");
 
-    if (!state.isPlaying || state.currentSentenceIndex !== targetIndex) {
-      return;
+    // SAFETY CHECK: Abort playback if the user clicked next/toggled again while we were fetching
+    if (!state.isPlaying || state.currentSentenceIndex !== targetIndex || currentSession !== playNextSessionId) {
+      return; 
     }
 
     playAudioBuffer(audioBuffer);
@@ -440,18 +447,25 @@ export async function loadVoices() {
 }
 
 // --- PIPELINE FLUSH LISTENER ---
-// Instantly resets the WebAudio hardware clock when Upscaler is toggled.
-// This prevents the browser from caching the wrong sample rate and slowing down the audio.
 document.addEventListener("DOMContentLoaded", () => {
     const checkToggle = setInterval(() => {
         const upscaleToggle = document.getElementById("upscaleAudioToggle");
         if (upscaleToggle) {
             clearInterval(checkToggle);
             upscaleToggle.addEventListener("change", async () => {
-                // 1. Wipe all memory caches instantly
+                
+                // 1. Lock the UI toggle to prevent spamming and crashing the server queue
+                upscaleToggle.disabled = true;
+
+                // 2. Give UI feedback for the loading process
+                if (upscaleToggle.checked) {
+                    showToast("Upscaler Active: Processing High-Res Audio...");
+                } else {
+                    showToast("Upscaler Disabled: Switching to Standard Audio...");
+                }
+
                 state.audioBufferCache.clear();
                 
-                // 2. Abort any background preloads that are using the old state
                 if (state.inFlightRequests) {
                     for (const [key, req] of state.inFlightRequests.entries()) {
                         req.controller.abort();
@@ -459,7 +473,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     state.inFlightRequests.clear();
                 }
                 
-                // 3. Hard-reset the Audio Hardware Context to flush buffer glitches
                 if (state.audioContext) {
                     try {
                         if (state.currentAudioSource) {
@@ -475,10 +488,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 
                 initAudioContext();
 
-                // 4. Seamlessly resume if the user was actively listening
+                // 3. Request the new audio file
                 if (state.isPlaying) {
-                    playNext();
+                    await playNext();
                 }
+
+                // 4. Unlock the UI toggle now that processing is stable
+                upscaleToggle.disabled = false;
             });
         }
     }, 500);
