@@ -34,12 +34,11 @@ except ImportError:
             apply_header_footer_filter,
         )
     except ImportError:
-        # Fallback if logic folder is in a different relative location
         pass
 
 router = APIRouter()
 
-
+# file uploads MUST remain async
 @router.post("/api/convert/epub")
 async def convert_epub(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".epub"):
@@ -102,18 +101,17 @@ async def convert_epub(background_tasks: BackgroundTasks, file: UploadFile = Fil
         cleanup_files()
         raise HTTPException(status_code=500, detail=str(e))
 
-
+# Removed 'async' -> FastAPI will now run these in background threads to prevent freezing!
 @router.get("/api/library")
-async def get_library():
+def get_library():
     try:
         with open(library_file, "r") as f:
             return json.load(f)
     except Exception:
         return []
 
-
 @router.post("/api/library")
-async def save_library_item(item: LibraryItem):
+def save_library_item(item: LibraryItem):
     try:
         with open(library_file, "r") as f:
             library = json.load(f)
@@ -132,9 +130,8 @@ async def save_library_item(item: LibraryItem):
     safe_save_json(library_file, library)
     return {"status": "ok"}
 
-
 @router.delete("/api/library/{doc_id}")
-async def delete_library_item(doc_id: str):
+def delete_library_item(doc_id: str):
     try:
         with open(library_file, "r") as f:
             library = json.load(f)
@@ -157,9 +154,8 @@ async def delete_library_item(doc_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/api/library/content/{doc_id}")
-async def get_content(doc_id: str):
+def get_content(doc_id: str):
     file_path = content_dir / f"{doc_id}.json"
     if not file_path.exists():
         raise HTTPException(status_code=404)
@@ -168,23 +164,19 @@ async def get_content(doc_id: str):
 
     pages = data.get("pages", [])
     if pages:
-        # Import needs to happen or be available
         from logic.smart_content_detector import find_content_start_page
-
         smart_start = find_content_start_page(pages)
         data["smart_start_page"] = smart_start
 
     return data
 
-
 @router.post("/api/library/content")
-async def save_content(item: ContentItem):
+def save_content(item: ContentItem):
     safe_save_json(content_dir / f"{item.id}.json", item.model_dump())
     return {"status": "ok"}
 
-
 @router.get("/api/library/content/{doc_id}/page/{page_index}")
-async def get_page_with_filter(doc_id: str, page_index: int):
+def get_page_with_filter(doc_id: str, page_index: int):
     file_path = content_dir / f"{doc_id}.json"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Document not found")
@@ -225,9 +217,8 @@ async def get_page_with_filter(doc_id: str, page_index: int):
         "mode": mode,
     }
 
-
 @router.get("/api/library/search/{doc_id}")
-async def search_book(doc_id: str, q: str):
+def search_book(doc_id: str, q: str):
     if not q or len(q) < 2:
         return {"results": [], "total_matches": 0, "query": q}
 

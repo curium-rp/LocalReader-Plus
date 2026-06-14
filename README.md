@@ -1,9 +1,10 @@
 # LocalReader Plus
 
 **A modern, privacy-focused PDF/EPUB reader with AI-powered text-to-speech, multilingual support, and smart audio caching ~~that authors didn't active~~ .**
+### Supprot LavaSR for Upscale audio from 24 up to 48kHz
+ **bata apps**
 
-And i found out it has many bug and problem that why i started to debug this project
-    
+
 
 # What difference from LocalReader Pro(main)
 
@@ -211,6 +212,7 @@ python3.12 main.py
    - **Colon (:)** - Default: 500ms
    - **Semicolon (;)** - Default: 500ms
    - **Newline** - Dynamics adjustment (Hidden) 
+          
             speed = [0.50, 0.75, 1.00, 1.20, 1.35, 1.50, 1.75, 2.00, 2.50, 3.00]
             pause = [800,  550,  400,  320,  100,  85,   70,   50,   35,   25]
             You can change in tts.py in dist\app\routers keyward "dynamics adjust"
@@ -253,6 +255,7 @@ python3.12 main.py
 | **PDF Parsing**     | PDF.js (Mozilla)                  |
 | **Audio Export**    | pydub + FFMPEG                    |
 | **EPUB Support**    | ebooklib + xhtml2pdf              |
+| **LavaSR V2**       | Upscale audio                     |
 
 ### File Structure
 
@@ -266,10 +269,11 @@ LocalReader-Plus
     ├── app/
     │   ├── server.py            # FastAPI initialization
     │   ├── state.py             # Global engine/status singleton
-    │   ├── routers/             # API Controllers (TTS, Library, Export, etc.)
+    │   ├── routers/             # API Controllers (TTS, Library, Export,etc.)
     │   ├── logic/               # Core logic (Normalize, Detector, Cache)
     │   ├── locales/             # UI Translations (EN, ES, FR, ZH, JA)
-    │   └── ui/
+    │   |── ui/
+    │   └── LavaSR               # Upscale voice auto downloads enhance_v2 models
     │       ├── index.html       # Main SPA
     │       ├── css/style.css    # Premium styling
     │       └── js/modules/      # ES6 Logic modules
@@ -295,7 +299,7 @@ LocalReader-Plus
 | **Voice Pack (shared)**   | ~30 MB                              |
 | **FFMPEG**                | ~100 MB (optional for MP3 output)   |
 | **Audio Cache (SQLite)**  | ~200 MB max (auto-managed)          |
-| **Per Document Cache**    | ~1-5+ MB                             |
+| **Per Document Cache**    | ~1-5+ MB                            |
 | **Exported WAV / MP3**    | ~1 MB / ~2.7 MB per minute of audio |
 | **Cudnn 9.xx**            | ~3 GB (optional)                    |
 | **Cuda 12.xx**            | ~3 GB to 4.5 GB (optional)          |
@@ -370,6 +374,7 @@ LocalReader-Plus
 | **FFMPEG**       | LGPL 2.1+    |
 | **Cudnn 9.xx**   | EULA         |
 | **Cuda 12.xx**   | EULA         |
+| **LavaSR V2**    | Apache-2.0   |
 ---
 
 ## ⚪ Credits
@@ -381,6 +386,7 @@ LocalReader-Plus
 - **UI Framework:** [Tailwind CSS](https://tailwindcss.com/) / [github](https://github.com/tailwindlabs/tailwindcss)
 - **Icons:** [Lucide](https://lucide.dev/)
 - **Audio Processing:** [FFMPEG](https://ffmpeg.org/)
+- **Audio Upscaling:** [LavaSR](https://ffmpeg.org/)
   
 ---
 
@@ -401,9 +407,11 @@ LocalReader-Plus
 
 
 **Engine:** Kokoro-82M (Dual-Mode: CPU/GPU)
-**Last Updated LocalReader Pro:** January 6, 2026
+~~Last Updated LocalReader Pro: January 6, 2026~~
 
-**Last Updated this fork** June 11, 2026
+**Last Updated this fork** June 14, 2026
+
+Bata 
 
 ---
 

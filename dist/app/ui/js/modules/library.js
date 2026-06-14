@@ -65,6 +65,15 @@ export async function loadLibrary() {
 
 export async function selectDocument(item) {
   state.currentDoc = item;
+  
+  // IMMEDIATELY give visual feedback so the UI doesn't look frozen
+  showToast(`Opening ${item.fileName}...`);
+  const textContent = document.getElementById("textContent");
+  if (textContent) {
+      textContent.classList.remove("hidden");
+      textContent.innerHTML = '<div class="text-zinc-500 p-4 animate-pulse">Loading document content...</div>';
+  }
+
   try {
     const data = await fetchJSON(`/api/library/content/${item.id}`);
     state.currentPages = data.pages;
@@ -92,7 +101,6 @@ export async function selectDocument(item) {
     const pageNav = document.getElementById("pageNav");
     const controls = document.getElementById("controls");
     const emptyState = document.getElementById("emptyState");
-    const textContent = document.getElementById("textContent");
     const prevPage = document.getElementById("prevPage");
     const nextPage = document.getElementById("nextPage");
     const pageInput = document.getElementById("pageInput");
@@ -111,10 +119,8 @@ export async function selectDocument(item) {
     if (pageInput) pageInput.disabled = false;
     if (controls) controls.classList.remove("hidden");
     if (emptyState) emptyState.classList.add("hidden");
-    if (textContent) textContent.classList.remove("hidden");
     if (searchBtn) searchBtn.classList.remove("hidden");
 
-    // Note: engine status check should handle these
     if (exportArea) exportArea.style.display = "block";
     if (textSizeArea) textSizeArea.style.display = "block";
 
@@ -123,6 +129,7 @@ export async function selectDocument(item) {
   } catch (e) {
     console.error("Select document error:", e);
     showToast("Failed to load document content");
+    if (textContent) textContent.innerHTML = '';
   }
 }
 

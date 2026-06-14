@@ -446,56 +446,54 @@ export async function loadVoices() {
   }
 }
 
-// --- PIPELINE FLUSH LISTENER ---
-document.addEventListener("DOMContentLoaded", () => {
-    const checkToggle = setInterval(() => {
-        const upscaleToggle = document.getElementById("upscaleAudioToggle");
-        if (upscaleToggle) {
-            clearInterval(checkToggle);
-            upscaleToggle.addEventListener("change", async () => {
-                
-                // 1. Lock the UI toggle to prevent spamming and crashing the server queue
-                upscaleToggle.disabled = true;
+// --- PERMANENT PIPELINE FLUSH LISTENER ---
+// Uses Event Delegation so it survives even if the settings panel is closed and reopened
+document.addEventListener("change", async (e) => {
+    if (e.target && e.target.id === "upscaleAudioToggle") {
+        const upscaleToggle = e.target;
+        
+        // 1. Lock the UI toggle to prevent spamming
+        upscaleToggle.disabled = true;
 
-                // 2. Give UI feedback for the loading process
-                if (upscaleToggle.checked) {
-                    showToast("Upscaler Active: Processing High-Res Audio...");
-                } else {
-                    showToast("Upscaler Disabled: Switching to Standard Audio...");
-                }
-
-                state.audioBufferCache.clear();
-                
-                if (state.inFlightRequests) {
-                    for (const [key, req] of state.inFlightRequests.entries()) {
-                        req.controller.abort();
-                    }
-                    state.inFlightRequests.clear();
-                }
-                
-                if (state.audioContext) {
-                    try {
-                        if (state.currentAudioSource) {
-                            state.currentAudioSource.onended = null;
-                            state.currentAudioSource.stop();
-                            state.currentAudioSource.disconnect();
-                            state.currentAudioSource = null;
-                        }
-                        await state.audioContext.close();
-                    } catch (e) {}
-                    state.audioContext = null;
-                }
-                
-                initAudioContext();
-
-                // 3. Request the new audio file
-                if (state.isPlaying) {
-                    await playNext();
-                }
-
-                // 4. Unlock the UI toggle now that processing is stable
-                upscaleToggle.disabled = false;
-            });
+        // 2. Give precise UI feedback for the loading process
+        if (upscaleToggle.checked) {
+            showToast("Upscaler Active: Processing High-Res Audio... (CPU mode may take a few seconds)");
+        } else {
+            showToast("Upscaler Disabled: Switching to Standard Audio...");
         }
-    }, 500);
+
+        // Wipe caches
+        state.audioBufferCache.clear();
+        
+        if (state.inFlightRequests) {
+            for (const [key, req] of state.inFlightRequests.entries()) {
+                req.controller.abort();
+            }
+            state.inFlightRequests.clear();
+        }
+        
+        // Hard-reset audio hardware
+        if (state.audioContext) {
+            try {
+                if (state.currentAudioSource) {
+                    state.currentAudioSource.onended = null;
+                    state.currentAudioSource.stop();
+                    state.currentAudioSource.disconnect();
+                    state.currentAudioSource = null;
+                }
+                await state.audioContext.close();
+            } catch (err) {}
+            state.audioContext = null;
+        }
+        
+        initAudioContext();
+
+        // 3. Request the new audio file
+        if (state.isPlaying) {
+            await playNext();
+        }
+
+        // 4. Unlock the UI toggle
+        upscaleToggle.disabled = false;
+    }
 });

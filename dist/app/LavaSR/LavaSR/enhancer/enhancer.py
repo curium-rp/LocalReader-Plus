@@ -53,8 +53,8 @@ class LavaBWE:
                 if "sample_rate" in init_args:
                     self.sample_rate = init_args["sample_rate"]
                 
-                # Aggressively strip unsupported arguments
-                for problematic_arg in ["norm", "mel_scale", "f_max"]:
+                # Aggressively strip all modern unsupported arguments
+                for problematic_arg in ["norm", "mel_scale", "f_max", "f_min"]:
                     if problematic_arg in init_args:
                         del init_args[problematic_arg]
                         needs_save = True
