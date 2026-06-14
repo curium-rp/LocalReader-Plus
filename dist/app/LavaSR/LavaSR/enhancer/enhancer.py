@@ -1,12 +1,11 @@
 ## Proposed work 
 ## This BWE model is based on Vocos, excellant speed with good quality.
 
-
+import os
+import yaml
 import torch
 import types
-import yaml
 from vocos import Vocos
-from torch.cuda.amp import autocast as autocast_func
 
 ## used to improve quality in end
 from LavaSR.enhancer.linkwitz_merge import FastLRMerge
@@ -40,34 +39,29 @@ class LavaBWE:
 
         state_dict = torch.load(f"{model_path}/pytorch_model.bin", map_location="cpu")
         
-        # ==========================================
-        # SURGICAL FIX: Vocos Version Conflict Patcher
-        # ==========================================
-        # Newer versions of Vocos removed 'f_min' and 'f_max'. We intercept the 
-        # config.yaml, delete the unsupported arguments, and save it back instantly.
+        # --- AUTO-PATCH INJECTION START ---
         config_path = f"{model_path}/config.yaml"
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config_data = yaml.safe_load(f)
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config_data = yaml.safe_load(f)
                 
-            needs_patch = False
-            if "feature_extractor" in config_data and "init_args" in config_data["feature_extractor"]:
-                init_args = config_data["feature_extractor"]["init_args"]
-                if "f_min" in init_args:
-                    del init_args["f_min"]
-                    needs_patch = True
-                if "f_max" in init_args:
-                    del init_args["f_max"]
-                    needs_patch = True
-                    
-            if needs_patch:
-                with open(config_path, "w", encoding="utf-8") as f:
-                    yaml.dump(config_data, f)
-                print("[LavaSR] Successfully auto-patched config.yaml for Vocos compatibility.")
-        except Exception as e:
-            print(f"[LavaSR WARNING] Could not auto-patch config.yaml: {e}")
+                needs_save = False
+                init_args = config_data.get("feature_extractor", {}).get("init_args", {})
+                
+                # Aggressively strip both 'norm' and 'mel_scale' to prevent Vocos TypeError crashes
+                for problematic_arg in ["norm", "mel_scale"]:
+                    if problematic_arg in init_args:
+                        del init_args[problematic_arg]
+                        needs_save = True
+                        
+                if needs_save:
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        yaml.dump(config_data, f, default_flow_style=False)
+            except Exception as e:
+                pass
+        # --- AUTO-PATCH INJECTION END ---
 
-        # Boot Vocos using the safely cleaned config
         self.bwe_model = Vocos.from_hparams(config_path)
 
         self.bwe_model.load_state_dict(state_dict)
@@ -75,17 +69,20 @@ class LavaBWE:
     
         self.bwe_model.head.forward = types.MethodType(custom_forward, self.bwe_model.head)
 
-        
-
     def infer(self, wav, autocast=False):
-        """Inference function for bwe"""
+        """Inference function for bwe. Native 48kHz processing restored."""
       
         wav = wav.to(self.device)
-        with torch.no_grad(), torch.autocast(self.device, dtype=torch.float16, enabled=autocast):
+        dev_type = 'cuda' if 'cuda' in str(self.device) else ('mps' if 'mps' in str(self.device) else 'cpu')
+        
+        with torch.no_grad(), torch.autocast(device_type=dev_type, dtype=torch.float16, enabled=autocast):
             features_input = self.bwe_model.feature_extractor(wav)
             features = self.bwe_model.backbone(features_input)
             pred_audio = self.bwe_model.head(features)
-            with autocast_func(enabled=False):
-                pred_audio = self.lr_refiner(pred_audio[:, :wav.shape[1]].float(), wav[:, :pred_audio.shape[1]].float())
+            
+            with torch.autocast(device_type=dev_type, enabled=False):
+                # Flawless 1:1 length matching
+                min_len = min(pred_audio.shape[1], wav.shape[1])
+                pred_audio = self.lr_refiner(pred_audio[:, :min_len].float(), wav[:, :min_len].float())
 
         return pred_audio

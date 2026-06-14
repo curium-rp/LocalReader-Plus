@@ -7,8 +7,14 @@ if (!state.audioBufferCache) state.audioBufferCache = new Map();
 if (!state.inFlightRequests) state.inFlightRequests = new Map();
 
 export function initAudioContext() {
-  if (!state.audioContext) {
-    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  if (!state.audioContext || state.audioContext.state === 'closed') {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    try {
+      // Force strict 48kHz hardware clock to prevent browser downsampling desyncs
+      state.audioContext = new AudioCtx({ sampleRate: 48000 });
+    } catch (e) {
+      state.audioContext = new AudioCtx(); // Fallback
+    }
   }
   if (state.audioContext.state === "suspended") {
     state.audioContext.resume();
@@ -25,6 +31,7 @@ export function playAudioBuffer(audioBuffer) {
 
   const source = state.audioContext.createBufferSource();
   source.buffer = audioBuffer;
+  source.playbackRate.value = 1.0; // Enforce natural speed to prevent "blur"
   source.connect(state.audioContext.destination);
 
   source.onended = async () => {
@@ -176,7 +183,6 @@ export async function playNext() {
   const speedRange = document.getElementById("speedRange");
   const upscaleToggle = document.getElementById("upscaleAudioToggle");
   
-  // SECURE FRONTEND LINK: Read the HTML toggle strictly
   const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
   const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}_${useUpscaler}`;
 
@@ -187,7 +193,7 @@ export async function playNext() {
     rules: state.rules,
     ignore_list: state.ignoreList,
     pause_settings: state.pauseSettings,
-    use_upscaler: useUpscaler // Passes command to models.py -> tts.py
+    use_upscaler: useUpscaler 
   };
 
   try {
@@ -299,7 +305,6 @@ export async function preCacheNextSentences() {
     const speedRange = document.getElementById("speedRange");
     const upscaleToggle = document.getElementById("upscaleAudioToggle"); 
     
-    // SECURE FRONTEND LINK: Ensure preloader checks toggle
     const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
 
     while (state.audioBufferCache.size > MAX_CACHE_SIZE) {
@@ -311,7 +316,7 @@ export async function preCacheNextSentences() {
     let targetSentenceIndex = state.currentSentenceIndex;
     let targetSentences = state.readingSentences;
 
-    for (let i = 1; i <= MAX_FORWARD; i++) {
+    for (let let_i = 1; let_i <= MAX_FORWARD; let_i++) {
       targetSentenceIndex++; 
 
       if (Math.abs(state.currentSentenceIndex - targetSentenceIndex) > MAX_FORWARD + 2) {
@@ -433,3 +438,48 @@ export async function loadVoices() {
     return false;
   }
 }
+
+// --- PIPELINE FLUSH LISTENER ---
+// Instantly resets the WebAudio hardware clock when Upscaler is toggled.
+// This prevents the browser from caching the wrong sample rate and slowing down the audio.
+document.addEventListener("DOMContentLoaded", () => {
+    const checkToggle = setInterval(() => {
+        const upscaleToggle = document.getElementById("upscaleAudioToggle");
+        if (upscaleToggle) {
+            clearInterval(checkToggle);
+            upscaleToggle.addEventListener("change", async () => {
+                // 1. Wipe all memory caches instantly
+                state.audioBufferCache.clear();
+                
+                // 2. Abort any background preloads that are using the old state
+                if (state.inFlightRequests) {
+                    for (const [key, req] of state.inFlightRequests.entries()) {
+                        req.controller.abort();
+                    }
+                    state.inFlightRequests.clear();
+                }
+                
+                // 3. Hard-reset the Audio Hardware Context to flush buffer glitches
+                if (state.audioContext) {
+                    try {
+                        if (state.currentAudioSource) {
+                            state.currentAudioSource.onended = null;
+                            state.currentAudioSource.stop();
+                            state.currentAudioSource.disconnect();
+                            state.currentAudioSource = null;
+                        }
+                        await state.audioContext.close();
+                    } catch (e) {}
+                    state.audioContext = null;
+                }
+                
+                initAudioContext();
+
+                // 4. Seamlessly resume if the user was actively listening
+                if (state.isPlaying) {
+                    playNext();
+                }
+            });
+        }
+    }, 500);
+});

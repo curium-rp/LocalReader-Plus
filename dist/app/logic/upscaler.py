@@ -89,7 +89,6 @@ def get_upscaler():
             def _init_model(target_device):
                 instance = LavaEnhance2(model_path=weights_root_path, device=target_device)
                 instance.bwe_model.lr_refiner = FastLRMerge(
-                    target_sr=48000, 
                     cutoff=8000, 
                     device=target_device
                 )
@@ -131,23 +130,23 @@ def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray,
     
     import torch
     import torchaudio
+    import numpy as np
     
-    target_sr = 48000
-    exact_target_length = int(len(audio_array) * (target_sr / current_sr))
+    FINAL_SR = 48000
+    exact_target_length = int(len(audio_array) * (FINAL_SR / current_sr))
     
     with upscale_lock:
         try:
             wav_tensor = torch.from_numpy(audio_array).float().to(upscaler.device)
             
-            # 1D Shape Crash Fix
             if wav_tensor.dim() == 1:
                 wav_tensor = wav_tensor.unsqueeze(0)
             
             if current_sr != 16000:
                 wav_tensor = torchaudio.functional.resample(wav_tensor, current_sr, 16000)
             
-            # VRAM Explosion Chunking (5-second max safe limits)
-            chunk_size = 16000 * 5
+            # Massively expand chunk limits. 60 seconds of buffer to prevent "mic turn off" popping artifacts
+            chunk_size = 16000 * 60
             total_length = wav_tensor.shape[-1]
             enhanced_chunks = []
             
@@ -156,38 +155,42 @@ def apply_upscale(audio_array: np.ndarray, current_sr: int) -> tuple[np.ndarray,
                 chunk = wav_tensor[..., start:end]
                 
                 enhanced_chunk = upscaler.enhance(chunk, enhance=True, denoise=False)
-                enhanced_chunks.append(enhanced_chunk.cpu().squeeze())
+                
+                if enhanced_chunk.dim() == 1:
+                    enhanced_chunk = enhanced_chunk.unsqueeze(0)
+                
+                enhanced_chunks.append(enhanced_chunk.cpu())
             
-            # Reassemble the safe chunks
             if len(enhanced_chunks) > 1:
                 output_tensor = torch.cat(enhanced_chunks, dim=-1)
             else:
                 output_tensor = enhanced_chunks[0]
                 
-            output_array = output_tensor.numpy()
+            output_array = output_tensor.squeeze().numpy()
             
+            # Final temporal bounds check to completely eliminate any WebAudio pitch stretching
             if len(output_array) > exact_target_length:
                 output_array = output_array[:exact_target_length]
+            elif len(output_array) < exact_target_length:
+                pad_amount = exact_target_length - len(output_array)
+                output_array = np.pad(output_array, (0, pad_amount), mode='constant')
                 
-            return output_array, target_sr
+            return output_array, FINAL_SR
             
         except Exception as e:
             print(f"\n[LavaSR CRITICAL] Tensor Math crashed during execution!")
             print(f"[Error Type] {type(e).__name__}: {e}")
+            import traceback
             traceback.print_exc()
             
-            # RUNTIME CPU FALLBACK: If the GPU crashes during math (e.g., Out of Memory), 
-            # lock to CPU mode so the NEXT sentence succeeds.
             if upscaler.device != 'cpu':
                 print("[LavaSR] Hardware execution failed. Forcing CPU mode for all future requests.")
                 _upscaler_instance = None
                 _force_cpu_fallback = True
                 
-            print("[LavaSR CRITICAL] Safety fallback triggered. Outputting standard Kokoro audio...\n")
             return audio_array, current_sr
             
         finally:
-            # Total VRAM Cleanup
             if 'wav_tensor' in locals(): del wav_tensor
             if 'chunk' in locals(): del chunk
             if 'enhanced_chunk' in locals(): del enhanced_chunk

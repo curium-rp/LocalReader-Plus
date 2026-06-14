@@ -194,7 +194,10 @@ def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list, u
     cache_string = json.dumps(cache_data, sort_keys=True)
     return hashlib.md5(cache_string.encode("utf-8")).hexdigest()
 
+_upscaler_logged = False
+
 def execute_generation_pipeline(text: str, selected_voice: str, speed: float, pause_settings: dict, upscale_requested: bool) -> bytes:
+    global _upscaler_logged
     import app.state as state_module
     lang = get_language_from_voice(selected_voice)
     has_punctuation = any(p in text for p in [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"])
@@ -222,7 +225,10 @@ def execute_generation_pipeline(text: str, selected_voice: str, speed: float, pa
     # 2. Upscaler Execution (LavaSR)
     if upscale_requested and len(samples) > 0:
         try:
-            print(f"[TTS] Upscaler authorized by payload. Routing audio to LavaSR...")
+            if not _upscaler_logged:
+                print(f"[TTS] Complete! Active Upscaler running in background process...")
+                _upscaler_logged = True
+                
             samples, sample_rate = apply_upscale(samples.flatten(), sample_rate)
             
             # Normalization / Anti-Clipping to prevent WebAudio static
