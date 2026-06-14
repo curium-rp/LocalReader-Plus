@@ -19,3 +19,8 @@ pydub
 num2words
 eng_to_ipa
 ##onnxruntime-gpu##
+##dependencies upscaling audio LavaSR##
+librosa
+vocos
+##soundfile##
+##torch##
