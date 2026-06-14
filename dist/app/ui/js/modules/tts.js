@@ -1,12 +1,14 @@
 import { state } from "./state.js";
-import { fetchJSON, fetchBlob, API_URL } from "./api.js";
+import { fetchJSON, API_URL } from "./api.js";
 import { showToast, stripHTML, renderIcons } from "./ui.js";
 import { renderPage, getSentencesForPage } from "./library.js";
+
+if (!state.audioBufferCache) state.audioBufferCache = new Map();
+if (!state.inFlightRequests) state.inFlightRequests = new Map();
 
 export function initAudioContext() {
   if (!state.audioContext) {
     state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    console.log("[WebAudio] AudioContext initialized");
   }
   if (state.audioContext.state === "suspended") {
     state.audioContext.resume();
@@ -28,14 +30,12 @@ export function playAudioBuffer(audioBuffer) {
   source.onended = async () => {
     state.currentAudioSource = null;
     state.currentSentenceIndex++;
-    console.log(`Sentence ended, moving to ${state.currentSentenceIndex}`);
     await playNext();  
     preCacheNextSentences();
   };
 
   state.currentAudioSource = source;
   source.start(0);
-  console.log(`[WebAudio] Playing buffer: ${audioBuffer.duration.toFixed(2)}s`);
 }
 
 export function stopPlayback() {
@@ -54,49 +54,77 @@ export function stopPlayback() {
     } catch (e) {}
     state.currentAudioSource = null;
   }
+
+  if (state.inFlightRequests) {
+      for (const [key, req] of state.inFlightRequests.entries()) {
+          req.controller.abort();
+      }
+      state.inFlightRequests.clear();
+  }
 }
 
-// SURGICAL FIX: Request Deduplication system to prevent GPU choking
-async function getSynthesizedAudio(lookupKey, payload) {
+async function getSynthesizedAudio(lookupKey, payload, priority = "preload") {
   if (state.audioBufferCache.has(lookupKey)) {
     return state.audioBufferCache.get(lookupKey);
   }
 
-  if (!state.inFlightRequests) state.inFlightRequests = new Map();
-
   if (state.inFlightRequests.has(lookupKey)) {
-    console.log(`[WebAudio] Joining in-flight background request: ${lookupKey}`);
-    return await state.inFlightRequests.get(lookupKey);
+    const req = state.inFlightRequests.get(lookupKey);
+    if (priority === "high" && req.priority === "preload") {
+        req.priority = "high"; 
+    }
+    return await req.promise;
   }
 
+  if (priority === "high") {
+      for (const [key, req] of state.inFlightRequests.entries()) {
+          if (req.priority === "preload") {
+              req.controller.abort();
+              state.inFlightRequests.delete(key);
+          }
+      }
+  }
+
+  const controller = new AbortController();
+  
   const reqPromise = (async () => {
-    const res = await fetch(`${API_URL}/api/synthesize`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    try {
+        const res = await fetch(`${API_URL}/api/synthesize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
 
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || "Synthesis failed");
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || "Synthesis failed");
+        }
+
+        const blob = await res.blob();
+        initAudioContext();
+        const arrayBuffer = await blob.arrayBuffer();
+        const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
+        
+        state.audioBufferCache.set(lookupKey, audioBuffer);
+        return audioBuffer;
+    } catch (e) {
+        if (e.name !== "AbortError") {
+            console.error("Synthesis fetch error:", e);
+        }
+        throw e;
+    } finally {
+        state.inFlightRequests.delete(lookupKey);
     }
-
-    const blob = await res.blob();
-    initAudioContext();
-    const arrayBuffer = await blob.arrayBuffer();
-    const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
-    
-    state.audioBufferCache.set(lookupKey, audioBuffer);
-    return audioBuffer;
   })();
 
-  state.inFlightRequests.set(lookupKey, reqPromise);
+  state.inFlightRequests.set(lookupKey, {
+      promise: reqPromise,
+      controller: controller,
+      priority: priority
+  });
 
-  try {
-    return await reqPromise;
-  } finally {
-    state.inFlightRequests.delete(lookupKey);
-  }
+  return await reqPromise;
 }
 
 export async function playNext() {
@@ -148,6 +176,7 @@ export async function playNext() {
   const speedRange = document.getElementById("speedRange");
   const upscaleToggle = document.getElementById("upscaleAudioToggle");
   
+  // SECURE FRONTEND LINK: Read the HTML toggle strictly
   const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
   const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}_${useUpscaler}`;
 
@@ -158,22 +187,23 @@ export async function playNext() {
     rules: state.rules,
     ignore_list: state.ignoreList,
     pause_settings: state.pauseSettings,
-    use_upscaler: useUpscaler
+    use_upscaler: useUpscaler // Passes command to models.py -> tts.py
   };
 
   try {
-    const audioBuffer = await getSynthesizedAudio(lookupKey, payload);
+    const audioBuffer = await getSynthesizedAudio(lookupKey, payload, "high");
 
     if (!state.isPlaying || state.currentSentenceIndex !== targetIndex) {
-      console.log(`[TTS] Discarding synthesis result - Index mismatch`);
       return;
     }
 
     playAudioBuffer(audioBuffer);
   } catch (e) {
-    console.error("Synthesis error:", e);
-    showToast(e.message);
-    stopPlayback();
+    if (e.name !== "AbortError") {
+        console.error("Synthesis error:", e);
+        showToast(e.message);
+        stopPlayback();
+    }
   }
 }
 
@@ -202,6 +232,13 @@ export async function jumpToSentence(i) {
     state.currentAudioSource = null;
   }
 
+  if (state.inFlightRequests) {
+      for (const [key, req] of state.inFlightRequests.entries()) {
+          req.controller.abort();
+      }
+      state.inFlightRequests.clear();
+  }
+
   if (state.jumpTimer) {
     clearTimeout(state.jumpTimer);
     state.jumpTimer = null;
@@ -223,7 +260,7 @@ export async function jumpToSentence(i) {
   state.jumpTimer = setTimeout(() => {
     state.jumpTimer = null;
     playNext();
-  }, 1000);
+  }, 400); 
 }
 
 export async function saveProgress() {
@@ -251,8 +288,8 @@ export async function saveProgress() {
 
 let isPreloading = false;
 export async function preCacheNextSentences() {
-  const MAX_FORWARD = 5; 
-  const MAX_CACHE_SIZE = 10; 
+  const MAX_FORWARD = 3; 
+  const MAX_CACHE_SIZE = 15; 
 
   if (!state.audioContext || isPreloading) return;
   isPreloading = true;
@@ -261,6 +298,8 @@ export async function preCacheNextSentences() {
     const voiceSelect = document.getElementById("voiceSelect");
     const speedRange = document.getElementById("speedRange");
     const upscaleToggle = document.getElementById("upscaleAudioToggle"); 
+    
+    // SECURE FRONTEND LINK: Ensure preloader checks toggle
     const useUpscaler = upscaleToggle ? upscaleToggle.checked : false;
 
     while (state.audioBufferCache.size > MAX_CACHE_SIZE) {
@@ -308,9 +347,9 @@ export async function preCacheNextSentences() {
       };
 
       try {
-        await getSynthesizedAudio(cacheKey, payload);
+        await getSynthesizedAudio(cacheKey, payload, "preload");
       } catch (e) {
-        console.log("Background pre-load skipped.");
+        if (e.name === "AbortError") break; 
       }
     }
   } finally {

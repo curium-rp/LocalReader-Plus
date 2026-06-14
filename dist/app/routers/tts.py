@@ -1,20 +1,27 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
-import numpy as np
+import os
+import sys
 import io
 import re
 import hashlib
-import soundfile as sf
-from typing import Dict
-import sys
 import json
+import asyncio
+import numpy as np
+import soundfile as sf
+import traceback
+from typing import Dict
 from pathlib import Path
-from app.logic.upscaler import apply_upscale
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 # Add app logic to path for imports
 base_dir_parent = Path(__file__).parent.parent
 if str(base_dir_parent) not in sys.path:
     sys.path.append(str(base_dir_parent))
+
+# Safe relative import to connect to the Omni-Scanner logic
+from ..logic.upscaler import apply_upscale
 
 try:
     from logic.smart_content_detector import filter_text_for_tts
@@ -33,6 +40,11 @@ from ..config import base_dir
 from kokoro_onnx import SAMPLE_RATE
 
 router = APIRouter()
+
+# ==========================================
+# PLAN 3: THE INTERCEPT PIPELINE
+# ==========================================
+intercept_pipeline: Dict[str, asyncio.Future] = {}
 
 def safe_concat(audio_list):
     clean_list = []
@@ -58,7 +70,6 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
 
     paragraphs = text.strip().split('\n')
     final_chunks = []
-
     split_patterns = [
         r'(?<=\.)\s+',                                
         r'(?<=,)\s+',                                 
@@ -71,13 +82,10 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
         para = para.strip()
         if not para:
             continue
-            
         if get_ph(para) <= soft_limit:
             final_chunks.append(para)
             continue
-            
         pieces_to_process = [para]
-        
         for pattern in split_patterns:
             new_pieces = []
             for piece in pieces_to_process:
@@ -86,15 +94,12 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
                 else:
                     sub_pieces = re.split(pattern, piece, flags=re.IGNORECASE)
                     new_pieces.extend([sp.strip() for sp in sub_pieces if sp.strip()])
-            
             pieces_to_process = new_pieces
-            
             if all(get_ph(p) <= hard_limit for p in pieces_to_process):
                 break
                 
         current_chunk = ""
         current_ph_count = 0
-        
         for piece in pieces_to_process:
             piece_ph = get_ph(piece)
             if current_ph_count + piece_ph + 1 <= soft_limit:
@@ -105,20 +110,16 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
                     final_chunks.append(current_chunk)
                 current_chunk = piece
                 current_ph_count = piece_ph
-                
         if current_chunk:
             final_chunks.append(current_chunk)
-            
     return final_chunks
 
 def synthesize_with_pauses(text: str, voice: str, speed: float, pause_settings: Dict[str, int]):
     import app.state as state_module
-
     lang = get_language_from_voice(voice)
     segments = re.split(r"([,\.!\?:;。，！？：；、]+|\n)", text)
     sample_rate = SAMPLE_RATE
     plan = []
-
     char_map = {
         ",": "comma", "，": "comma", "、": "comma",
         ".": "period", "。": "period",
@@ -136,10 +137,8 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, pause_settings: 
             dynamic_newline_ms = int(np.interp(speed, speed_map, pause_map))
             plan.append({"type": "silence", "ms": dynamic_newline_ms})
             continue
-
         if not clean_segment:
             continue
-
         if re.match(r"^[,\.!\?:;。，！？：；、]+$", clean_segment):
             last_char = clean_segment[-1]
             pause_ms = 0
@@ -155,7 +154,6 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, pause_settings: 
 
     tts_tasks = [p for p in plan if p["type"] == "tts"]
     audio_map = {}
-
     if tts_tasks and state_module.kokoro:
         for t in tts_tasks:
             idx = t["index"]
@@ -196,23 +194,65 @@ def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list, u
     cache_string = json.dumps(cache_data, sort_keys=True)
     return hashlib.md5(cache_string.encode("utf-8")).hexdigest()
 
+def execute_generation_pipeline(text: str, selected_voice: str, speed: float, pause_settings: dict, upscale_requested: bool) -> bytes:
+    import app.state as state_module
+    lang = get_language_from_voice(selected_voice)
+    has_punctuation = any(p in text for p in [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"])
+
+    # 1. Base Generation (Kokoro)
+    if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text):
+        samples = np.zeros(int(24000 * 0.1), dtype=np.float32)
+        sample_rate = 24000
+    else:
+        if pause_settings and has_punctuation:
+            samples, sample_rate = synthesize_with_pauses(text, selected_voice, float(speed), pause_settings)
+        else:
+            sub_chunks = graceful_chunk_for_tts(text)
+            if len(sub_chunks) == 1:
+                samples, sample_rate = state_module.kokoro.create(text, voice=selected_voice, speed=float(speed), lang=lang)
+            else:
+                chunk_audios = []
+                sample_rate = SAMPLE_RATE
+                for chunk in sub_chunks:
+                    chunk_samples, sr = state_module.kokoro.create(chunk, voice=selected_voice, speed=float(speed), lang=lang)
+                    chunk_audios.append(chunk_samples.flatten())
+                    sample_rate = sr
+                samples = safe_concat(chunk_audios)
+
+    # 2. Upscaler Execution (LavaSR)
+    if upscale_requested and len(samples) > 0:
+        try:
+            print(f"[TTS] Upscaler authorized by payload. Routing audio to LavaSR...")
+            samples, sample_rate = apply_upscale(samples.flatten(), sample_rate)
+            
+            # Normalization / Anti-Clipping to prevent WebAudio static
+            max_val = np.max(np.abs(samples))
+            if max_val > 1.0:
+                samples = samples / max_val
+        except Exception as e:
+            print(f"\n[TTS PIPELINE ERROR] Upscaler Routing crashed.")
+            print(f"Error details: {e}")
+            traceback.print_exc()
+            print("[TTS] Continuing with original Kokoro audio to prevent UI freeze...\n")
+
+    # 3. Payload Construction
+    buffer = io.BytesIO()
+    sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")
+    return buffer.getvalue()
+
 @router.get("/api/voices/available")
 async def get_voices():
     import app.state as state_module
-
     if not state_module.kokoro:
         return {"categories": {}}
-
     try:
         raw_voices = state_module.kokoro.get_voices()
         categories = {}
-
         def get_voice_name(vid):
             parts = vid.split("_")
             if len(parts) > 1:
                 return parts[1].title()
             return vid
-
         def get_lang_label(code):
             maps = {
                 "en-us": "English (US)", "en-gb": "English (UK)", "fr-fr": "French",
@@ -220,24 +260,17 @@ async def get_voices():
                 "pt-br": "Portuguese (Brazil)", "ja": "Japanese",
             }
             return maps.get(code, "Other")
-
         for voice in raw_voices:
             voice_id = voice if isinstance(voice, str) else voice.get("id")
-
             if voice_id.lower().split("_")[-1] in ["alpha", "beta", "omega", "psi"]:
                 continue
-
             lang_code = get_language_from_voice(voice_id)
             label = get_lang_label(lang_code)
-
             if lang_code not in categories:
                 categories[lang_code] = {"label": label, "voices": []}
-
             categories[lang_code]["voices"].append({"id": voice_id, "name": get_voice_name(voice_id)})
-
         for code in categories:
             categories[code]["voices"].sort(key=lambda x: x["name"])
-
         return {"categories": categories}
     except Exception as e:
         return {"categories": {}}
@@ -255,7 +288,7 @@ async def get_locale(lang: str):
         return {}
 
 @router.post("/api/synthesize")
-def synthesize(request: SynthesisRequest):
+async def synthesize(request: SynthesisRequest):
     import app.state as state_module
 
     if state_module.kokoro is None:
@@ -270,68 +303,62 @@ def synthesize(request: SynthesisRequest):
         text = fix_special_formats(request.text)
         text = filter_text_for_tts(text)
 
-    try:
-        voices = state_module.kokoro.get_voices()
-        selected_voice = request.voice if request.voice in voices else "af_sky"
-        pause_settings = request.pause_settings or {}
-        
-        upscale_requested = getattr(request, "use_upscaler", False)
-        
-        cache_key = generate_cache_key(
-            text, selected_voice, float(request.speed or 1.0),
-            pause_settings, request.rules, request.ignore_list, upscale_requested
+    voices = state_module.kokoro.get_voices()
+    selected_voice = request.voice if request.voice in voices else "af_sky"
+    pause_settings = request.pause_settings or {}
+    
+    # Read the explicit Upscale toggle state passed through models.py
+    upscale_requested = getattr(request, "use_upscaler", False)
+    
+    cache_key = generate_cache_key(
+        text, selected_voice, float(request.speed or 1.0),
+        pause_settings, request.rules, request.ignore_list, upscale_requested
+    )
+
+    # 1. CACHE CHECK
+    cached_audio = audio_cache.get(cache_key)
+    if cached_audio:
+        return StreamingResponse(
+            io.BytesIO(cached_audio),
+            media_type="audio/wav",
+            headers={"Content-Length": str(len(cached_audio))},
         )
 
-        cached_audio = audio_cache.get(cache_key)
-        if cached_audio:
+    # 2. INTERCEPT LIMIT LOOP (Deduplicate overlapping browser preloads)
+    if cache_key in intercept_pipeline:
+        try:
+            audio_bytes = await intercept_pipeline[cache_key]
             return StreamingResponse(
-                io.BytesIO(cached_audio),
+                io.BytesIO(audio_bytes),
                 media_type="audio/wav",
-                headers={"Content-Length": str(len(cached_audio))},
+                headers={"Content-Length": str(len(audio_bytes))},
             )
+        except Exception:
+            pass 
 
-        lang = get_language_from_voice(selected_voice)
-        has_punctuation = any(p in text for p in [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"])
+    # 3. DISPATCH NEW GENERATION TASK
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    intercept_pipeline[cache_key] = future
 
-        if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text):
-            samples = np.zeros(int(24000 * 0.1), dtype=np.float32)
-            sample_rate = 24000
-        else:
-            if pause_settings and has_punctuation:
-                samples, sample_rate = synthesize_with_pauses(text, selected_voice, float(request.speed or 1.0), pause_settings)
-            else:
-                sub_chunks = graceful_chunk_for_tts(text)
-                if len(sub_chunks) == 1:
-                    samples, sample_rate = state_module.kokoro.create(text, voice=selected_voice, speed=float(request.speed or 1.0), lang=lang)
-                else:
-                    chunk_audios = []
-                    sample_rate = SAMPLE_RATE
-                    for chunk in sub_chunks:
-                        chunk_samples, sr = state_module.kokoro.create(chunk, voice=selected_voice, speed=float(request.speed or 1.0), lang=lang)
-                        chunk_audios.append(chunk_samples.flatten())
-                        sample_rate = sr
-                    samples = safe_concat(chunk_audios)
-
-        # SURGICAL FIX: LavaSR processing with Anti-Clipping normalizer
-        if upscale_requested and len(samples) > 0:
-            try:
-                samples, sample_rate = apply_upscale(samples.flatten(), sample_rate)
-                # Ensure the enhanced audio stays between -1.0 and 1.0 so the UI can link/decode properly
-                max_val = np.max(np.abs(samples))
-                if max_val > 1.0:
-                    samples = samples / max_val
-            except Exception as e:
-                print(f"[TTS] Upscale failed: {e}")
-
-        buffer = io.BytesIO()
-        sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="PCM_16")
-        audio_bytes = buffer.getvalue()
+    try:
+        # Prevent blocking the FastAPI event loop during heavy GPU operations
+        audio_bytes = await run_in_threadpool(
+            execute_generation_pipeline,
+            text, selected_voice, float(request.speed or 1.0), pause_settings, upscale_requested
+        )
+        
         audio_cache.put(cache_key, audio_bytes)
-
+        future.set_result(audio_bytes)
+        
         return StreamingResponse(
             io.BytesIO(audio_bytes),
             media_type="audio/wav",
             headers={"Content-Length": str(len(audio_bytes))},
         )
+        
     except Exception as e:
+        future.set_exception(e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        intercept_pipeline.pop(cache_key, None)

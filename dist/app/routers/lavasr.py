@@ -1,69 +1,62 @@
 import os
-import shutil
-from fastapi import APIRouter, BackgroundTasks
-from huggingface_hub import snapshot_download
+from fastapi import APIRouter
 
 router = APIRouter(prefix="/api/lavasr", tags=["LavaSR"])
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODELS_DIR = os.path.join(BASE_DIR, "models")
-LAVASR_DIR = os.path.abspath(os.path.join(MODELS_DIR, "LavaSR"))
+# Calculate all possible root directories to search
+CURRENT_FILE = os.path.abspath(__file__)
+APP_DIR = os.path.dirname(os.path.dirname(CURRENT_FILE))
+DIST_DIR = os.path.dirname(APP_DIR)
+PROJECT_ROOT = os.path.dirname(DIST_DIR)
 
-download_state = {
-    "is_downloading": False,
-    "progress": 0,
-    "status_msg": "",
-    "error": None
-}
+SEARCH_DIRS = [
+    os.path.join(DIST_DIR, "models"),
+    os.path.join(PROJECT_ROOT, "models"),
+    DIST_DIR,
+    PROJECT_ROOT
+]
 
 @router.get("/status")
 def get_status():
-    # STRICT FIX: Must have both the heavy weight file AND the config file
-    target_bin = os.path.join(LAVASR_DIR, "enhancer_v2", "pytorch_model.bin")
-    target_yaml = os.path.join(LAVASR_DIR, "enhancer_v2", "config.yaml")
+    has_code = False
+    has_weights = False
     
-    exists = (os.path.exists(target_bin) and os.path.getsize(target_bin) > 1000000) and os.path.exists(target_yaml)
+    for search_dir in SEARCH_DIRS:
+        if not os.path.exists(search_dir):
+            continue
+            
+        for root, dirs, files in os.walk(search_dir):
+            lower_files = [f.lower() for f in files]
+            current_folder = os.path.basename(root).lower()
+            
+            # Look for the code
+            if not has_code and "model.py" in lower_files and current_folder == "lavasr":
+                has_code = True
+                
+            # Look for the weights root folder containing enhancer_v2 and denoiser
+            if not has_weights and "enhancer_v2" in [d.lower() for d in dirs] and "denoiser" in [d.lower() for d in dirs]:
+                bin_path = os.path.join(root, "enhancer_v2", "pytorch_model.bin")
+                yaml_path = os.path.join(root, "enhancer_v2", "config.yaml")
+                denoiser_path = os.path.join(root, "denoiser", "denoiser.bin")
+                
+                # The Ghost Disconnect Fix: Sync UI status strictly with PyTorch requirements
+                if os.path.exists(bin_path) and os.path.exists(yaml_path) and os.path.exists(denoiser_path):
+                    if os.path.getsize(bin_path) > 1000000:
+                        has_weights = True
+                        
+        if has_code and has_weights:
+            break
+            
+    exists = has_code and has_weights
     
     return {
-        "exists": exists and not download_state["is_downloading"],
-        "is_downloading": download_state["is_downloading"],
-        "progress": download_state["progress"],
-        "status_msg": download_state["status_msg"],
-        "error": download_state["error"]
+        "exists": exists,
+        "is_downloading": False,
+        "progress": 100 if exists else 0,
+        "status_msg": "Active" if exists else "Not Installed",
+        "error": None
     }
 
-def do_download():
-    download_state["is_downloading"] = True
-    download_state["error"] = None
-    
-    try:
-        os.makedirs(LAVASR_DIR, exist_ok=True)
-        print(f"[LavaSR] Starting brute-force download sequence...")
-        
-        download_state["status_msg"] = "Fetching files from HuggingFace..."
-        download_state["progress"] = 20
-        
-        cache_dir = snapshot_download(repo_id="YatharthS/LavaSR")
-        
-        download_state["status_msg"] = "Extracting files to models directory..."
-        download_state["progress"] = 70
-        print(f"[LavaSR] Downloaded to temporary cache: {cache_dir}")
-        print(f"[LavaSR] Moving files to local folder asset: {LAVASR_DIR}")
-        
-        shutil.copytree(cache_dir, LAVASR_DIR, dirs_exist_ok=True)
-        
-        download_state["progress"] = 100
-        download_state["status_msg"] = "Complete!"
-        print(f"[LavaSR] Success! All files placed inside {LAVASR_DIR}")
-        
-    except Exception as e:
-        download_state["error"] = str(e)
-        print(f"[LavaSR] Download processing error encountered: {e}")
-    finally:
-        download_state["is_downloading"] = False
-
 @router.post("/download")
-def start_download(background_tasks: BackgroundTasks):
-    if not download_state["is_downloading"]:
-        background_tasks.add_task(do_download)
-    return {"status": "started"}
+def start_download():
+    return {"status": "manual_install_required"}
