@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-from ..state import audio_cache, kokoro, system_status
+from ..state import audio_cache, kokoro, system_status, PatchedKokoro
 from ..utils import safe_save_json
 from ..config import base_dir, settings_file, get_app_anchored_path
 import json
@@ -19,7 +19,6 @@ try:
         get_available_models,
     )
     from logic.audio_cache import AudioCache
-
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from downloader import (
@@ -29,8 +28,6 @@ except ImportError:
     )
 
 router = APIRouter()
-
-from ..state import PatchedKokoro
 
 def load_engine_logic(requested_mode=None):
     global kokoro
@@ -84,6 +81,7 @@ def load_engine_logic(requested_mode=None):
 
     try:
         import app.state as state_module
+        import onnxruntime as ort
 
         if state_module.kokoro is not None:
             print("[ENGINE] Unloading previous model...")
@@ -92,17 +90,32 @@ def load_engine_logic(requested_mode=None):
         print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
 
         if actual_mode == "gpu":
-            print("[ENGINE] Configuring strict CUDA GPU settings...")
+            print("[ENGINE] Detecting cross-platform hardware providers...")
             
-            # 1. Strip out aggressive memory hacks. Keep it clean and stable.
-            cuda_options = {
-                "device_id": 0,                                 
-                "cudnn_conv_algo_search": "HEURISTIC",         
-            }
-            custom_providers = [("CUDAExecutionProvider", cuda_options), "CPUExecutionProvider"]
+            # 1. Dynamically Detect Available GPU Providers
+            available_providers = ort.get_available_providers()
+            custom_providers = []
+            
+            if "CUDAExecutionProvider" in available_providers:
+                print(" -> NVIDIA CUDA GPU detected.")
+                cuda_options = {"device_id": 0, "cudnn_conv_algo_search": "HEURISTIC"}
+                custom_providers.append(("CUDAExecutionProvider", cuda_options))
+            elif "CoreMLExecutionProvider" in available_providers:
+                print(" -> Apple Silicon (CoreML) detected.")
+                custom_providers.append("CoreMLExecutionProvider")
+            elif "DirectMLExecutionProvider" in available_providers:
+                print(" -> AMD/Intel GPU (DirectML) detected.")
+                custom_providers.append("DirectMLExecutionProvider")
+            elif "ROCMExecutionProvider" in available_providers:
+                print(" -> AMD Linux (ROCm) detected.")
+                custom_providers.append("ROCMExecutionProvider")
+            else:
+                print(" -> [WARNING] No compatible GPU hardware found. Falling back to CPU processing.")
+            
+            # Always append CPU as the final fallback mechanism for unsupported ONNX nodes
+            custom_providers.append("CPUExecutionProvider")
             
             # --- THE MONKEY PATCH ---
-            import onnxruntime as ort
             original_session = ort.InferenceSession
             
             def forced_gpu_session(*args, **kwargs):
@@ -112,14 +125,10 @@ def load_engine_logic(requested_mode=None):
                     sess_options = ort.SessionOptions()
                     kwargs['sess_options'] = sess_options
                 
-                # ==========================================
-                # 2. THE DYNAMIC SHAPE FIX (CRITICAL)
-                # ==========================================
-                # This stops ONNX from forcing Sentence 2 into Sentence 1's memory space!
+                # 2. THE DYNAMIC SHAPE FIX (CRITICAL) - Safe for all OS platforms
                 kwargs['sess_options'].enable_mem_pattern = False 
                 
-                # 3. Step down optimization from ALL to EXTENDED. 
-                # This protects the delicate STFT (audio wave) nodes from being crushed.
+                # 3. Protect delicate STFT audio wave nodes
                 kwargs['sess_options'].graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
                 
                 return original_session(*args, **kwargs)
@@ -131,11 +140,11 @@ def load_engine_logic(requested_mode=None):
             try:
                 state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
             except Exception as e:
-                print(f"[ENGINE WARNING] PatchedKokoro failed: {e}. Using standard Kokoro.")
+                print(f"[ENGINE WARNING] PatchedKokoro failed: {e}. Trying standard Kokoro fallback.")
                 from kokoro_onnx import Kokoro
                 state_module.kokoro = Kokoro(str(model_to_load), str(voices_path))
             finally:
-                # Always put the original engine back
+                # Always restore the original engine so we don't break other features (like Upscaler)
                 ort.InferenceSession = original_session
                 
         else:

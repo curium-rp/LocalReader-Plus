@@ -1,31 +1,16 @@
 import os
-import glob
+import sys
+import json
+import time
+import threading
 import platform
-
-# ==========================================
-# WINDOWS DLL FORCE-LOADER (GPU FIX)
-# ==========================================
-if platform.system() == "Windows":
-    print("[STARTUP] Hunting for NVIDIA DLLs...")
-    for path in glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.*\bin"):
-        if os.path.exists(path):
-            os.add_dll_directory(path)
-            print(f"-> Linked CUDA: {path}")
-    for path in glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin"):
-        if os.path.exists(path):
-            os.add_dll_directory(path)
-            print(f"-> Linked cuDNN: {path}")
-# ==========================================
-
+from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import time
-import json
-import psutil
+from fastapi.responses import RedirectResponse
 
-# Import Refactored Modules
 from .config import (
     base_dir,
     userdata_dir,
@@ -35,19 +20,27 @@ from .config import (
 )
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
+
 from .routers import settings, library, tts, system, export, timer, theme, lavasr
 
 # --- Lifespan Manager ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
     start_time = time.time()
 
-    # 1. Check directories
     if not base_dir.exists():
         print(f"[CRITICAL] Base dir missing: {base_dir}")
+    try:
+        if content_dir.exists():
+            for f in content_dir.glob("temp_*"):
+                try: f.unlink()
+                except: pass
+    except Exception:
+        pass
 
-    # 2. Init JSON files
+    is_first_run = not settings_file.exists()
+
+    # Changed default wait_engine_load to 0 (Instant pop-up)
     safe_init_json(
         settings_file,
         {
@@ -57,41 +50,62 @@ async def lifespan(app: FastAPI):
             "speed": 1.0,
             "engine_mode": "gpu",
             "ui_language": "en",
+            "auto_load_engine": 1,
+            "wait_engine_load": 0, 
+            "upscaler_active": False 
         },
     )
     safe_init_json(library_file, [])
 
-    # 3. Clean temp content
+    current_settings = {}
     try:
-        if content_dir.exists():
-            for f in content_dir.glob("temp_*"):
+        with open(settings_file, "r", encoding="utf-8") as f:
+            current_settings = json.load(f)
+    except Exception:
+        pass
+
+    from .routers.system import load_engine_logic
+    
+    def perform_boot():
+        try:
+            print("[BOOT] Loading Kokoro Engine...")
+            load_engine_logic()
+            print(f"[BOOT] Kokoro Engine loaded in {time.time() - start_time:.2f}s")
+            
+            if current_settings.get("upscaler_active", False):
+                print("[BOOT] Upscaler active. Attempting to load LavaSR...")
                 try:
-                    f.unlink()
-                except:
-                    pass
-    except Exception as e:
-        print(f"[STARTUP] Cleanup warning: {e}")
+                    if hasattr(lavasr, 'load_upscaler_logic'):
+                        lavasr.load_upscaler_logic()
+                except Exception as e:
+                    print(f"[WARNING] Upscaler load failed: {e}. Skipping upscaler to prevent crash.")
+                    
+        except Exception as e:
+            print(f"[ERROR] System Boot failed: {e}")
 
-    # 4. Load model (Auto-load on startup)
-    try:
-        from .routers.system import load_engine_logic
-
-        print("[STARTUP] Checking for existing models to auto-load...")
-        load_engine_logic()
-    except Exception as e:
-        print(f"[STARTUP] Auto-load failed (non-critical): {e}")
-
-    print(f"[STARTUP] Server ready in {time.time() - start_time:.2f}s")
+    # The Core Logic Matrix
+    if is_first_run:
+        print("[SERVER] First launch detected. Skipping model load. App opens instantly.")
+    elif current_settings.get("auto_load_engine", 1) == 0:
+        print("[SERVER] auto_load_engine is 0. Waiting for user to manually load from UI.")
+    else:
+        if current_settings.get("wait_engine_load", 0) == 1:
+            print("[SERVER] wait_engine_load is 1. Server will block until engines load (UI shows black screen)...")
+            perform_boot()
+        else:
+            print("[SERVER] wait_engine_load is 0. Loading engines in background thread. UI pops up instantly!")
+            threading.Thread(target=perform_boot, daemon=True).start()
 
     yield
 
-    # Shutdown logic
-    state_module.sleep_timer.stop_timer()
     print("[SHUTDOWN] Cleanup complete.")
-
+    try:
+        state_module.sleep_timer.stop_timer()
+    except Exception:
+        pass
 
 # --- App Definition ---
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(title="LocalReader Plus", lifespan=lifespan)
 
 # --- Middleware ---
 app.add_middleware(
@@ -113,7 +127,6 @@ app.include_router(theme.router)
 app.include_router(lavasr.router)
 
 # --- Static Files ---
-# Mount static assets
 ui_dir = base_dir / "ui"
 if ui_dir.exists():
     app.mount("/css", StaticFiles(directory=ui_dir / "css"), name="css")
@@ -125,14 +138,11 @@ if ui_dir.exists():
 else:
     print(f"[WARNING] UI directory not found: {ui_dir}")
 
-
-# --- Legacy/Root Endpoints ---
+# --- Root Endpoints ---
 @app.get("/health")
 async def health_check():
-    process = psutil.Process()
-    return {"status": "ok", "memory_mb": process.memory_info().rss / 1024 / 1024}
+    return {"status": "ok"}
 
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/index.html")

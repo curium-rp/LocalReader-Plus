@@ -1,56 +1,80 @@
 import os
 import sys
+import glob
+import time
 import socket
 import threading
-import time
 import uvicorn
 import webview
 import platform
 from pathlib import Path
 
 # --- 1. ARCHITECTURAL SETUP: ABSOLUTE PATH ANCHORING ---
-# Anchor all paths to THIS script file location (immune to CWD changes)
 base_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(base_dir))
 
-# --- 2. LOCAL FFMPEG & NVIDIA GPU BYPASS SETUP ---
-bin_path = base_dir / "bin"
-
-if bin_path.exists():
-    # Prepend to PATH for this session only (helps FFMPEG)
-    os.environ["PATH"] = str(bin_path) + os.pathsep + os.environ["PATH"]
+# --- 2. SMART DLL INJECTION (OS DETECTION ONLY) ---
+if platform.system() == "Windows":
+    print("[STARTUP] Hunting for NVIDIA DLLs...")
     
-    # THE MAGIC BULLET: Force Windows to grant DLL permissions to this specific folder
+    cuda_paths = glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.*\bin")
+    if cuda_paths:
+        cuda_paths.sort(reverse=True)
+        best_cuda = cuda_paths[0]
+        if os.path.exists(best_cuda):
+            try:
+                os.add_dll_directory(best_cuda)
+                os.environ["PATH"] = best_cuda + os.pathsep + os.environ.get("PATH", "")
+                print(f" -> Linked System CUDA: {best_cuda}")
+            except Exception:
+                pass
+                
+    cudnn_paths = glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin")
+    if cudnn_paths:
+        cudnn_paths.sort(reverse=True)
+        best_cudnn = cudnn_paths[0]
+        if os.path.exists(best_cudnn):
+            try:
+                os.add_dll_directory(best_cudnn)
+                os.environ["PATH"] = best_cudnn + os.pathsep + os.environ.get("PATH", "")
+                print(f" -> Linked System cuDNN: {best_cudnn}")
+            except Exception:
+                pass
+                
+    import site
+    try:
+        for site_package in site.getsitepackages():
+            torch_lib_path = os.path.join(site_package, "torch", "lib")
+            if os.path.exists(torch_lib_path):
+                os.add_dll_directory(torch_lib_path)
+                os.environ["PATH"] = torch_lib_path + os.pathsep + os.environ.get("PATH", "")
+                print(f" -> Linked PyTorch Lib: {torch_lib_path}")
+                break
+    except Exception:
+        pass
+
+# --- 3. LOCAL FFMPEG & BIN DIRECTORY ---
+bin_path = base_dir / "bin"
+if bin_path.exists():
+    os.environ["PATH"] = str(bin_path) + os.pathsep + os.environ.get("PATH", "")
     if platform.system() == "Windows":
         try:
             os.add_dll_directory(str(bin_path))
-            print(f"[OK] Windows DLL Security Bypass active for: {bin_path}")
-        except Exception as e:
-            print(f"[WARNING] Could not bypass DLL security: {e}")
-            
+        except Exception:
+            pass
     print(f"[OK] Local Bin folder linked successfully.")
-else:
-    print(f"[WARNING] Local 'bin' folder not found at {bin_path}")
-    print(f"          FFMPEG and GPU DLLs may not load correctly.")
 
-# --- 3. IMPORT APP ---
-# Now when the app loads, Windows has already granted it permission to read the GPU files
+# --- 4. IMPORT APP ---
 from app.server import app
 
 def is_port_in_use(port):
-# ... (Keep the rest of your main.py code exactly the same below this line) ... """Check if a port is already in use"""
+    """Reliable socket check - guarantees the window opens the millisecond Uvicorn binds"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
 def run_server():
-    """Runs the FastAPI server in background thread"""
     try:
-        config = uvicorn.Config(
-            app, 
-            host="127.0.0.1", 
-            port=8000, 
-            log_level="critical"  # Suppress uvicorn logs
-        )
+        config = uvicorn.Config(app, host="127.0.0.1", port=8000, log_level="critical")
         server = uvicorn.Server(config)
         server.run()
     except Exception as e:
@@ -59,36 +83,29 @@ def run_server():
 
 def main():
     print("=" * 50)
-    print("  LocalReader Plus - Starting")
+    print("  LocalReader Plus (Upscale) - Starting")
     print("=" * 50)
     print(f"Project root: {base_dir}")
     
-    # 1. Start backend server in daemon thread
     print("\n[INIT] Starting FastAPI server...")
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
-    # 2. Wait for server to be responsive (with timeout)
-    print("[WAIT] Waiting for server to initialize...")
-    retries = 150
+    print("[WAIT] Waiting for initialization...")
+    retries = 1500  # Give it plenty of time (150 seconds) in case engine load is set to block
     server_up = False
-    
     for attempt in range(1, retries + 1):
         if is_port_in_use(8000):
             server_up = True
-            print(f"[OK] Server ready on http://127.0.0.1:8000 (attempt {attempt})")
             break
         time.sleep(0.1)
         if attempt % 50 == 0:
-            print(f"     Still waiting... ({attempt}/{retries})")
-
+            print(f"     Still waiting for server port... ({attempt}/{retries})")
+            
     if not server_up:
-        print("[CRITICAL] Server failed to start within 15 seconds")
-        print("           Check if port 8000 is already in use:")
-        print("           -> netstat -ano | findstr :8000")
+        print("[CRITICAL] Server failed to bind port 8000.")
         sys.exit(1)
 
-    # 3. Create the main window
     print("[INIT] Creating application window...")
     storage_path = base_dir / 'webview_data'
     
@@ -104,19 +121,13 @@ def main():
         
         print("[OK] Window created successfully")
         print("=" * 50)
-        print("  LocalReader Plus - Ready!")
-        print("=" * 50)
-        print()
-        
-        # 4. Start the UI event loop (blocks until window closes)
         webview.start(debug=False, storage_path=str(storage_path))
         
     except Exception as e:
         print(f"[CRITICAL] Failed to create window: {e}")
         sys.exit(1)
 
-    # 5. Cleanup on exit
-    print("\n[EXIT] LocalReader Plus shutting down...")
+    print("\n[EXIT] Shutting down...")
     os._exit(0)
 
 if __name__ == "__main__":
