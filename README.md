@@ -386,7 +386,7 @@ LocalReader-Plus
 - **UI Framework:** [Tailwind CSS](https://tailwindcss.com/) / [github](https://github.com/tailwindlabs/tailwindcss)
 - **Icons:** [Lucide](https://lucide.dev/)
 - **Audio Processing:** [FFMPEG](https://ffmpeg.org/)
-- **Audio Upscaling:** [LavaSR](https://ffmpeg.org/)
+- **Audio Upscaling:** [LavaSR](https://github.com/ysharma3501/LavaSR)
   
 ---
 
@@ -394,7 +394,7 @@ LocalReader-Plus
 
   1. Check **Troubleshooting** section above
   2. Verify you're on latest version 
-~~3. Check `CHANGELOG.md` for known issues~~
+~~3. Check CHANGELOG.md for known issues~~
   4. Open ticket with:
       - Python version (`python --version`)
       - OS
