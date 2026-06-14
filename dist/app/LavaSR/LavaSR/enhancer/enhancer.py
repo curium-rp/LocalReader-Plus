@@ -4,6 +4,7 @@
 
 import torch
 import types
+import yaml
 from vocos import Vocos
 from torch.cuda.amp import autocast as autocast_func
 
@@ -38,7 +39,36 @@ class LavaBWE:
         self.lr_refiner = FastLRMerge(device=device)
 
         state_dict = torch.load(f"{model_path}/pytorch_model.bin", map_location="cpu")
-        self.bwe_model = Vocos.from_hparams(f"{model_path}/config.yaml")
+        
+        # ==========================================
+        # SURGICAL FIX: Vocos Version Conflict Patcher
+        # ==========================================
+        # Newer versions of Vocos removed 'f_min' and 'f_max'. We intercept the 
+        # config.yaml, delete the unsupported arguments, and save it back instantly.
+        config_path = f"{model_path}/config.yaml"
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f)
+                
+            needs_patch = False
+            if "feature_extractor" in config_data and "init_args" in config_data["feature_extractor"]:
+                init_args = config_data["feature_extractor"]["init_args"]
+                if "f_min" in init_args:
+                    del init_args["f_min"]
+                    needs_patch = True
+                if "f_max" in init_args:
+                    del init_args["f_max"]
+                    needs_patch = True
+                    
+            if needs_patch:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    yaml.dump(config_data, f)
+                print("[LavaSR] Successfully auto-patched config.yaml for Vocos compatibility.")
+        except Exception as e:
+            print(f"[LavaSR WARNING] Could not auto-patch config.yaml: {e}")
+
+        # Boot Vocos using the safely cleaned config
+        self.bwe_model = Vocos.from_hparams(config_path)
 
         self.bwe_model.load_state_dict(state_dict)
         self.bwe_model = self.bwe_model.eval().to(device)
@@ -59,6 +89,3 @@ class LavaBWE:
                 pred_audio = self.lr_refiner(pred_audio[:, :wav.shape[1]].float(), wav[:, :pred_audio.shape[1]].float())
 
         return pred_audio
-
-
-
