@@ -889,47 +889,97 @@
       </div>
     </div>
 
-<div
+    <div
       id="exportFormatModal"
-      class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[1500] hidden"
+      class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[1500] hidden p-4 sm:p-8"
     >
-      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4">
-        <div class="flex items-center justify-between mb-6">
-          <h3 class="text-lg font-bold text-white">Select Audio Format</h3>
-          <button id="btnCancelFormatSelect" class="text-zinc-500 hover:text-red-500 transition-colors">
-            <i data-lucide="x" class="w-5 h-5"></i>
-          </button>
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col md:flex-row w-full max-w-4xl h-[85vh] overflow-hidden">
+        
+        <!-- LEFT PANEL: Format Selection & Status -->
+        <div class="flex-1 p-6 md:p-8 flex flex-col border-b md:border-b-0 md:border-r border-zinc-800 overflow-y-auto">
+          <div class="flex items-center justify-between mb-6">
+            <h3 class="text-lg font-bold text-white">Select Audio Format</h3>
+            <button id="btnCancelFormatSelect" class="text-zinc-500 hover:text-red-500 transition-colors md:hidden">
+              <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+          </div>
+
+          <p class="text-sm text-zinc-400 mb-6">Choose how you want to save the exported audio.</p>
+
+          <div class="space-y-4">
+            <button id="btnExportMp3" class="w-full flex items-center justify-between p-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl transition-all group text-left">
+              <div class="flex items-center gap-4">
+                <div class="p-2 bg-blue-600/20 text-blue-400 rounded-lg group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                  <i data-lucide="music" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <div class="font-bold text-white">MP3 Format</div>
+                  <div class="text-xs text-zinc-500 mt-0.5">Smaller file size (requires FFMPEG)</div>
+                </div>
+              </div>
+              <i data-lucide="chevron-right" class="w-5 h-5 text-zinc-600 group-hover:text-white transition-colors"></i>
+            </button>
+
+            <button id="btnExportWav" class="w-full flex items-center justify-between p-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl transition-all group text-left">
+              <div class="flex items-center gap-4">
+                <div class="p-2 bg-purple-600/20 text-purple-400 rounded-lg group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                  <i data-lucide="disc" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <div class="font-bold text-white">WAV Format</div>
+                  <div class="text-xs text-zinc-500 mt-0.5">Faster export (larger file)</div>
+                </div>
+              </div>
+              <i data-lucide="chevron-right" class="w-5 h-5 text-zinc-600 group-hover:text-white transition-colors"></i>
+            </button>
+          </div>
+
+          <!-- Selection Indicator Widget -->
+          <div class="mt-auto pt-6">
+            <div class="p-4 bg-zinc-950 border border-zinc-800 rounded-xl">
+              <h4 class="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Current Range</h4>
+              <p id="exportRangeLabel" class="text-sm font-semibold text-blue-400">Entire Book (Default)</p>
+              <p class="text-[10px] text-zinc-500 mt-1">Select chapters on the right to limit export.</p>
+            </div>
+          </div>
         </div>
 
-        <div class="space-y-4">
-          <p class="text-sm text-zinc-400 mb-4">Choose how you want to save the exported audio.</p>
+        <!-- RIGHT PANEL: TOC Selection -->
+        <div class="flex-1 flex flex-col bg-zinc-950 relative">
+           <div class="p-4 md:p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50 shrink-0">
+              <h3 class="font-bold text-zinc-300 flex items-center gap-2">
+                <i data-lucide="list-checks" class="w-4 h-4 text-blue-500"></i> Start / End Point
+              </h3>
+              <div class="flex items-center gap-2">
+                <button id="btnClearRange" class="text-xs font-bold text-zinc-400 hover:text-white px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-colors">
+                  Clear Selection
+                </button>
+                <button id="btnCancelFormatSelectDesktop" class="hidden md:block p-1.5 text-zinc-500 hover:text-red-500 hover:bg-zinc-800 rounded-lg transition-colors">
+                  <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+              </div>
+           </div>
+           
+           <div class="p-3 bg-zinc-900/30 border-b border-zinc-800 shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3 text-[10px] uppercase font-bold text-zinc-500 tracking-wider">
+              <div class="flex gap-4 items-center pl-2">
+                  <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-green-500"></div> Start</span>
+                  <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-red-500"></div> End</span>
+                  <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-purple-500"></div> Single</span>
+              </div>
+              <label class="flex items-center gap-1.5 cursor-pointer group pr-2" title="Export only one chapter">
+                <input type="checkbox" id="toggleSingleChapter" class="w-3 h-3 accent-purple-600 rounded bg-zinc-800 border-zinc-700 cursor-pointer transition-colors">
+                <span class="text-[9px] font-bold text-zinc-500 group-hover:text-purple-400 uppercase tracking-widest flex items-center gap-1 transition-colors">
+                  Single Chapter Mode
+                </span>
+              </label>
+           </div>
 
-          <button id="btnExportMp3" class="w-full flex items-center justify-between p-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl transition-all group text-left">
-            <div class="flex items-center gap-4">
-              <div class="p-2 bg-blue-600/20 text-blue-400 rounded-lg group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                <i data-lucide="music" class="w-5 h-5"></i>
-              </div>
-              <div>
-                <div class="font-bold text-white">MP3 Format</div>
-                <div class="text-xs text-zinc-500 mt-0.5">Smaller file size (requires FFMPEG)</div>
-              </div>
-            </div>
-            <i data-lucide="chevron-right" class="w-5 h-5 text-zinc-600 group-hover:text-white transition-colors"></i>
-          </button>
-
-          <button id="btnExportWav" class="w-full flex items-center justify-between p-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl transition-all group text-left">
-            <div class="flex items-center gap-4">
-              <div class="p-2 bg-purple-600/20 text-purple-400 rounded-lg group-hover:bg-purple-600 group-hover:text-white transition-colors">
-                <i data-lucide="disc" class="w-5 h-5"></i>
-              </div>
-              <div>
-                <div class="font-bold text-white">WAV Format</div>
-                <div class="text-xs text-zinc-500 mt-0.5">Faster export, no downloads (larger file)</div>
-              </div>
-            </div>
-            <i data-lucide="chevron-right" class="w-5 h-5 text-zinc-600 group-hover:text-white transition-colors"></i>
-          </button>
+           <!-- TOC List Container -->
+           <div id="exportTocList" class="flex-1 overflow-y-auto custom-scrollbar p-2 md:p-4 space-y-1">
+              <!-- Dynamically populated -->
+           </div>
         </div>
+
       </div>
     </div>
 
@@ -1048,8 +1098,9 @@
             </div>
           </div>
 
-          <div class="text-xs text-zinc-500 text-center">
+          <div class="text-xs text-zinc-500 text-center flex flex-col gap-1">
             <span id="exportStatus">Processing paragraphs...</span>
+            <span id="exportEta" class="text-[10px] text-zinc-600 font-mono hidden">ETA: --:--</span>
           </div>
 
           <div id="exportComplete" class="hidden space-y-3">

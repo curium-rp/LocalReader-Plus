@@ -27,8 +27,10 @@
    -  Support auto switch languages, for example you play in main language is English when it has japanese language, it will switch to jp and will go back to english, automaticlly.**only support English, Japanese, and China(Mandarin)**
    -  Improve reliability of apps.
    -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
+   -  Improve Export/generate/create audio system base on current settings.
    
-   _Have detects 'ExecutionProvider' in Windows, Mac, and Linux for Kokoro_gpu models it should works in Gpu if it can will fallback to cpu_
+   _Have detects 'ExecutionProvider' in Windows, Mac, and Linux for Kokoro_gpu models it should works in Gpu if it can will fallback to Cpu_
+   (_default will run on Cpu, cuz Kokoro-onnx will install 'onnxruntime' **Cpu version** it will run on **Cpu** regradless of models 'Gpu'_)
 
 # Many bug has been fix  #
    
@@ -116,7 +118,7 @@ pip install onnxruntime-gpu
 
 > python main.py 
 
-  Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need voice engine to works)
+  Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need models TTS to make it work)
    
    It mean is run on GPU enjoy.
 
@@ -186,17 +188,17 @@ _(IF Mac or Linux has problem with error in Termimal when first run >main.py Do 
 1. Open **"Pause Settings"** section in sidebar
 2. Adjust sliders to set pause duration (0-2000ms):
    - **Comma (,)** - Default: 250ms
-   - **Period (.)** - Default: 0ms (_it overlap with segment pause, cuz logic cut sentence use preiod stop_)
+   - **Period (.)** - Default: 0ms (_it overlap with segment pause `N`, cuz logic cut sentence use preiod stop_)
    - **Question (?)** - Default: 600ms
    - **Exclamation (!)** - Default: 600ms
    - **Colon (:)** - Default: 500ms
    - **Semicolon (;)** - Default: 500ms
 
- **!New Behavior settings:**
-- `Header Pause (H)` Gives the user breathing room between a Chapter Title and the story text (0ms to 10s). default 2 second
-- `Image Pause` Creates a temporary silence while an image or cover is displayed on the screen before reading continues (0ms to 20s). default 3 second
-- `Scene Pause` Handles dramatic pauses for elegant scene changes (like *** or ◇◇◇).have it (0ms to 5s). default 1 second
-- `Segment Pause (N)` Controls the tiny micro-pauses between standard text blocks/sentences will have 0-2000ms. default 500ms
+ **!(New) Behavior settings:**
+   - `Header Pause (H)` Gives the user breathing room between a Chapter Title and the story text (0ms to 10s). default 2 second
+   - `Image Pause` Creates a temporary silence while an image or cover is displayed on the screen before reading continues (0ms to 20s). default 3 second
+   - `Scene Pause` Handles dramatic pauses for elegant scene changes (like *** or ◇◇◇).have it (0ms to 5s). default 1 second
+   - `Segment Pause (N)` Controls the tiny micro-pauses between standard text blocks/sentences will have 0-2000ms. default 500ms
 
    
 3. Settings save automatically
@@ -208,7 +210,6 @@ _(IF Mac or Linux has problem with error in Termimal when first run >main.py Do 
 - `"?!` creates ONE pause (based on `!`)
 
   
-
 ---
 
 ## 🔳 Keyboard Shortcuts
@@ -262,9 +263,10 @@ LocalReader-Plus
 
 **Additional folders created during use:**
 
-- `bin/` - FFMPEG binaries  ~~(auto-downloaded on first export)~~
-- `models/` - TTS engine models (auto-downloaded based on your choice)
-- `userdata/audio_cache.db` - SQLite Audio Cache
+- `dist/bin/` - FFMPEG binaries  ~~(auto-downloaded on first export)~~
+- `app/models/` - TTS engine models (auto-downloaded based on your choice)
+- `dist/userdata/audio_cache.db` - SQLite Audio Cache
+- `dist/audio files`- for files that Export will live inside this folder
 
 ### Storage & Installation Estimates
 
@@ -276,14 +278,14 @@ LocalReader-Plus
 | **TTS Engine (CPU)**        | ~87 MB             | Quantized INT8 model                              |
 | **Voice Pack**              | ~30 MB             | Shared acoustic data for voices                   |
 | **Audio Cache (SQLite)**    | ~200 MB            | Auto-managed (Maximum limit)                      |
-| **Document Cache**          | 1 - 10+ MB          | Size per parsed book                              |
+| **Document Cache**          | 1 - 10+ MB         | Size per parsed book                              |
 | **FFmpeg**                  | ~100 MB            | *Optional* - Downloaded on-demand for MP3 exports |
 | **Exported Audio**          | Varies             | ~1 MB (MP3) / ~2.7 MB (WAV) per minute of audio   |
 | **CUDA (12.xx)**            | 3.0 - 4.5 GB       | *Optional* - System-level GPU acceleration        |
 | **cuDNN (9.xx)**            | ~3.0 GB            | *Optional* - Deep learning GPU primitives         |
 
-> **⚠️ Export Limitation:** > Currently, exporting a document to WAV or MP3 processes the entire book. Selecting a custom starting point or specific chapter for audio exports is not yet supported. 
-_*coming soon* for choose downloading base on ToC point, selects start and end point with Table of Contents_
+> **🎙️ Export ** > Support export with Toc point to point and single point _point to point mean can select start point and end point with H tag and single point mean select only one chapter of books_ 
+
 
 #### Estimated Installation Totals
 *Calculated using the Base App + Python Environment + Models. Excludes optional CUDA/cuDNN installations, user document caches, and exported audio files.*
@@ -300,7 +302,7 @@ _*coming soon* for choose downloading base on ToC point, selects start and end p
 | **Python**     | 3.10 - 3.13                 | 3.12                           |
 | **RAM**        | 4 GB                        | 8 GB+                          |
 | **Disk Space** | 3 GB free                   | 20 GB+ free                    |
-| **CPU**        | Dual-core 2.0 GHz           | Quad-core 2.5 GHz+   NVIDA GPU |
+| **CPU**        | Dual-core 2.0 GHz           | Quad-core 2.5 GHz+    GPU      |
 | **Internet**   | Required for setup only     | Offline after setup            |
 
 ---
@@ -322,7 +324,7 @@ _*coming soon* for choose downloading base on ToC point, selects start and end p
 ### File Access
 
 - **Read-Only Documents:** PDFs/EPUBs are only read (never modified)
-- **Writable Folders:** Only `userdata/`, `models/`, `bin/`, and `.cache/`
+- **Writable Folders:** Only `userdata/`, `audio files/`, `models/`, `bin/`, and `.cache/`
 - **No Background Access:** App closes completely when you exit
 
 ---
@@ -380,12 +382,12 @@ This project is made possible thanks to the following open-source libraries and 
 
 **Engine:** Kokoro onnx-82M (Dual-Mode: CPU/GPU)
 
-~~**Last Updated LocalReader Pro:**~~ ~~January 6, 2026~~
+**Last Original LocalReader Pro updated:**January 6, 2026
 ---
 **Last Updated** June 24, 2026
 
 ---
 ***Epub or Pdf files should not be DRM (Digital Rights Management)***
 
-**Enjoy ! 🔳⚪**
+**Enjoy listening ! 🔳⚪**
 

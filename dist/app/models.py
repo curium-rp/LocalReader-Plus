@@ -63,6 +63,15 @@ class ExportRequest(BaseModel):
     rules: List[PronunciationRule]
     ignore_list: List[str] = []
     format: str = "wav"
+    start_page: Optional[int] = None
+    end_page: Optional[int] = None
+    pause_settings: Optional[Dict[str, int]] = None
+    behavior_settings: Optional[Dict[str, int]] = None
+    file_label: Optional[str] = "Full Book"
+
+# 🌟 NEW: Payload for opening nested directory folders safely
+class OpenLocationRequest(BaseModel):
+    path: str
 
 class SynthesisRequest(BaseModel):
     text: str
