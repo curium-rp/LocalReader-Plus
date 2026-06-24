@@ -90,15 +90,13 @@ pip install onnxruntime
   
    install **cudnn v9 [https://developer.nvidia.com/cudnn-downloads](https://developer.nvidia.com/cudnn-downloads)**
 
-if this process break normal app NVDIA -stick with loading icon- just go download NVDIA app it and re-install
+   _Recomment to use custom install for not break NVDIA app check out of old version of NVDIA apps out and continue_
 
+   _if this process break normal app NVDIA -stick with loading icon- just go download NVDIA app it and re-install_
+
+
+**IF change files paths install location, you need to go for change paths inside main.py to make apps know it**
     
-   **Go to or find it "CUDNN> v9.XX >bin"**
-Default locations 
-
-> C:\Program Files\NVIDIA\CUDNN\v9.23\bin\12.9\x64
-
-   It has many of  **.dll** files in bis folder **copy** all of em to **LocalReader-Plus\dist\bin** if didn't have create it
 
    Install onnxruntime-gpu  _Make sure you don't have onnxruntime cpu, it will cause conflicts_
    
