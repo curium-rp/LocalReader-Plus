@@ -60,12 +60,14 @@ import hashlib
 # ==========================================
 # CPU CORE MANAGER & ROBUST CACHE LINKING
 # ==========================================
-# Count total cores and subtract 1 to keep the OS responsive. Minimum 1 core.
+# Count total cores for every 6 that have will reserved more 1 core/thread
+# For example has 6 thread will reserved 1 if has 16 will reserved 2 core/thread
 _total_cores = multiprocessing.cpu_count()
-_safe_cores = max(1, _total_cores - 1)
+_reserved_cores = max(1, _total_cores // 6)
+_safe_cores = max(1, _total_cores - _reserved_cores)
 cpu_semaphore = threading.Semaphore(_safe_cores)
 
-print(f"[Engine] CPU Core Manager active: Utilizing {_safe_cores}/{_total_cores} threads.")
+print(f"[Engine] CPU Core Manager active: Utilizing {_safe_cores}/{_total_cores} threads (Reserved: {_reserved_cores}).")
 
 # Thread-safe dictionary for exact audio matches to prevent redundant processing
 _robust_link_cache = {}

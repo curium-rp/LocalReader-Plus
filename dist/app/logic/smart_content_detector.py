@@ -194,32 +194,104 @@ def filter_text_for_tts(text: str) -> str:
     # Do NOT run the re.sub for <s> or IMAGE! Let the frontend intercept them.
     return text.strip()
 
+
 from bs4 import BeautifulSoup
 
 def generate_toc(pages):
     """
     Scans the pre-baked HTML pages for header tags and builds a Table of Contents map.
+    Includes advanced heuristics for badly formatted EPUBs based on common structural issues.
     """
     toc_map = []
+    # Detects junk strings like "***", "---", or empty spaces often mistakenly tagged as headers
+    junk_pattern = re.compile(r'^[\W_]+$') 
+    
+    # Pass 1: Broad Scan for H1 through H6 (Strictly skips <title> tags)
     for page_index, page_html in enumerate(pages):
         soup = BeautifulSoup(page_html, 'html.parser')
+        body = soup.find('body') or soup # Exclude <head> metadata
         
-        # 1. Native H1 to H3 scan (Your primary logic)
-        for header in soup.find_all(['h1', 'h2', 'h3']):
+        for header in body.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
             title = header.get_text(strip=True)
-            if title and len(title) < 100: # Prevent accidental massive paragraphs
+            if title and len(title) < 150 and not junk_pattern.match(title):
                 level = int(header.name[1]) 
-                # Avoid inserting exact duplicates for the same page
                 if not any(t['page_index'] == page_index and t['title'] == title for t in toc_map):
                     toc_map.append({"title": title, "level": level, "page_index": page_index})
-                    
-        # 2. Smart Fallback: Catch lazy authors who used <p> tags for chapters
-        for p in soup.find_all(['p', 'div']):
-            text = p.get_text(strip=True)
-            # If a line explicitly starts with "Chapter X", grab it
-            if text.lower().startswith('chapter ') and len(text) < 50:
-                if not any(t['page_index'] == page_index and t['title'] == text for t in toc_map):
-                    toc_map.append({"title": text, "level": 2, "page_index": page_index})
+
+    # Pass 2: Semantic CSS Class Fallback (Only if Pass 1 found absolutely nothing)
+    if not toc_map:
+        semantic_classes = ['chapter', 'chap', 'title', 'heading', 'h1', 'h2', 'h3']
+        for page_index, page_html in enumerate(pages):
+            soup = BeautifulSoup(page_html, 'html.parser')
+            body = soup.find('body') or soup
+            
+            for el in body.find_all(['p', 'div', 'span'], class_=True):
+                classes = el.get('class', [])
+                if any(any(sc in c.lower() for sc in semantic_classes) for c in classes):
+                    title = el.get_text(strip=True)
+                    if title and len(title) < 150 and not junk_pattern.match(title):
+                        if not any(t['page_index'] == page_index and t['title'] == title for t in toc_map):
+                            toc_map.append({"title": title, "level": 1, "page_index": page_index})
+                            break # Only grab the first semantic match per page to avoid clutter
+
+    # Pass 3: Hard Text-Pattern Fallback (Strict First-Blocks Scan)
+    # Catches lazy authors who used completely unstyled <p> tags
+    if not toc_map:
+        # Matches "chapter", "prologue", etc., OR "act" strictly followed by a number/roman numeral
+        fallback_pattern = re.compile(r'^(chapter|prologue|epilogue|part|volume|interlude)\b|^act\s*[\dIVXLCDM]+', re.IGNORECASE)
+        
+        for page_index, page_html in enumerate(pages):
+            soup = BeautifulSoup(page_html, 'html.parser')
+            body = soup.find('body') or soup
+            
+            blocks_checked = 0
+            for el in body.find_all(['p', 'div']):
+                title = el.get_text(strip=True)
+                
+                # Skip completely empty or junk blocks without counting them
+                if not title or junk_pattern.match(title):
+                    continue
+                
+                blocks_checked += 1
+                
+                # Check if this valid block matches our chapter patterns
+                if len(title) < 100 and fallback_pattern.match(title):
+                    if not any(t['page_index'] == page_index and t['title'] == title for t in toc_map):
+                        toc_map.append({"title": title, "level": 1, "page_index": page_index})
+                        break # Found it, stop scanning this page
+                
+                # SAFETY LOCK: If the first 2 text-containing blocks aren't chapters,
+                # immediately abandon the page to prevent picking up dialogue deep in the text.
+                if blocks_checked >= 2:
+                    break
+
+    # 4. Strict Hierarchy Normalization (The "Bad EPUB" Fix)
+    if toc_map:
+        # Get all unique levels used in the document, sort them (e.g., [3, 5])
+        unique_levels = sorted(list(set(t['level'] for t in toc_map)))
+        
+        # Create a mapping to perfectly normalize them to 1, 2, 3... (e.g., H3->1, H5->2)
+        level_mapping = {old_lvl: new_lvl + 1 for new_lvl, old_lvl in enumerate(unique_levels)}
+        
+        for t in toc_map:
+            t['level'] = level_mapping[t['level']]
+
+    # 5. Subtitle Demotion (The "Double H" Fix)
+    # Catches authors who use consecutive identical <h> tags for "Chapter X" and "Subtitle"
+    if toc_map and len(toc_map) > 2:
+        duplicate_level_count = 0
+        
+        # Count how many times an identical header level appears right after another on the same page
+        for i in range(1, len(toc_map)):
+            if toc_map[i]['page_index'] == toc_map[i-1]['page_index'] and toc_map[i]['level'] == toc_map[i-1]['level']:
+                duplicate_level_count += 1
+                
+        # If this happens frequently (e.g., > 25% of all TOC entries are consecutive duplicates)
+        if duplicate_level_count / len(toc_map) >= 0.25:
+            for i in range(1, len(toc_map)):
+                if toc_map[i]['page_index'] == toc_map[i-1]['page_index'] and toc_map[i]['level'] == toc_map[i-1]['level']:
+                    # Demote the second tag so it becomes a sub-chapter (e.g., Level 1 becomes Level 2)
+                    toc_map[i]['level'] += 1
 
     # Sort TOC to guarantee page order
     toc_map = sorted(toc_map, key=lambda x: x['page_index'])
