@@ -17,7 +17,7 @@ sys.path.insert(0, str(base_dir))
 if platform.system() == "Windows":
     print("[STARTUP] Scanning for NVIDIA...")
     found_paths = []
-    
+####install paths location need to change if you do change a files lcoation of installion of CUDAv12
     cuda_paths = glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.*\bin")
     if cuda_paths:
         cuda_paths.sort(reverse=True)
@@ -25,9 +25,14 @@ if platform.system() == "Windows":
         if os.path.exists(best_cuda):
             found_paths.append(best_cuda)
             
-    cudnn_paths = glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin")
+#### Paths for CUDNN v9 (e.g., bin\12.9\x64)###
+    cudnn_paths = glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin\*\x64")
+    if not cudnn_paths:
+        # Fallback for older versions or custom installs directly in \bin
+        cudnn_paths = glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin")
+        
     if cudnn_paths:
-        cudnn_paths.sort(reverse=True)
+        cudnn_paths.sort(reverse=True) # Prioritizes newest version (e.g. 12.9 over 11.8)
         best_cudnn = cudnn_paths[0]
         if os.path.exists(best_cudnn):
             found_paths.append(best_cudnn)
