@@ -5,9 +5,9 @@ Replaces file-based .cache/ directory with a database.
 
 import sqlite3
 import time
+import threading  # SURGICAL CHANGE 1: Import threading
 from pathlib import Path
 from typing import Optional, Tuple
-
 
 class AudioCache:
     """
@@ -16,46 +16,79 @@ class AudioCache:
     """
 
     def __init__(self, db_path: Path, max_size_mb: float = 200.0):
-        """
-        Args:
-            db_path: Path to SQLite database file
-            max_size_mb: Maximum cache size in MB (default: 200MB)
-        """
         self.db_path = db_path
         self.max_size_mb = max_size_mb
+        self.lock = threading.Lock()  # SURGICAL CHANGE 2: Create a Database Lock
         self._init_db()
 
     def _init_db(self):
-        """Create database schema if not exists."""
-        try:
-            conn = sqlite3.connect(str(self.db_path))
-            cursor = conn.cursor()
+        """Create database schema if not exists, safely locked."""
+        with self.lock:
+            try:
+                conn = sqlite3.connect(str(self.db_path))
+                # SURGICAL CHANGE 3: Enable WAL mode. This prevents "Database is Locked" 
+                # crashes when FastAPI background threads try to read/write at the same time.
+                conn.execute('PRAGMA journal_mode=WAL;')
+                cursor = conn.cursor()
 
-            cursor.execute(
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audio_cache (
+                        cache_key TEXT PRIMARY KEY,
+                        audio_data BLOB NOT NULL,
+                        size_bytes INTEGER NOT NULL,
+                        created_at REAL NOT NULL,
+                        accessed_at REAL NOT NULL
+                    )
                 """
-                CREATE TABLE IF NOT EXISTS audio_cache (
-                    cache_key TEXT PRIMARY KEY,
-                    audio_data BLOB NOT NULL,
-                    size_bytes INTEGER NOT NULL,
-                    created_at REAL NOT NULL,
-                    accessed_at REAL NOT NULL
                 )
-            """
-            )
 
-            # Index for LRU cleanup (sort by accessed_at)
-            cursor.execute(
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_accessed_at 
+                    ON audio_cache(accessed_at)
                 """
-                CREATE INDEX IF NOT EXISTS idx_accessed_at 
-                ON audio_cache(accessed_at)
-            """
-            )
+                )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"[CACHE WARNING] Init Database failed: {e}")
 
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            print(f"[CACHE ERROR] DB Init failed: {e}")
+    def put(self, cache_key: str, audio_bytes: bytes):
+        """Save audio to cache with a Garbage Guard."""
+        
+        # SURGICAL CHANGE 4: The Garbage Guard
+        # A normal spoken sentence in WAV format is usually 50KB to 500KB.
+        # If the AI glitches and outputs "con con", it's usually under 10KB.
+        # We refuse to save it, forcing the engine to generate a fresh one next time.
+        if len(audio_bytes) < 10240:  # 10 KB limit
+            print(f"[CACHE GUARD] Audio too small ({len(audio_bytes)} bytes). Refusing to save broken file.")
+            return
 
+        size_bytes = len(audio_bytes)
+        now = time.time()
+
+        # Safely lock the database while writing
+        with self.lock:
+            try:
+                conn = sqlite3.connect(str(self.db_path))
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO audio_cache 
+                    (cache_key, audio_data, size_bytes, created_at, accessed_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (cache_key, audio_bytes, size_bytes, now, now),
+                )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"[CACHE WARNING] Failed to write to DB: {e}")
+
+        # Enforce size limit outside the lock to prevent deadlocks
+        self._enforce_size_limit()
+        
     def _ensure_db_ready(self):
         """Self-healing: Ensure table exists before any operation."""
         try:

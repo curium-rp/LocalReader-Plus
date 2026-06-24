@@ -1,80 +1,79 @@
 """
-Smart Content Detection Module for LocalReader Pro v1.5
+Smart Content Detection Module for LocalReader plus 
 Handles Smart Start (intro skip) and Header/Footer filtering.
+and more we do more smarter then original one 
 """
 
 import re
 from typing import List, Tuple, Dict
 from difflib import SequenceMatcher
 
-def find_content_start_page(pages: List[str], max_scan: int = 10) -> int:
+def clean_epub_html(page_html: str) -> str:
     """
-    Scans the first N pages and finds the first page with substantial content.
-    
-    Args:
-        pages: List of page texts
-        max_scan: Maximum number of pages to scan (default: 10)
-    
-    Returns:
-        Index of the first content page (0 if no empty pages found)
+    Deep cleaner for EPUB HTML. Strips bad tags, unwraps spans, removes native TOCs via link density.
     """
-    scan_limit = min(max_scan, len(pages))
-    
-    for i in range(scan_limit):
-        page_text = pages[i].strip()
+    import re
+    # 0. THE PRE-BURNER: Vaporize XML declarations and DOCTYPEs before soup parsing
+    page_html = re.sub(r'<\?xml.*?\?>', '', page_html, flags=re.IGNORECASE | re.DOTALL)
+    page_html = re.sub(r'<!DOCTYPE.*?>', '', page_html, flags=re.IGNORECASE | re.DOTALL)
+
+    soup = BeautifulSoup(page_html, 'html.parser')
+
+    # 1. THE TOC SNIPER (Strict Keyword + Link Density Check)
+    links = soup.find_all('a')
+    if links:
+        link_text_len = sum(len(a.get_text(strip=True)) for a in links)
+        text_content = soup.get_text(strip=True)
+        text_lower = text_content.lower()
         
-        # Count alphanumeric characters (ignore whitespace and punctuation)
-        char_count = len(re.findall(r'[a-zA-Z0-9]', page_text))
+        # STRICT CHECK: Ensure the page actually claims to be a TOC
+        is_toc_page = "table of contents" in text_lower or "contents" in text_lower or "toc" in text_lower.split()
         
-        # Count words
-        words = re.findall(r'\b\w+\b', page_text)
-        word_count = len(words)
-        
-        # Heuristic: Substantial content = >500 chars OR >100 words
-        if char_count > 500 or word_count > 100:
-            return i
-    
-    # If no substantial content found, start at page 0
-    return 0
+        # If it claims to be a TOC, AND > 40% of the text is a hyperlink, AND has > 3 links... Vaporize it.
+        if is_toc_page and len(text_content) > 0 and (link_text_len / len(text_content)) > 0.4 and len(links) > 3:
+            return ""
+
+    # 2. The Exterminator: Remove malicious/useless tags
+    for tag in soup.find_all(['script', 'style', 'meta', 'iframe']):
+        tag.decompose()
+
+    # 3. The Unwrapper: Keep text, destroy inline styling and remaining hyperlinks
+    for tag in soup.find_all(['span', 'a']):
+        tag.unwrap()
+
+    # 4. The Vacuum: Remove empty paragraphs/divs (no text and no images inside)
+    for block in soup.find_all(['p', 'div', 'section', 'figure', 'main']):
+        if not block.get_text(strip=True) and not block.find(['img', 'image', 'svg', 'picture']):
+            block.decompose()
+
+    # 5. The Fallback: Convert lazy text-heavy DIVs into P tags for uniform CSS
+    for div in soup.find_all('div'):
+        if div.get_text(strip=True) and not div.find(['p', 'div']):
+            div.name = 'p'
+
+    return str(soup)
 
 
 def split_into_lines(text: str) -> List[str]:
-    """Split text into lines and clean up."""
     return [line.strip() for line in text.split('\n') if line.strip()]
 
 
 def similarity(a: str, b: str) -> float:
-    """Calculate similarity between two strings (0.0 to 1.0)."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
 def is_page_number(line: str) -> bool:
-    """Detect if a line is likely a page number."""
-    # Remove whitespace and common page number patterns
     cleaned = line.strip().replace('Page', '').replace('page', '').strip()
-    
-    # Check if it's just a number (or Roman numeral)
     if re.match(r'^[0-9]+$', cleaned):
         return True
     if re.match(r'^[ivxlcdm]+$', cleaned, re.IGNORECASE):
         return True
     if re.match(r'^\d+\s*of\s*\d+$', cleaned, re.IGNORECASE):
         return True
-    
     return False
 
 
 def detect_headers_footers(pages: List[str], page_index: int) -> Dict[str, List[str]]:
-    """
-    Detects repeated header/footer lines by comparing with adjacent pages.
-    
-    Args:
-        pages: All pages in the document
-        page_index: Current page index
-    
-    Returns:
-        Dictionary with 'headers' and 'footers' lists containing detected noise lines
-    """
     if not pages or page_index >= len(pages):
         return {'headers': [], 'footers': []}
     
@@ -87,37 +86,26 @@ def detect_headers_footers(pages: List[str], page_index: int) -> Dict[str, List[
     headers = []
     footers = []
     
-    # Get adjacent pages for comparison
     prev_page = pages[page_index - 1] if page_index > 0 else None
     next_page = pages[page_index + 1] if page_index < len(pages) - 1 else None
     
     prev_lines = split_into_lines(prev_page) if prev_page else []
     next_lines = split_into_lines(next_page) if next_page else []
     
-    # Calculate safe scan depth (max 20% of page or 3 lines, whichever is smaller, but at least 1 if lines exist)
     limit = max(1, min(3, int(len(current_lines) * 0.2)))
     
-    # Check top lines (potential headers)
     for i in range(limit):
         current_line = current_lines[i]
         matches = 0
-        
-        # Compare with previous page
         if prev_lines and i < len(prev_lines):
             if similarity(current_line, prev_lines[i]) > 0.9:
                 matches += 1
-        
-        # Compare with next page
         if next_lines and i < len(next_lines):
             if similarity(current_line, next_lines[i]) > 0.9:
                 matches += 1
-        
-        # If line matches in at least 1 adjacent page
         if matches >= 1:
             headers.append(current_line)
-    
-    # Check bottom lines (potential footers)
-    # Ensure footer scan doesn't overlap with header scan
+            
     start_footer_scan = max(limit, len(current_lines) - limit)
     
     for i in range(start_footer_scan, len(current_lines)):
@@ -125,89 +113,61 @@ def detect_headers_footers(pages: List[str], page_index: int) -> Dict[str, List[
         matches = 0
         offset_from_end = len(current_lines) - i - 1
         
-        # Compare with previous page (same position from end)
         if prev_lines:
             prev_index = len(prev_lines) - offset_from_end - 1
             if 0 <= prev_index < len(prev_lines):
                 if similarity(current_line, prev_lines[prev_index]) > 0.9:
                     matches += 1
-        
-        # Compare with next page
         if next_lines:
             next_index = len(next_lines) - offset_from_end - 1
             if 0 <= next_index < len(next_lines):
                 if similarity(current_line, next_lines[next_index]) > 0.9:
                     matches += 1
-        
-        # Also check if it's a page number
         if is_page_number(current_line):
             matches += 2
         
         if matches >= 1:
             footers.append(current_line)
-    
+            
     return {'headers': headers, 'footers': footers}
 
 
 def apply_header_footer_filter(text: str, headers: List[str], footers: List[str], mode: str = 'clean') -> str:
-    """
-    Applies header/footer filtering to text.
-    
-    Args:
-        text: The page text
-        headers: List of header lines to filter
-        footers: List of footer lines to filter
-        mode: 'clean' (remove) or 'dim' (mark for styling)
-    
-    Returns:
-        Filtered text (with markers if mode='dim')
-    """
     lines = split_into_lines(text)
     
     if mode == 'clean':
-        # Remove all matching lines
         filtered_lines = []
         for line in lines:
             is_noise = False
-            
-            # Check if line matches any header/footer
             for header in headers:
                 if similarity(line, header) > 0.9:
                     is_noise = True
                     break
-            
             if not is_noise:
                 for footer in footers:
                     if similarity(line, footer) > 0.9:
                         is_noise = True
                         break
-            
-            # Also check page numbers
             if is_page_number(line):
                 is_noise = True
             
             if not is_noise:
                 filtered_lines.append(line)
-        
         return '\n'.join(filtered_lines)
-    
+        
     elif mode == 'dim':
-        # Mark lines with a special marker for frontend styling
         marked_lines = []
         for line in lines:
             is_noise = False
-            
             for header in headers:
                 if similarity(line, header) > 0.9:
                     is_noise = True
                     break
-            
             if not is_noise:
                 for footer in footers:
                     if similarity(line, footer) > 0.9:
                         is_noise = True
                         break
-            
             if is_page_number(line):
                 is_noise = True
             
@@ -215,23 +175,119 @@ def apply_header_footer_filter(text: str, headers: List[str], footers: List[str]
                 marked_lines.append(f'[DIM]{line}[/DIM]')
             else:
                 marked_lines.append(line)
-        
         return '\n'.join(marked_lines)
-    
-    else:
-        return text
+        
+    return text
 
 
 def filter_text_for_tts(text: str) -> str:
     """
-    Removes [DIM]...[/DIM] markers for TTS playback.
-    
-    Args:
-        text: Text with potential dim markers
-    
-    Returns:
-        Clean text without dimmed sections
+    Strips non-spoken formatting markers out of the text before TTS engine ingestion.
+    CRITICAL FIX: We no longer delete <s> (Scene) or [IMAGE] markers here!
+    If we delete them here, the frontend media player skips them entirely.
     """
-    # Remove dimmed sections
-    return re.sub(r'\[DIM\].*?\[/DIM\]', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'\[DIM\].*?\[/DIM\]', '', text, flags=re.DOTALL)
+    
+    # Clean up standard Headers brackets but KEEP the text inside
+    text = re.sub(r'\[/?H[1-6]\]', '', text)
+    
+    # Do NOT run the re.sub for <s> or IMAGE! Let the frontend intercept them.
+    return text.strip()
 
+from bs4 import BeautifulSoup
+
+def generate_toc(pages):
+    """
+    Scans the pre-baked HTML pages for header tags and builds a Table of Contents map.
+    """
+    toc_map = []
+    for page_index, page_html in enumerate(pages):
+        soup = BeautifulSoup(page_html, 'html.parser')
+        
+        # 1. Native H1 to H3 scan (Your primary logic)
+        for header in soup.find_all(['h1', 'h2', 'h3']):
+            title = header.get_text(strip=True)
+            if title and len(title) < 100: # Prevent accidental massive paragraphs
+                level = int(header.name[1]) 
+                # Avoid inserting exact duplicates for the same page
+                if not any(t['page_index'] == page_index and t['title'] == title for t in toc_map):
+                    toc_map.append({"title": title, "level": level, "page_index": page_index})
+                    
+        # 2. Smart Fallback: Catch lazy authors who used <p> tags for chapters
+        for p in soup.find_all(['p', 'div']):
+            text = p.get_text(strip=True)
+            # If a line explicitly starts with "Chapter X", grab it
+            if text.lower().startswith('chapter ') and len(text) < 50:
+                if not any(t['page_index'] == page_index and t['title'] == text for t in toc_map):
+                    toc_map.append({"title": text, "level": 2, "page_index": page_index})
+
+    # Sort TOC to guarantee page order
+    toc_map = sorted(toc_map, key=lambda x: x['page_index'])
+    return toc_map
+
+# =========================================
+# PDF NATIVE PROCESSING HELPERS
+# =========================================
+
+def detect_strict_scene_break(text: str, allow_breaks_flag: bool) -> bool:
+    """
+    Strictly determines if a text block is a scene break for PDFs.
+    Requires allow_breaks_flag (True if an image was found on page 1).
+    Reuses EPUB's strict symbol rules to prevent false positives.
+    """
+    if not allow_breaks_flag:
+        return False
+        
+    chars = [c for c in text if not c.isspace()]
+    if not chars:
+        return False
+        
+    length = len(chars)
+    if length > 20:
+        return False
+        
+    # 1. Ban if it contains ANY letters or numbers (English, European, Asian)
+    if re.search(r'[a-zA-Z0-9\u00C0-\u00FF\u0400-\u04FF\u3041-\u3096\u30A1-\u30FA\u4E00-\u9FAF\uAC00-\uD7AF]', text):
+        return False
+        
+    # 2. Ban common punctuation, quotes, ellipses, and ALL DOTS!
+    # Protects "...", "・・・", and mixed text like "***" or "..."
+    forbidden_punctuation = set(".,!?:;\"'“”‘’「」『』()[]{}<>。、・？！…")
+    if any(c in forbidden_punctuation for c in chars):
+        return False
+        
+    # 3. If it has 2+ characters and survived the bans above, it is a true scene break
+    if length >= 2:
+        return True
+        
+    # 4. If it's a single character, it MUST be a verified novel separator symbol
+    elif length == 1:
+        valid_singles = set("*#-_~♦◇◆○●■□▼▽★☆❖✦⁂※—–―─")
+        if chars[0] in valid_singles:
+            return True
+            
+    return False
+
+
+def split_pdf_sentences(text: str, start_idx: int) -> Tuple[str, int]:
+    import html # Safe localized import
+    
+    text = text.strip()
+    if not text:
+        return "", start_idx
+        
+    pattern = r'(?<=[.!?])\s+(?=[A-Z"\'\u201c\u2018])|(?<=[。！？])\s*(?=[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
+    chunks = re.split(pattern, text)
+    
+    new_html = ""
+    current_idx = start_idx
+    
+    for c in chunks:
+        chunk_text = c.strip()
+        if chunk_text:
+            # 🌟 FIX: Sanitize the text to prevent PDF code blocks from destroying the UI DOM
+            safe_text = html.escape(chunk_text)
+            new_html += f'<n id="s_{current_idx}">{safe_text}</n> '
+            current_idx += 1
+            
+    return new_html.strip(), current_idx

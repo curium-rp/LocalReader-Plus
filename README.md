@@ -1,108 +1,145 @@
-# LocalReader Pro
+# LocalReader Plus
 
-**A modern, privacy-focused PDF/EPUB reader with AI-powered text-to-speech, multilingual support, and smart audio caching.**
-
+**A modern, that I fix and improve and fix many things.**
+---
+##🚨 due to redesign of code for this update if you download before it need to reinstall or remove any Library/books that your have inside apps, because in not compatibles with these update and do import again(add Epub/PDF)##
+---
 <div align="center">
-  <img src="docs/images/image1.png" alt="LocalReader Pro Main Interface" width="85%">
-  <br><br>
-  <img src="docs/images/image2.png" alt="LocalReader Pro Settings" width="85%">
+  <h1>Brief</h1>
+  <img src="docs/images/image1.png" alt="Beief" width="70%">
 </div>
 
----
-
-## 🔘 Key Features
-
-### 🔳 Core Reading
-
-- **Multi-Format Support:** PDF and EPUB files
-- **Multilingual UI:** Full interface translation (**English, French, Spanish, Chinese**)
-- **Dual-Engine Architecture:** Choose between Performance (CPU) and Quality (GPU) modes
-- **Fast TTS Engine:** Kokoro-82M v1.0 (~5x real-time synthesis speed)
-- **Auto-Save Progress:** Resume exactly where you left off
-- **Sentence-Level Control:** Click any sentence to start reading from there
-
-### 🔘 Smart TTS Controls
-
-- **Dynamic Voice Library:** Automatically loads voices for **English (US/UK), French, Spanish, Chinese, Japanese, Italian, and Portuguese**.
-- **Voice Settings Drawer:** Floating button for quick access to voice, speed, and filter controls
-- **Player Text Customization:** New **Text Size Slider** to adjust subtitle/caption size (12px-24px) in real-time.
-- **Decoupled Browsing:** Browse other pages freely without jumping the audio. A "Back to Reading" button lets you snap back instantly.
-- **Natural Speech Flow:** Intelligent line joining prevents mid-sentence stops
-- **Smart Punctuation Logic:**
-  - Supports English (`...`, `?!`) and CJK (`。`, `！`, `？`) punctuation correctly.
-  - Smart "Soft Newlines" prevent rushing without creating double pauses.
-- **Custom Pause Settings:** Granular control over pause duration for punctuation (0-2000ms).
-- **Custom Pronunciation Rules:** Fix mispronunciations with RegEx support.
-- **Speed Control:** 0.5x to 3.0x playback speed.
-
-### ⚙️ Smart Features
-
-- **Smart Start:** Auto-skip blank/cover pages on first open
-- **Header/Footer Filter:** Detect and remove/dim repeated page clutter
-- **Global Search:** Full-book search with instant navigation (Ctrl+F)
-- **SQLite Audio Cache:** 200MB LRU cache with automatic cleanup (Self-healing).
-
-### 📁 MP3 Export
-
-- **One-Click Export:** Convert entire document to MP3
-- **Background Processing:** UI stays responsive during export
-- **On-Demand FFMPEG:** Auto-downloads encoder (~100MB) on first export
-
-### 🔘 Sleep Timer
-
-- **Auto-Shutdown:** Automatically closes the application after a set duration.
-- **Visual Feedback:** Button displays remaining time in a neutral style when active.
-- **Background Safe:** Timer runs on the backend to guarantee shutdown.
 
 ---
+# What difference from LocalReader Pro(main)
+   **Wave I**
+   -  Have feature that handle reading number 
+   -  Have more smart chunk (cut sentence before reach limit), is use IPA for count if reach limit of 510 phoneme if it nearly limit will cut it, smoothly.
+   -  Have support with GPU NVDIA _NEED more setup_
+   -  Delay audio startup or buffer startup, set to 1000ms - 1 seconde
+   -  No .exe options for Windows.
+   -  Have themes (auto save and default is dark mode open on LOGO "LocalReader")
 
-## 🔳 Installation
+   **Wave II**
+   -  Add ToC/Table of Content support. (redeign convertor of EPUB and PDF)
+   -  Add Images supprt.
+   -  Add Match Case and Match Whole Word for search functions and imporve jump to selects result.
+   -  Support auto switch languages, for example you play in main language is English when it has japanese language, it will switch to jp and will go back to english, automaticlly.**only support English, Japanese, and China(Mandarin)**
+   -  Improve reliability of apps.
+   -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
+   
+   _Have detects 'ExecutionProvider' in Windows, Mac, and Linux for Kokoro_gpu models it should works in Gpu if it can will fallback to cpu_
 
-### Windows (Recommended)
+# Many bug has been fix  #
+   
+   **-Fix pause setting not respond.**
+   
+   **-Fix preload system when apply pause setthing.** _tread off, is may happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, i mean it need to wait -old buffer setting end._
+   
+   **-Fix cache system cause repreat and skip reading, randomly.**
+   
+   **-Fix buffer not works as expect**
+   
+---
+# Windows installation
 
-**One-Click Installer - No Manual Setup Required**
+   _Install **Python 3.12** if not install yet, _support Python 3.10, 3.11, 3.12, 3.13_
+   
+  
+  ## **First method for download** 
+   Choose folders that needed to install and open teminal - _can delete .git in folder_
+   
+```
+git clone https://github.com/curium-rp/LocalReader-Plus
+```
 
-1. **Extract the ZIP** to your desired location
-2. **Navigate to the `dist` folder**
-3. **Double-click:** `setup.exe`
-4. **Approve UAC Prompt** when Windows requests administrator access
-5. **Wait for Installation:**
-   - Checks for Python 3.12+ (downloads and installs if missing)
-   - Deploys application files
-   - Installs all dependencies automatically
-   - Creates Desktop and Start Menu shortcuts
-6. **Launch:** Double-click "LocalReader Pro" on your Desktop
+```
+cd LocalReader-Plus\dist
+pip install -r requirements.txt
+```
+**And run**
 
-**What the installer does:**
+```
+python main.py
+```
+ ---
+   ## **Second method** download zip and unzip it.
 
-- ✅ Installs Python 3.12 if not present
-- ✅ Installs all required packages (FastAPI, PyTorch, Kokoro-TTS, etc.)
-- ✅ Creates shortcuts on Desktop and Start Menu
-- ✅ Sets up the application in the selected directory
+   Go to **LocalReader-Plus\ "dist"**  open teminal inside folder dist and run 
+```
+pip install -r requirements.txt
+```
+```
+python main.py
+```
+
+   **If has some error when run python main.py say something like "kokoro" run uninstall onnxruntime and install back**
+```
+pip uninstall onnxruntime 
+```
+```
+pip install onnxruntime
+```
+
+**(Run or skip to next step for NVIDIA GPU setup)**
+
+---
+## This is what needed to do for KOKORO model for run on NVIDIA GPU on WINDOWS
+
+   install **cuda v12 [https://developer.nvidia.com/cuda-12-8-0-download-archive](https://developer.nvidia.com/cuda-12-8-0-download-archive)**
+  
+   install **cudnn v9 [https://developer.nvidia.com/cudnn-downloads](https://developer.nvidia.com/cudnn-downloads)**
+
+if this process break normal app NVDIA -stick with loading icon- just go download NVDIA app it and re-install
+
+    
+   **Go to or find it "CUDNN> v9.XX >bin"**
+Default locations 
+
+> C:\Program Files\NVIDIA\CUDNN\v9.23\bin\12.9\x64
+
+   It has many of  **.dll** files in bis folder **copy** all of em to **LocalReader-Plus\dist\bin** if didn't have create it
+
+   Install onnxruntime-gpu  _Make sure you don't have onnxruntime cpu, it will cause conflicts_
+   
+   **-First uninstall both**
+   
+```
+pip uninstall onnxruntime onnxruntime-gpu -y
+
+```
+   **-Second install onnxruntime-gpu**
+
+```
+pip install onnxruntime-gpu
+```
+
+   _Open powershell in **"dist"** folder_
+
+> python main.py 
+
+  Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need voice engine to works)
+   
+   It mean is run on GPU enjoy.
+
+
+---
 
 **Uninstalling:**
 
-- Run `uninstall.exe` in the installation directory
-- Removes all shortcuts (application files remain for manual deletion)
-
 To completely remove the supporting software (Python and Libraries):
-
-**Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
 
 **Remove Libraries**: If you haven't deleted the folder yet, open a terminal in the "dist" folder and run: `pip uninstall -r requirements.txt`
 
+**Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
+
 **Clear Model Cache**: Many voices and AI models are stored in your user profile. You can delete the `.cache` folder in your user directory (usually `C:\Users\<YourName>\.cache\kokoro`) to free up additional space.
-
-**Installation Size:**
-
-- Installer: ~24 MB
-- Full installation: ~2.6 GB (including Python dependencies)
 
 ---
 
 ### Linux / Manual Installation
 
-**Prerequisites:** Python 3.10 - 3.13 (Recommended: Python 3.12)
+**Prerequisites:** Python 3.10 - 3.13 (Recommended: Python 3.12 for the best performance)
 
 > ⚠️ **Important:** Python 3.14+ is not yet supported due to `onnxruntime` compatibility.
 
@@ -120,8 +157,8 @@ python3.12 --version
 **Step 2: Extract and Navigate**
 
 ```bash
-unzip LocalReader_Pro_v2.5.zip
-cd LocalReader_Pro_v2.5/dist
+unzip LocalReader-Plus-main.zip
+cd LocalReader-Plus-main/dist
 ```
 
 **Step 3: Install Dependencies**
@@ -134,157 +171,45 @@ pip install -r requirements.txt
 python3.12 -m pip install -r requirements.txt
 ```
 
-This will install:
-
-- FastAPI (web framework)
-- uvicorn (web server)
-- torch (PyTorch for ML)
-- kokoro-onnx (TTS engine)
-- pydub (audio processing)
-- pywebview (desktop wrapper)
-- And other dependencies
-
-**Installation time:** 5-10 minutes (downloading PyTorch ~2GB)
 
 **Step 4: Launch the App**
 
 ```bash
 python3.12 main.py
 ```
-
+_(IF Mac or Linux has problem with error in Termimal when first run >main.py Do uninstall onnxruntime and install back)_
 ---
+## 🔘for Original visit [Original LocalReader-Pro](https://github.com/revisionhiep-create/LocalReader-Pro)
 
-## 🔘 First-Time Setup
 
-After launching the application:
-
-1. **Choose Your Engine Mode:**
-
-   - Open **Settings** section in sidebar
-   - Find **"Processing Mode"** dropdown
-   - Choose between:
-     - **High Performance (CPU):** Faster, lower RAM (~87MB model)
-     - **High Quality (GPU):** Best audio quality (~309MB model)
-
-2. **Download Voice Engine:**
-
-   - Click **"Setup Voice Engine"** button in sidebar
-   - Downloads the model matching your selected mode
-   - Wait for green status indicator (⚪ → 🔘)
-   - **Tip:** You can download both models and switch anytime!
-
-3. **Upload Your First Book:**
-
-   - Click **"Upload Book (PDF/EPUB)"**
-   - Select any PDF or EPUB file
-   - App will process and display the book
-
-4. **Start Reading:**
-
-   - Click the blue **Play** button
-   - Or press `Space` to play/pause
-
-5. **First MP3 Export (Optional):**
-   - Click **"Export Audio (MP3)"** in sidebar
-   - Prompt appears: "Download FFMPEG encoder (~100MB)"
-   - Click **"Download FFMPEG"** and wait ~2-3 minutes
-   - Export starts automatically after download
-   - Subsequent exports skip this step
-
----
-
-## 🔘 Usage Guide
-
-### Basic Reading
-
-- **Navigate Pages:** Use buttons (◀ ▶) or scroll to bottom/top for auto-flip
-- **Play Audio:** Press `Space` or click play button
-- **Jump to Sentence:** Click any sentence in the text
-- **Change Voice:** Use dropdown in sidebar settings
-- **Adjust Speed:** Drag speed slider (0.5x - 3.0x)
-
-### Smart Features
-
-**Smart Start:**
-
-- Automatically activates on first open
-- Finds first page with >500 characters
-- Shows notification: "🔘 Skipped to start of content (Page X)"
-
-**Header/Footer Filter:**
-
-1. Open **Settings** section in sidebar
-2. Find **"Header/Footer Filter"** dropdown
-3. Choose: **Off**, **Clean** (remove), or **Dim** (show faded)
-4. TTS skips filtered content in all modes
-
-**Global Search:**
-
-1. Press `Ctrl+F` (or `Cmd+F` on Mac)
-2. Type query (minimum 2 characters)
-3. Click any result to jump to that page
-4. Press `ESC` to close
-
-### Custom Pronunciation Rules
-
-1. Click **"Pronunciation"** tab in sidebar
-2. Click **+** button to add rule
-3. Configure:
-   - **Original Text:** The text to replace (e.g., "SQL")
-   - **Replacement Text:** How to pronounce (e.g., "S Q L")
-4. Options:
-   - ☑️ **Match Case:** "SQL" ≠ "sql"
-   - ☑️ **Whole Word:** "cat" won't match "category"
-   - ☑️ **Use Pattern Matching:** Enable RegEx
-
-**Example Rules:**
-
-- `ChatGPT` → `Chat G P T` (spell out)
-- `COVID-19` → `COVID nineteen` (pronounce naturally)
 
 ### Custom Pause Settings
 
 1. Open **"Pause Settings"** section in sidebar
 2. Adjust sliders to set pause duration (0-2000ms):
    - **Comma (,)** - Default: 250ms
-   - **Period (.)** - Default: 600ms
+   - **Period (.)** - Default: 0ms (_it overlap with segment pause, cuz logic cut sentence use preiod stop_)
    - **Question (?)** - Default: 600ms
    - **Exclamation (!)** - Default: 600ms
    - **Colon (:)** - Default: 500ms
    - **Semicolon (;)** - Default: 500ms
-   - **Newline** - Default: 800ms (Hidden, smart auto-adjust)
+
+ **!New Behavior settings:**
+- `Header Pause (H)` Gives the user breathing room between a Chapter Title and the story text (0ms to 10s). default 2 second
+- `Image Pause` Creates a temporary silence while an image or cover is displayed on the screen before reading continues (0ms to 20s). default 3 second
+- `Scene Pause` Handles dramatic pauses for elegant scene changes (like *** or ◇◇◇).have it (0ms to 5s). default 1 second
+- `Segment Pause (N)` Controls the tiny micro-pauses between standard text blocks/sentences will have 0-2000ms. default 500ms
+
+   
 3. Settings save automatically
 
-**Smart Behavior:**
+   **Smart Behavior:**
 
 - Pauses apply only to single punctuation or the last char of a group
 - `"..."` creates ONE pause (e.g. 600ms), not three
 - `"?!` creates ONE pause (based on `!`)
-- `Title\n` creates a soft pause (300ms)
 
-### Exporting to MP3
-
-1. Open any PDF/EPUB document
-2. Click **"Export Audio (MP3)"** button
-3. Review time estimate (e.g., "~3 minutes")
-4. Confirm export
-5. Monitor real-time progress
-6. Click **"📂 Open Folder"** to access file
-
-**Export Details:**
-
-- **Format:** MP3, 192 kbps
-- **Naming:** `{document_name}_{voice_name}.mp3`
-- **Location:** `userdata/` folder in project directory
-- **Speed:** ~15 seconds per 1,000 characters
-
-### Sleep Timer
-
-1. Click the **Timer Icon** (clock) on the right side of the screen.
-2. Set the desired duration in **Hours** and **Minutes**.
-3. Click **"Start Timer"**.
-4. The drawer will show a countdown, and the main button will display the remaining minutes.
-5. The application will automatically close when the timer reaches zero.
+  
 
 ---
 
@@ -310,23 +235,18 @@ After launching the application:
 | **Backend**         | FastAPI (Python)                  |
 | **TTS Engine**      | Kokoro-82M (ONNX Runtime)         |
 | **Desktop Wrapper** | pywebview                         |
-| **PDF Parsing**     | PDF.js (Mozilla)                  |
 | **Audio Export**    | pydub + FFMPEG                    |
-| **EPUB Support**    | ebooklib + xhtml2pdf              |
+| **EPUB Support**    | EbookLib + BeautifulSoup4         |
+| **PDF Support**     | PyMuPDF (fitz)                    |
 
 ### File Structure
 
 ```
-LocalReader-Pro/
-├── build_installer.py           # Master build script
-├── installer_logic.py           # setup.exe core logic
+LocalReader-Plus
 ├── README.md
 ├── CHANGELOG.md
-│
 └── dist/
-    ├── setup.exe                # One-click installer (~22 MB)
     ├── main.py                  # App entry point (FastAPI + WebView)
-    ├── launch.vbs               # Silent runner
     │
     ├── app/
     │   ├── server.py            # FastAPI initialization
@@ -344,39 +264,46 @@ LocalReader-Pro/
 
 **Additional folders created during use:**
 
-- `bin/` - FFMPEG binaries (auto-downloaded on first export)
+- `bin/` - FFMPEG binaries  ~~(auto-downloaded on first export)~~
 - `models/` - TTS engine models (auto-downloaded based on your choice)
 - `userdata/audio_cache.db` - SQLite Audio Cache
 
-### Storage Requirements
+### Storage & Installation Estimates
 
-| Component                 | Size                       |
-| ------------------------- | -------------------------- |
-| **Installer**             | ~22 MB                     |
-| **App Files**             | ~10 MB                     |
-| **Python Dependencies**   | ~2 GB (PyTorch, etc.)      |
-| **TTS Engine (GPU Mode)** | ~309 MB                    |
-| **TTS Engine (CPU Mode)** | ~87 MB                     |
-| **Voice Pack (shared)**   | ~30 MB                     |
-| **FFMPEG**                | ~100 MB (optional)         |
-| **Audio Cache (SQLite)**  | ~200 MB max (auto-managed) |
-| **Per Document Cache**    | ~1-5 MB                    |
-| **Exported MP3**          | ~1 MB per minute of audio  |
+| Component                   | Estimated Size     | Notes                                             |
+| :---                        | :---               | :---                                              |
+| **App ZIP & Source**        | ~4 MB              | Core application logic and UI                     |
+| **Python Environment**      | ~800 MB            | ONNX Runtime, FastAPI, etc. *(PyTorch removed)*   |
+| **TTS Engine (GPU)**        | ~309 MB            | Standard FP32 model                               |
+| **TTS Engine (CPU)**        | ~87 MB             | Quantized INT8 model                              |
+| **Voice Pack**              | ~30 MB             | Shared acoustic data for voices                   |
+| **Audio Cache (SQLite)**    | ~200 MB            | Auto-managed (Maximum limit)                      |
+| **Document Cache**          | 1 - 10+ MB          | Size per parsed book                              |
+| **FFmpeg**                  | ~100 MB            | *Optional* - Downloaded on-demand for MP3 exports |
+| **Exported Audio**          | Varies             | ~1 MB (MP3) / ~2.7 MB (WAV) per minute of audio   |
+| **CUDA (12.xx)**            | 3.0 - 4.5 GB       | *Optional* - System-level GPU acceleration        |
+| **cuDNN (9.xx)**            | ~3.0 GB            | *Optional* - Deep learning GPU primitives         |
 
-**Total (GPU Mode):** ~2.6 GB (without exported audio)  
-**Total (CPU Mode):** ~2.4 GB (saves ~220MB)  
-**Total (Both Engines):** ~2.8 GB (maximum flexibility)
+> **⚠️ Export Limitation:** > Currently, exporting a document to WAV or MP3 processes the entire book. Selecting a custom starting point or specific chapter for audio exports is not yet supported. 
+_*coming soon* for choose downloading base on ToC point, selects start and end point with Table of Contents_
+
+#### Estimated Installation Totals
+*Calculated using the Base App + Python Environment + Models. Excludes optional CUDA/cuDNN installations, user document caches, and exported audio files.*
+
+* **Total (CPU Mode):** ~450 MB *(Lightweight & Low RAM)*
+* **Total (GPU Mode):** ~650 MB *(Standard Quality)*
+* **Total (Both Engines):** ~750 MB *(Maximum Flexibility)*
 
 ### System Requirements
 
-| Component      | Minimum                     | Recommended                |
-| -------------- | --------------------------- | -------------------------- |
-| **OS**         | Windows 10+ / Ubuntu 20.04+ | Windows 11 / Ubuntu 22.04+ |
-| **Python**     | 3.10 - 3.13                 | 3.12.10                    |
-| **RAM**        | 4 GB                        | 8 GB+                      |
-| **Disk Space** | 3 GB free                   | 5 GB+ free                 |
-| **CPU**        | Dual-core 2.0 GHz           | Quad-core 2.5 GHz+         |
-| **Internet**   | Required for setup only     | Offline after setup        |
+| Component      | Minimum                     | Recommended                    |
+| -------------- | --------------------------- | ------------------------------ |
+| **OS**         | Windows 10+ / Ubuntu 20.04+ | Windows 11 / Ubuntu 22.04+     |
+| **Python**     | 3.10 - 3.13                 | 3.12                           |
+| **RAM**        | 4 GB                        | 8 GB+                          |
+| **Disk Space** | 3 GB free                   | 20 GB+ free                    |
+| **CPU**        | Dual-core 2.0 GHz           | Quad-core 2.5 GHz+   NVIDA GPU |
+| **Internet**   | Required for setup only     | Offline after setup            |
 
 ---
 
@@ -387,15 +314,6 @@ LocalReader-Pro/
 - **100% Local:** All documents, settings, and exports stored on your machine
 - **No Cloud:** Zero data sent to external servers
 - **No Accounts:** No login, no sign-up, no user tracking
-
-### Network Usage
-
-- **Setup Only:** Internet required for:
-  1. Downloading Python (Windows installer only, ~100 MB)
-  2. Installing dependencies (~2 GB)
-  3. Downloading Kokoro-82M model (~309 MB)
-  4. Downloading FFMPEG (~100 MB, optional)
-- **Fully Offline:** After setup, works without internet indefinitely
 
 ### Analytics & Telemetry
 
@@ -413,23 +331,26 @@ LocalReader-Pro/
 
 ## 🔳 License
 
-### LocalReader Pro
+###LocalReader plus (main LocalReader Pro )
 
 - **Code:** Proprietary (review, modify, use personally)
 - **Redistribution:** Contact author for permission
 
-### Third-Party Components
+### 📜 Open Source Acknowledgements
 
-| Component        | License      |
-| ---------------- | ------------ |
-| **Kokoro-82M**   | Apache 2.0   |
-| **FastAPI**      | MIT          |
-| **PyTorch**      | BSD-3-Clause |
-| **PDF.js**       | Apache 2.0   |
-| **Tailwind CSS** | MIT          |
-| **Lucide Icons** | ISC          |
-| **FFMPEG**       | LGPL 2.1+    |
+This project is made possible thanks to the following open-source libraries and frameworks:
 
+| Component/Library                                                      | License      | Usage                                  |
+| :---                                                                   | :---         | :---                                   |
+| **[FastAPI](https://fastapi.tiangolo.com/)**                           | MIT          | High-performance backend API framework |
+| **[Kokoro-ONNX](https://github.com/thewh1teagle/kokoro-onnx)**         | MIT          | Core TTS Engine wrapper                |
+| **[ONNX Runtime](https://onnxruntime.ai/)**                            | MIT          | Hardware-accelerated AI inference      |
+| **[PyMuPDF](https://pymupdf.readthedocs.io/)**                         | GNU AGPL     | Native PDF text and image extraction   |
+| **[EbookLib](https://github.com/aerkalov/ebooklib)**                   | AGPL         | EPUB document parsing and unpacking    |
+| **[BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/)**   | MIT          | HTML sanitization and TOC generation   |
+| **[Fugashi](https://github.com/polm/fugashi)**                         | MIT          | Japanese morphological analysis        |
+| **[Mojimoji](https://github.com/studio-ousia/mojimoji)**               | MIT          | Asian character width normalization    |
+| **[FFmpeg](https://ffmpeg.org/)**                                      | GPL / LGPL   | On-demand audio format conversion      |
 ---
 
 ## ⚪ Credits
@@ -437,42 +358,36 @@ LocalReader-Pro/
 ### Core Technologies
 
 - **TTS Engine:** [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad
-- **PDF Rendering:** [PDF.js](https://mozilla.github.io/pdf.js/) by Mozilla
-- **UI Framework:** [Tailwind CSS](https://tailwindcss.com/)
+- **UI Framework:** [Tailwind CSS](https://tailwindcss.com/) / [github](https://github.com/tailwindlabs/tailwindcss)
 - **Icons:** [Lucide](https://lucide.dev/)
 - **Audio Processing:** [FFMPEG](https://ffmpeg.org/)
+  
+---
 
-### Python Libraries
+### Found a Bug? Support
 
-- FastAPI, uvicorn, torch, onnxruntime, pydub, soundfile, pywebview, ebooklib, beautifulsoup4, and more (see `requirements.txt`)
+  1. Check what missing and try to use pip instal it 
+  or check error massage in terminal
+  3. Open ticket with:
+      - Python version (`python --version`)
+      - OS
+      - Error message or screenshot
+  _New feature? ticket or help me and pull request_
+      
+   
+ 
 
 ---
 
-## 🔘 Support
 
-### Found a Bug?
+**Engine:** Kokoro onnx-82M (Dual-Mode: CPU/GPU)
 
-1. Check **Troubleshooting** section above
-2. Verify you're on latest version (v2.5.0)
-3. Check `CHANGELOG.md` for known issues
-4. Contact developer with:
-   - Python version (`python --version`)
-   - Error message or screenshot
-   - Steps to reproduce
-
-### Feature Requests
-
-- Review `CHANGELOG.md` to see if already implemented
-- Describe use case and expected behavior
-- Provide examples or mockups if applicable
+~~**Last Updated LocalReader Pro:**~~ ~~January 6, 2026~~
+---
+**Last Updated** June 24, 2026
 
 ---
+***Epub or Pdf files should not be DRM (Digital Rights Management)***
 
-**Version:** 3.5.0 (The "Explorer" Update)
-**Engine:** Kokoro-82M (Dual-Mode: CPU/GPU)
-**Last Updated:** January 6, 2026
-**Status:** 🔘 Stable Release
+**Enjoy ! 🔳⚪**
 
----
-
-**Enjoy your reading! 🔳⚪**

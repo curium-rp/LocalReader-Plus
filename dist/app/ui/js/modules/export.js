@@ -1,10 +1,45 @@
-
 import { state } from './state.js';
 import { fetchJSON } from './api.js';
 import { showToast, renderIcons } from './ui.js';
 
 let exportPollInterval = null;
 let ffmpegPollInterval = null;
+
+// Helper to handle the UI popup flow and Esc key cancellation
+function selectExportFormat() {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('exportFormatModal');
+        modal.classList.remove('hidden');
+
+        const btnMp3 = document.getElementById('btnExportMp3');
+        const btnWav = document.getElementById('btnExportWav');
+        const btnCancel = document.getElementById('btnCancelFormatSelect');
+
+        // Cleanup listener references so they don't stack up
+        const cleanup = () => {
+            modal.classList.add('hidden');
+            btnMp3.removeEventListener('click', onMp3);
+            btnWav.removeEventListener('click', onWav);
+            btnCancel.removeEventListener('click', onCancel);
+            document.removeEventListener('keydown', onEsc);
+        };
+
+        const onMp3 = () => { cleanup(); resolve('mp3'); };
+        const onWav = () => { cleanup(); resolve('wav'); };
+        const onCancel = () => { cleanup(); resolve(null); };
+        const onEsc = (e) => { 
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                onCancel(); 
+            }
+        };
+
+        btnMp3.addEventListener('click', onMp3);
+        btnWav.addEventListener('click', onWav);
+        btnCancel.addEventListener('click', onCancel);
+        document.addEventListener('keydown', onEsc);
+    });
+}
 
 export async function startExport() {
     const voiceSelect = document.getElementById('voiceSelect');
@@ -20,17 +55,26 @@ export async function startExport() {
     }
 
     try {
-        const status = await fetchJSON(`/api/ffmpeg/status?t=${Date.now()}`);
-        if (!status.is_installed) {
-            showFFMPEGDownloadModal();
-            return;
+        // Wait for user to select from the new HTML modal
+        const exportFormat = await selectExportFormat();
+        
+        // If they clicked the X or pressed Esc, quietly abort.
+        if (!exportFormat) return; 
+
+        // Only check for FFMPEG if they actually want an MP3
+        if (exportFormat === "mp3") {
+            const status = await fetchJSON(`/api/ffmpeg/status?t=${Date.now()}`);
+            if (!status.is_installed) {
+                showFFMPEGDownloadModal();
+                return;
+            }
         }
 
         const totalChars = state.currentPages.join('').length;
         const estimatedSeconds = Math.ceil((totalChars / 1000) * 15);
         const estimatedMins = Math.ceil(estimatedSeconds / 60);
 
-        if (!confirm(`This will export the entire document to MP3.\n\nEstimated time: ~${estimatedMins} minute${estimatedMins !== 1 ? 's' : ''}\n\nContinue?`)) {
+        if (!confirm(`This will export the entire document to ${exportFormat.toUpperCase()}.\n\nEstimated time: ~${estimatedMins} minute${estimatedMins !== 1 ? 's' : ''}\n\nContinue?`)) {
             return;
         }
 
@@ -42,7 +86,8 @@ export async function startExport() {
                 voice: voiceSelect.value,
                 speed: parseFloat(speedRange.value),
                 rules: state.rules,
-                ignore_list: state.ignoreList
+                ignore_list: state.ignoreList,
+                format: exportFormat 
             })
         });
 
@@ -83,7 +128,13 @@ function startExportPolling() {
                 const percent = status.total > 0 ? Math.round((status.progress / status.total) * 100) : 0;
                 document.getElementById('exportProgress').textContent = `${percent}%`;
                 document.getElementById('exportProgressBar').style.width = `${percent}%`;
-                document.getElementById('exportStatus').textContent = `Processing paragraph ${status.progress} of ${status.total}...`;
+                
+                // Keep the UI informative during MP3 conversion
+                if (status.progress === status.total) {
+                    document.getElementById('exportStatus').textContent = `Finalizing format...`;
+                } else {
+                    document.getElementById('exportStatus').textContent = `Processing paragraph ${status.progress} of ${status.total}...`;
+                }
             } else if (status.output_file) {
                 clearInterval(exportPollInterval);
                 document.getElementById('exportProgress').textContent = '100%';
@@ -95,7 +146,6 @@ function startExportPolling() {
                 document.getElementById('playBtn').disabled = false;
                 renderIcons();
 
-                // Store output file in DOM for the "Open Folder" button
                 document.getElementById('exportModal').dataset.outputFile = status.output_file;
             }
         } catch (e) {

@@ -1,18 +1,35 @@
+# --- Core Framework & Servers ---
 fastapi
 uvicorn
-torch
-huggingface_hub
-scipy
-soundfile
-kokoro-onnx
 python-multipart
 pywebview
-requests
+
+# --- AI & Audio Processing ---
+kokoro-onnx
+huggingface_hub
 numpy
+soundfile
+pydub
+audioop-lts; python_version >= "3.13"
+
+# --- Text Processing & Utilities ---
+requests
 pydantic
-ebooklib
-xhtml2pdf
 beautifulsoup4
 lxml
-pydub
+num2words
+eng_to_ipa
 
+# --- Document Parsing ---
+ebooklib
+PyMuPDF
+
+# --- CJK Voice Support (Chinese & Japanese) ---
+misaki[zh]
+fugashi
+unidic-lite
+mojimoji
+jaconv
+jamdict
+
+##scipy xhtml2pdf lxml psutil pykakasi torch no need to use it ##

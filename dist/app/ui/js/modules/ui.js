@@ -150,16 +150,28 @@ export function renderIgnoreList() {
 
 // --- Search ---
 export function escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let escaped = str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    // Make search immune to smart quotes vs straight quotes
+    escaped = escaped.replace(/['‘’´`]/g, "['‘’´`]");
+    escaped = escaped.replace(/["“”]/g, '["“”]');
+    
+    return escaped;
 }
 
-export function highlightSearchTerm(query) {
+export function highlightSearchTerm(query, matchCase = false, wholeWord = false) {
     const textContent = document.getElementById('textContent');
     if (!query || !textContent) return;
 
     const textElements = textContent.querySelectorAll('.sentence');
     const escapedQuery = escapeRegex(query);
-    const regex = new RegExp(`(${escapedQuery})`, 'gi');
+    
+    // Apply whole word boundary boundary if activated
+    let pattern = escapedQuery;
+    if (wholeWord) pattern = `\\b${pattern}\\b`;
+    
+    // Apply case sensitivity flag
+    const regex = new RegExp(`(${pattern})`, matchCase ? 'g' : 'gi');
 
     textElements.forEach(el => {
         highlightTextNodes(el, regex);

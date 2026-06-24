@@ -3,11 +3,12 @@ import { fetchJSON, fetchBlob, API_URL } from "./api.js";
 import { showToast, stripHTML, renderIcons } from "./ui.js";
 import { renderPage, getSentencesForPage } from "./library.js";
 
+let saveProgressTimeout = null;
+let currentSynthesisId = 0; // 🌟 ADDED: Bulletproof lock to prevent voice overlap
+
 export function initAudioContext() {
   if (!state.audioContext) {
-    state.audioContext = new (
-      window.AudioContext || window.webkitAudioContext
-    )();
+    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
     console.log("[WebAudio] AudioContext initialized");
   }
   if (state.audioContext.state === "suspended") {
@@ -15,7 +16,7 @@ export function initAudioContext() {
   }
 }
 
-export function playAudioBuffer(audioBuffer) {
+export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
   if (state.currentAudioSource) {
     try {
       state.currentAudioSource.stop();
@@ -23,36 +24,101 @@ export function playAudioBuffer(audioBuffer) {
     } catch (e) {}
   }
 
-  // Create new source node
   const source = state.audioContext.createBufferSource();
   source.buffer = audioBuffer;
-  source.connect(state.audioContext.destination);
+  
+  // 🌟 THE BRILLIANT FIX: Use a GainNode to mute pure pauses locally.
+  const gainNode = state.audioContext.createGain();
+  const hasNarrativeText = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(displayChars);
+  
+  if ((bType === "Img" || bType === "S") && !hasNarrativeText) {
+      gainNode.gain.value = 0.001; // Effectively muted
+  } else {
+      gainNode.gain.value = 1.0;
+  }
+
+  source.connect(gainNode);
+  gainNode.connect(state.audioContext.destination);
 
   source.onended = async () => {
     state.currentAudioSource = null;
+    if (state.jumpTimer) {
+        clearInterval(state.jumpTimer);
+        state.jumpTimer = null;
+    }
+    
+    // Clean up UI instantly when audio finishes
+    const preview = document.getElementById("currentSentencePreview");
+    if (preview && displayChars) preview.textContent = displayChars;
+    
+    const monitor = document.getElementById("monitorSentenceText");
+    if (monitor && displayChars) monitor.textContent = displayChars;
+
     state.currentSentenceIndex++;
     console.log(`Sentence ended, moving to ${state.currentSentenceIndex}`);
-    await playNext();  // Must settle state before pre-caching (page transitions update readingSentences async)
+    await playNext();  
     preCacheNextSentences();
   };
 
   state.currentAudioSource = source;
   source.start(0);
-  console.log(`[WebAudio] Playing buffer: ${audioBuffer.duration.toFixed(2)}s`);
+
+  // --- DYNAMIC AUDIO-SYNCED VISUAL TIMER ---
+  const currentSentencePreview = document.getElementById("currentSentencePreview");
+  if (bType === "Img" || bType === "S") {
+      const durationMs = audioBuffer.duration * 1000;
+      const endTime = Date.now() + durationMs;
+      
+      if (state.jumpTimer) clearInterval(state.jumpTimer);
+      
+      state.jumpTimer = setInterval(() => {
+          if (!state.isPlaying) return clearInterval(state.jumpTimer);
+          const remaining = endTime - Date.now();
+          const monitorText = document.getElementById("monitorSentenceText");
+          
+          if (remaining > 0) {
+              const textWithTime = `${displayChars} (${Math.ceil(remaining / 1000)}s)`;
+              if (currentSentencePreview) currentSentencePreview.textContent = textWithTime;
+              if (monitorText) monitorText.textContent = textWithTime;
+          } else {
+              clearInterval(state.jumpTimer);
+              if (currentSentencePreview) currentSentencePreview.textContent = displayChars;
+              if (monitorText) monitorText.textContent = displayChars;
+          }
+      }, 100);
+      
+      const initText = `${displayChars} (${Math.ceil(durationMs / 1000)}s)`;
+      if (currentSentencePreview) currentSentencePreview.textContent = initText;
+      
+      const monitorText = document.getElementById("monitorSentenceText");
+      if (monitorText) monitorText.textContent = initText;
+  } else {
+      if (currentSentencePreview) currentSentencePreview.textContent = displayChars;
+      const monitorText = document.getElementById("monitorSentenceText");
+      if (monitorText) monitorText.textContent = displayChars;
+  }
+
+  console.log(`[WebAudio] Playing buffer: ${audioBuffer.duration.toFixed(2)}s | Type: ${bType} | Muted: ${gainNode.gain.value < 1}`);
 }
 
 export function stopPlayback() {
   state.isPlaying = false;
-  // Update UI directly for speed
+  currentSynthesisId++; // 🌟 Instantly invalidate any pending server downloads
+
   const playIcon = document.getElementById("playIcon");
   if (playIcon) {
     playIcon.setAttribute("data-lucide", "play");
     renderIcons();
   }
 
+  if (state.jumpTimer) {
+    clearInterval(state.jumpTimer); 
+    state.jumpTimer = null;
+  }
+
   if (state.currentAudioSource) {
     try {
-      state.currentAudioSource.onended = null; // Prevent triggering 'playNext' on stop
+      state.currentAudioSource.onended = null; 
       state.currentAudioSource.stop();
       state.currentAudioSource.disconnect();
     } catch (e) {}
@@ -61,9 +127,11 @@ export function stopPlayback() {
 }
 
 export async function playNext() {
+  currentSynthesisId++; // 🌟 Generate unique lock ID for this synthesis request
+  const mySynthesisId = currentSynthesisId;
+
   const targetIndex = state.currentSentenceIndex;
   if (!state.isPlaying || !window.isEngineReady) {
-    // isEngineReady is global/window for now
     stopPlayback();
     return;
   }
@@ -73,17 +141,13 @@ export async function playNext() {
     if (state.readingPageIndex < state.currentPages.length - 1) {
       state.readingPageIndex++;
       state.currentSentenceIndex = 0;
-      state.audioBufferCache.clear(); // Prevent stale cross-page cache hits
-      state.readingSentences = await getSentencesForPage(
-        state.readingPageIndex,
-      );
+      state.audioBufferCache.clear(); 
+      state.readingSentences = await getSentencesForPage(state.readingPageIndex);
 
-      // If auto-scroll is on, force the view to follow the reader
       if (state.autoScrollEnabled) {
         state.viewPageIndex = state.readingPageIndex;
         await renderPage();
       } else if (state.viewPageIndex === state.readingPageIndex) {
-        // If we aren't following but happen to be viewing the same page, just refresh highlights
         await renderPage();
       }
       await playNext();
@@ -93,38 +157,56 @@ export async function playNext() {
     return;
   }
 
-  // Update UI Highlight (only if viewing the reading page)
   if (state.viewPageIndex === state.readingPageIndex) {
     state.sentenceElements.forEach(
-      (el, i) =>
-        (el.className = `sentence ${i === state.currentSentenceIndex ? "active-sentence" : ""}`),
+      (el, i) => (el.className = `sentence ${i === state.currentSentenceIndex ? "active-sentence" : ""}`)
     );
     const active = state.sentenceElements[state.currentSentenceIndex];
-    if (active && state.autoScrollEnabled)
-      active.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (active && state.autoScrollEnabled) active.scrollIntoView({ behavior: "smooth", block: "center" });
   }
-
-  const currentSentencePreview = document.getElementById(
-    "currentSentencePreview",
-  );
-  if (currentSentencePreview)
-    currentSentencePreview.textContent = stripHTML(text);
 
   saveProgress();
 
-  const cleanText = stripHTML(text);
-  console.log(
-    `Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..."`,
-  );
+  let bType = "N";
+  const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
+
+  if (currentEl) {
+      const hMatch = currentEl.closest('h1, h2, h3, h4, h5, h6');
+      if (hMatch) bType = hMatch.tagName.toUpperCase(); 
+      else if (currentEl.tagName.toLowerCase() === 'img' || currentEl.querySelector('img, svg')) bType = "Img";
+      else if (currentEl.tagName.toLowerCase() === 's' || currentEl.closest('.scene-break')) bType = "S";
+  } else {
+      const hMatch = text.match(/<h([1-6])/i);
+      if (hMatch) bType = "H" + hMatch[1];
+      else if (/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) bType = "Img";
+      else if (/<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
+  }
+
+  let cleanText = stripHTML(text);
+  if (text.endsWith('\n')) cleanText += '\n'; 
+
+  if (bType === "Img" && cleanText.trim() === "") cleanText = "Image.";
+  if (bType === "S" && cleanText.trim() === "") cleanText = "•••";
+
+  let displayChars = cleanText.trim();
+  if (bType === "Img") {
+      displayChars = "🖼️ [Viewing Image]";
+  } else if (bType === "S" && currentEl) {
+      displayChars = currentEl.textContent.trim() || cleanText.trim() || "•••";
+  }
+
+  const currentSentencePreview = document.getElementById("currentSentencePreview");
+  if (currentSentencePreview) currentSentencePreview.textContent = `⏳ Loading...`;
+
+  console.log(`Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..." | Type: ${bType}`);
 
   const voiceSelect = document.getElementById("voiceSelect");
   const speedRange = document.getElementById("speedRange");
-
   const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}`;
-
+  
   if (state.audioBufferCache.has(lookupKey)) {
-    console.log(`[WebAudio] CACHE HIT - Playing cached buffer instantly`);
-    playAudioBuffer(state.audioBufferCache.get(lookupKey));
+    if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return; // 🌟 Final check before cache play
+    playAudioBuffer(state.audioBufferCache.get(lookupKey), bType, displayChars);
     return;
   }
 
@@ -139,37 +221,30 @@ export async function playNext() {
         rules: state.rules,
         ignore_list: state.ignoreList,
         pause_settings: state.pauseSettings,
+        behavior_settings: state.behaviorSettings,
+        behavior_type: bType
       }),
     });
 
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || "Synthesis failed");
-    }
+    if (!res.ok) throw new Error("Synthesis failed");
 
     const blob = await res.blob();
     initAudioContext();
-
     const arrayBuffer = await blob.arrayBuffer();
 
-    // Safety check: Has the user jumped or stopped while we were synthesizing?
-    if (!state.isPlaying || state.currentSentenceIndex !== targetIndex) {
-      console.log(
-        `[TTS] Discarding synthesis result - Index mismatch (${state.currentSentenceIndex} vs ${targetIndex})`,
-      );
-      return;
-    }
+    // 🌟 THE BULLETPROOF CHECK: Abort if user jumped or paused while waiting for network
+    if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return;
 
     const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
     state.audioBufferCache.set(lookupKey, audioBuffer);
+    
+    // 🌟 Double-check after decoding (since decodeAudioData is asynchronous)
+    if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return;
 
-    if (state.audioBufferCache.size > state.MAX_AUDIO_CACHE) {
-      const firstKey = state.audioBufferCache.keys().next().value;
-      state.audioBufferCache.delete(firstKey);
-    }
-
-    playAudioBuffer(audioBuffer);
+    playAudioBuffer(audioBuffer, bType, displayChars);
   } catch (e) {
+    if (currentSynthesisId !== mySynthesisId) return; 
+    
     console.error("Synthesis error:", e);
     showToast(e.message);
     stopPlayback();
@@ -202,124 +277,185 @@ export async function jumpToSentence(i) {
     state.currentAudioSource = null;
   }
 
-  // 2. Clear existing jump timer to prevent overlapping jumps
+  // 🌟 FIX: Increment the synthesis ID to instantly orphan any pending slow server downloads
+  currentSynthesisId++;
+
+  // 2. Clear existing visual timers
   if (state.jumpTimer) {
-    clearTimeout(state.jumpTimer);
+    clearInterval(state.jumpTimer);
     state.jumpTimer = null;
   }
 
   state.currentSentenceIndex = i;
-  await renderPage(); // Update UI highlight and content
-
-  // Ensure state reflects that we are intended to be playing
-  if (!state.isPlaying) {
-    initAudioContext();
-    state.isPlaying = true;
-    const playIcon = document.getElementById("playIcon");
-    if (playIcon) {
-      playIcon.setAttribute("data-lucide", "pause");
-      renderIcons();
+  
+  if (state.sentenceElements && state.sentenceElements[i]) {
+    const targetEl = state.sentenceElements[i];
+    if (targetEl.hasAttribute('id') && state.currentDoc) {
+        state.currentDoc.lastSentenceId = targetEl.getAttribute('id');
     }
   }
 
-  // 3. Buffer for 2 seconds then start playing
-  console.log(`[TTS] Buffering 2 seconds for jump to index ${i}...`);
-  state.jumpTimer = setTimeout(() => {
-    state.jumpTimer = null;
-    playNext();
-  }, 2000);
+  await renderPage(); // Update UI highlight and content instantly
+
+  // 🌟 UI FIX: Force the Play/Pause UI to update and sync the "Active/Blue" state unconditionally
+  initAudioContext();
+  state.isPlaying = true;
+  const playIcon = document.getElementById("playIcon");
+  if (playIcon) {
+    playIcon.setAttribute("data-lucide", "pause");
+    // Force DOM to recognize the state change so the blue CSS applies immediately
+    void playIcon.offsetWidth; 
+    renderIcons();
+  }
+
+  console.log(`[TTS] Instant jump to index ${i}...`);
+  playNext();
 }
 
 export async function saveProgress() {
-  if (state.currentDoc) {
-    // Optimistic UI
-    const statusEl = document.getElementById("bookmarkStatus");
-    if (statusEl) {
-      statusEl.classList.remove("opacity-0");
-      statusEl.classList.add("animate-pulse");
-      setTimeout(() => {
-        statusEl.classList.remove("animate-pulse");
-        // Optional: Fade out after 2s if desired, or keep it visible as "Last saved..."
-      }, 1000);
+  if (!state.currentDoc) return;
+
+  const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
+  let sentenceIdString = null;
+  if (currentEl && currentEl.hasAttribute('id')) {
+      sentenceIdString = currentEl.getAttribute('id');
+  }
+
+  state.currentDoc.currentPage = state.readingPageIndex;
+  state.currentDoc.lastSentenceId = sentenceIdString;
+  state.currentDoc.lastSentenceIndex = state.currentSentenceIndex;
+
+  const statusEl = document.getElementById("bookmarkStatus");
+  if (statusEl) {
+    statusEl.classList.remove("opacity-0", "animate-pulse");
+    void statusEl.offsetWidth; 
+    statusEl.classList.add("animate-pulse");
+    setTimeout(() => {
+      statusEl.classList.remove("animate-pulse");
+    }, 1000);
+  }
+
+  if (saveProgressTimeout) {
+      clearTimeout(saveProgressTimeout);
+  }
+
+  saveProgressTimeout = setTimeout(async () => {
+      try {
+        await fetchJSON(`/api/library/progress/${state.currentDoc.id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            currentPage: state.currentDoc.currentPage,
+            lastSentenceId: state.currentDoc.lastSentenceId,     
+            lastSentenceIndex: state.currentDoc.lastSentenceIndex, 
+            lastAccessed: Date.now(),
+          }),
+        });
+        console.log(`[Checkpoint] Saved to disk. ID: ${sentenceIdString} | Fallback Index: ${state.currentDoc.lastSentenceIndex}`);
+      } catch (e) {
+        console.error("[Checkpoint] Save progress mapping failed", e);
+      }
+  }, 2000); 
+}
+
+let isPreloading = false;
+
+export async function preCacheNextSentences() {
+  const MAX_FORWARD = 5; 
+  const MAX_CACHE_SIZE = 10; 
+
+  if (!state.audioContext || isPreloading) return;
+  isPreloading = true;
+
+  try {
+    const voiceSelect = document.getElementById("voiceSelect");
+    const speedRange = document.getElementById("speedRange");
+
+    while (state.audioBufferCache.size > MAX_CACHE_SIZE) {
+      const oldestKey = state.audioBufferCache.keys().next().value;
+      state.audioBufferCache.delete(oldestKey);
     }
 
-    try {
-      await fetchJSON(`/api/library`, {
+    let targetPageIndex = state.readingPageIndex;
+    let targetSentenceIndex = state.currentSentenceIndex;
+    let targetSentences = state.readingSentences;
+
+    for (let i = 1; i <= MAX_FORWARD; i++) {
+      targetSentenceIndex++; 
+
+      if (targetSentenceIndex >= targetSentences.length) {
+        if (targetPageIndex < state.currentPages.length - 1) {
+          targetPageIndex++;
+          targetSentenceIndex = 0; 
+          try {
+            targetSentences = await getSentencesForPage(targetPageIndex);
+            if (!targetSentences || targetSentences.length === 0) break;
+          } catch (err) {
+            break;
+          }
+        } else {
+          break; 
+        }
+      }
+
+      const nextText = targetSentences[targetSentenceIndex];
+      if (!nextText || typeof nextText !== "string") continue;
+
+      let bType = "N";
+      let nextEl = null;
+      
+      if (targetPageIndex === state.readingPageIndex && state.sentenceElements) {
+          nextEl = state.sentenceElements[targetSentenceIndex];
+      }
+
+      if (nextEl) {
+          const hMatch = nextEl.closest('h1, h2, h3, h4, h5, h6');
+          if (hMatch) bType = hMatch.tagName.toUpperCase();
+          else if (nextEl.tagName.toLowerCase() === 'img' || nextEl.querySelector('img, svg')) bType = "Img";
+          else if (nextEl.tagName.toLowerCase() === 's' || nextEl.closest('.scene-break')) bType = "S";
+      } else {
+          const hMatch = nextText.match(/<h([1-6])/i);
+          if (hMatch) bType = "H" + hMatch[1];
+          else if (/<img|<svg/i.test(nextText)) bType = "Img";
+          else if (/<s\b/i.test(nextText) || /class="scene-break"/i.test(nextText)) bType = "S";
+      }
+
+      let cleanText = stripHTML(nextText).replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      if (nextText.endsWith('\n')) cleanText += '\n'; 
+  
+      const hasNarrativeText = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(cleanText);
+      
+      if (bType === "N" && cleanText.trim().length < 2 && !hasNarrativeText) continue;
+
+      const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${voiceSelect.value}_${speedRange.value}`;
+      if (state.audioBufferCache.has(cacheKey)) continue;
+
+      const res = await fetch(`/api/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...state.currentDoc,
-          currentPage: state.readingPageIndex,
-          lastSentenceIndex: state.currentSentenceIndex,
-          lastAccessed: Date.now(),
+          text: cleanText,
+          voice: voiceSelect.value,
+          speed: parseFloat(speedRange.value),
+          rules: state.rules,
+          ignore_list: state.ignoreList,
+          pause_settings: state.pauseSettings,
+          behavior_settings: state.behaviorSettings,
+          behavior_type: bType
         }),
       });
-    } catch (e) {
-      console.error("Save progress failed", e);
-    }
-  }
-}
 
-export async function preCacheNextSentences() {
-  const sentencesToPreCache = 2;
-  if (!state.audioContext) return;
-
-  const voiceSelect = document.getElementById("voiceSelect");
-  const speedRange = document.getElementById("speedRange");
-
-  for (let i = 1; i <= sentencesToPreCache; i++) {
-    let targetPageIndex = state.readingPageIndex;
-    let targetSentenceIndex = state.currentSentenceIndex + i;
-    let targetSentences = state.readingSentences;
-
-    if (targetSentenceIndex >= state.readingSentences.length) {
-      if (state.readingPageIndex < state.currentPages.length - 1) {
-        targetPageIndex = state.readingPageIndex + 1;
-        targetSentenceIndex = 0;
-        try {
-          targetSentences = await getSentencesForPage(targetPageIndex);
-          if (targetSentences.length === 0) continue;
-        } catch (err) {
-          continue;
-        }
-      } else {
-        break;
+      if (res.ok) {
+        const blob = await res.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
+        state.audioBufferCache.set(cacheKey, audioBuffer);
       }
     }
-
-    const nextText = targetSentences[targetSentenceIndex];
-    if (!nextText || typeof nextText !== "string") continue;
-
-    const cleanText = stripHTML(nextText);
-    const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${voiceSelect.value}_${speedRange.value}`;
-
-    if (state.audioBufferCache.has(cacheKey)) continue;
-
-    fetch(`${API_URL}/api/synthesize`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: cleanText,
-        voice: voiceSelect.value,
-        speed: parseFloat(speedRange.value),
-        rules: state.rules,
-        ignore_list: state.ignoreList,
-        pause_settings: state.pauseSettings,
-      }),
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          const blob = await res.blob();
-          const arrayBuffer = await blob.arrayBuffer();
-          const audioBuffer =
-            await state.audioContext.decodeAudioData(arrayBuffer);
-          state.audioBufferCache.set(cacheKey, audioBuffer);
-          console.log(
-            `[PreCache] Cached page ${targetPageIndex} seq ${targetSentenceIndex}`,
-          );
-        }
-      })
-      .catch(() => {});
+  } catch (error) {
+    console.error("[Preloader] Error:", error);
+  } finally {
+    isPreloading = false; 
   }
 }
 
@@ -340,24 +476,18 @@ export async function loadVoices() {
     sortedKeys.forEach((langCode) => {
       const category = categories[langCode];
       const group = document.createElement("optgroup");
-      // Try to translate the language code using loaded translations, fallback to label from backend
       group.label = state.translations?.languages?.[langCode] || category.label;
       category.voices.forEach((voice) => {
-        // Filter out voices with Indian accents as requested (handles prefixes like v0_alpha)
         const voiceId = voice.id.toLowerCase();
-        const cleanId = voiceId.includes("_")
-          ? voiceId.split("_").pop()
-          : voiceId;
+        const cleanId = voiceId.includes("_") ? voiceId.split("_").pop() : voiceId;
         if (["alpha", "beta", "omega", "psi"].includes(cleanId)) return;
 
         const option = document.createElement("option");
         option.value = voice.id;
 
-        // Dynamic label generation
         let label = voice.name;
         const attrs = state.translations?.voice_attributes || {};
 
-        // Helper to get attributes
         const getAttrs = (vid) => {
           if (vid.startsWith("af_")) return [attrs.american, attrs.female];
           if (vid.startsWith("am_")) return [attrs.american, attrs.male];
@@ -374,9 +504,7 @@ export async function loadVoices() {
           if (vid.startsWith("im_")) return [attrs.italian, attrs.male];
           if (vid.startsWith("pf_")) return [attrs.portuguese, attrs.female];
           if (vid.startsWith("pm_")) return [attrs.portuguese, attrs.male];
-
           if (vid === "santa") return [attrs.spanish, attrs.male];
-
           return [];
         };
 
@@ -384,7 +512,6 @@ export async function loadVoices() {
         if (region && gender) {
           label = `${voice.name} (${region} ${gender})`;
         } else {
-          // Fallback to legacy static list if available, or just name
           label = state.translations?.voices?.[voice.id] || voice.name;
         }
 
@@ -395,9 +522,7 @@ export async function loadVoices() {
     });
 
     if (currentVoice) {
-      const exists = Array.from(voiceSelect.options).some(
-        (opt) => opt.value === currentVoice,
-      );
+      const exists = Array.from(voiceSelect.options).some((opt) => opt.value === currentVoice);
       if (exists) voiceSelect.value = currentVoice;
     }
 

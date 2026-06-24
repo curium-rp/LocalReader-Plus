@@ -1,54 +1,35 @@
 import { state } from "./state.js";
 import { fetchJSON, fetchBlob } from "./api.js";
-import {
-  showToast,
-  renderIcons,
-  stripHTML,
-  highlightSearchTerm,
-} from "./ui.js";
+import { showToast, renderIcons, stripHTML, highlightSearchTerm } from "./ui.js";
 
 export async function loadLibrary() {
   const libraryPanel = document.getElementById("libraryPanel");
   try {
     const items = await fetchJSON(`/api/library?t=${Date.now()}`);
-    console.log("Library items loaded:", items);
     libraryPanel.innerHTML = "";
     if (!Array.isArray(items) || items.length === 0) {
-      libraryPanel.innerHTML =
-        '<div class="p-4 text-xs text-zinc-500 italic">Library is empty. Upload a PDF to start.</div>';
+      libraryPanel.innerHTML = '<div class="p-4 text-xs text-zinc-500 italic">Library is empty. Upload a PDF to start.</div>';
       return;
     }
     const fragment = document.createDocumentFragment();
-    // Sort by last accessed desc
     items
       .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
       .forEach((item) => {
         const isSelected = state.currentDoc?.id === item.id;
         const div = document.createElement("div");
         div.className = `group p-3 rounded-xl cursor-pointer border transition-all ${
-          isSelected
-            ? "bg-blue-600/10 border-blue-600/50 text-blue-400"
-            : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:border-zinc-700"
+          isSelected ? "bg-blue-600/10 border-blue-600/50 text-blue-400" : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:border-zinc-700"
         }`;
-
         div.innerHTML = `
                 <div class="flex items-start justify-between gap-2">
-                    <div class="flex items-start gap-3 min-w-0" data-action="select-doc" data-id="${
-                      item.id
-                    }">
+                    <div class="flex items-start gap-3 min-w-0" data-action="select-doc" data-id="${item.id}">
                         <i data-lucide="file" class="w-4 h-4 mt-0.5 shrink-0"></i>
                         <div class="min-w-0">
-                            <p class="text-xs font-bold leading-tight break-words">${
-                              item.fileName
-                            }</p>
-                            <p class="text-[10px] opacity-60 mt-1">Page ${
-                              (item.currentPage || 0) + 1
-                            }/${item.totalPages}</p>
+                            <p class="text-xs font-bold leading-tight break-words">${item.fileName}</p>
+                            <p class="text-[10px] opacity-60 mt-1">Page ${(item.currentPage || 0) + 1}/${item.totalPages}</p>
                         </div>
                     </div>
-                    <button data-action="delete-doc" data-id="${
-                      item.id
-                    }" class="p-1 hover:bg-red-500/20 hover:text-red-500 rounded-md transition-colors opacity-0 group-hover:opacity-100 shrink-0">
+                    <button data-action="delete-doc" data-id="${item.id}" class="p-1 hover:bg-red-500/20 hover:text-red-500 rounded-md transition-colors opacity-0 group-hover:opacity-100 shrink-0">
                         <i data-lucide="x" class="w-3.5 h-3.5"></i>
                     </button>
                 </div>`;
@@ -57,382 +38,346 @@ export async function loadLibrary() {
     libraryPanel.appendChild(fragment);
     renderIcons();
   } catch (e) {
-    console.error("Load library error:", e);
-    libraryPanel.innerHTML =
-      '<div class="p-4 text-xs text-red-500 italic">Failed to load library.</div>';
+    libraryPanel.innerHTML = '<div class="p-4 text-xs text-red-500 italic">Failed to load library.</div>';
   }
 }
 
-export async function selectDocument(item) {
-  state.currentDoc = item;
-  try {
-    const data = await fetchJSON(`/api/library/content/${item.id}`);
-    state.currentPages = data.pages;
-    state.smartStartPage = data.smart_start_page || 0;
+export async function processJsonData(pagesText, fileName, explicitDocId = null, imageMap = null, tocMap = null) {
+    try {
+        const docId = explicitDocId || crypto.randomUUID(); 
+        const newDoc = {
+            id: docId, fileName: fileName, totalPages: pagesText.length,
+            currentPage: 0, lastSentenceId: null, lastSentenceIndex: 0, lastAccessed: Date.now(),
+        };
 
-    // Apply Smart Start if this is first time opening (currentPage is 0)
-    if ((item.currentPage || 0) === 0 && state.smartStartPage > 0) {
-      state.readingPageIndex = state.smartStartPage;
-      state.viewPageIndex = state.smartStartPage;
-      state.currentSentenceIndex = 0;
-      showToast(
-        `⚡ Skipped to start of content (Page ${state.smartStartPage + 1})`
-      );
-    } else {
-      state.readingPageIndex = item.currentPage || 0;
-      state.viewPageIndex = item.currentPage || 0;
-      state.currentSentenceIndex = item.lastSentenceIndex || 0;
+        await fetchJSON("/api/library", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newDoc) });
+        
+        const contentPayload = { id: docId, pages: pagesText };
+        if (imageMap) contentPayload.image_map = imageMap;
+        if (tocMap) contentPayload.toc_map = tocMap;
+
+        await fetch("/api/library/content", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(contentPayload) });
+
+        selectDocument(newDoc);
+        showToast("Book added to library");
+    } catch (err) {
+        showToast("Failed to process document: " + err.message);
     }
-
-    // Initialize reading sentences
-    state.readingSentences = await getSentencesForPage(state.readingPageIndex);
-
-    // Update UI
-    const docTitle = document.getElementById("docTitle");
-    const pageNav = document.getElementById("pageNav");
-    const controls = document.getElementById("controls");
-    const emptyState = document.getElementById("emptyState");
-    const textContent = document.getElementById("textContent");
-    const prevPage = document.getElementById("prevPage");
-    const nextPage = document.getElementById("nextPage");
-    const pageInput = document.getElementById("pageInput");
-    const searchBtn = document.getElementById("searchBtn");
-    const exportArea = document.getElementById("exportArea");
-    const textSizeArea = document.getElementById("textSizeArea");
-
-    if (docTitle) docTitle.textContent = item.fileName;
-
-    if (pageNav) {
-      pageNav.classList.remove("opacity-50", "pointer-events-none");
-      pageNav.removeAttribute("data-inactive");
-    }
-    if (prevPage) prevPage.disabled = false;
-    if (nextPage) nextPage.disabled = false;
-    if (pageInput) pageInput.disabled = false;
-    if (controls) controls.classList.remove("hidden");
-    if (emptyState) emptyState.classList.add("hidden");
-    if (textContent) textContent.classList.remove("hidden");
-    if (searchBtn) searchBtn.classList.remove("hidden");
-
-    // Note: engine status check should handle these
-    if (exportArea) exportArea.style.display = "block";
-    if (textSizeArea) textSizeArea.style.display = "block";
-
-    renderPage();
-    loadLibrary(); // Update active state in list
-  } catch (e) {
-    console.error("Select document error:", e);
-    showToast("Failed to load document content");
-  }
-}
-
-export async function renderPage() {
-  const textContent = document.getElementById("textContent");
-  const pageInput = document.getElementById("pageInput");
-  const pageTotal = document.getElementById("pageTotal");
-  const scrollContainer = document.querySelector(".content-area");
-  const currentSentencePreview = document.getElementById(
-    "currentSentencePreview"
-  );
-  const backToReadingBtn = document.getElementById("backToReadingBtn");
-
-  if (!state.currentPages || !state.currentPages[state.viewPageIndex]) {
-    if (textContent)
-      textContent.innerHTML =
-        '<div class="text-zinc-500 p-4">Error: Page not found</div>';
-    return;
-  }
-
-  // Update "Back to Reading" button visibility
-  if (backToReadingBtn) {
-    if (state.viewPageIndex !== state.readingPageIndex) {
-        backToReadingBtn.classList.remove('hidden');
-    } else {
-        backToReadingBtn.classList.add('hidden');
-    }
-  }
-
-  state.viewSentences = await getSentencesForPage(state.viewPageIndex);
-
-  const fragment = document.createDocumentFragment();
-  const isReadingCurrentPage = state.viewPageIndex === state.readingPageIndex;
-
-  state.viewSentences.forEach((s, i) => {
-    const span = document.createElement("span");
-    span.className = `sentence ${
-      (isReadingCurrentPage && i === state.currentSentenceIndex) ? "active-sentence" : ""
-    }`;
-
-    // Fix broken DIM tags caused by sentence splitting
-    let cleanS = s;
-    if (cleanS.includes("[DIM]") && !cleanS.includes("[/DIM]"))
-      cleanS += "[/DIM]";
-    if (!cleanS.includes("[DIM]") && cleanS.includes("[/DIM]"))
-      cleanS = "[DIM]" + cleanS;
-
-    if (cleanS.includes("[DIM]")) {
-      const dimRegex = /\[DIM\](.*?)\[\/DIM\]/g;
-      span.innerHTML = cleanS.replace(
-        dimRegex,
-        '<span class="dimmed-text">$1</span>'
-      );
-    } else {
-      span.textContent = cleanS;
-    }
-
-    // Clicking a line SYNCs reading to that spot (with buffer)
-    span.onclick = () => {
-      state.readingPageIndex = state.viewPageIndex;
-      state.readingSentences = [...state.viewSentences];
-      state.autoScrollEnabled = true; // Re-enable auto-scroll on click
-      window.dispatchEvent(new CustomEvent("jump-to-sentence", { detail: i }));
-    };
-    fragment.appendChild(span);
-  });
-
-  if (textContent) {
-    textContent.innerHTML = "";
-    textContent.appendChild(fragment);
-    state.sentenceElements = Array.from(
-      textContent.querySelectorAll(".sentence")
-    );
-  }
-
-  if (pageInput) pageInput.value = state.viewPageIndex + 1;
-  if (pageTotal) pageTotal.textContent = state.currentPages.length;
-  
-  // Standard behavior: Scroll to top of page on change if autoScroll is enabled
-  if (scrollContainer && state.autoScrollEnabled) scrollContainer.scrollTop = 0;
-
-  const currentReadingSentence = state.readingSentences[state.currentSentenceIndex];
-  if (currentSentencePreview) {
-    currentReadingSentencePreviewText(currentReadingSentence, currentSentencePreview);
-  }
-
-  if (state.currentSearchQuery) {
-    highlightSearchTerm(state.currentSearchQuery);
-  }
-}
-
-function currentReadingSentencePreviewText(currentReadingSentence, currentSentencePreview) {
-  currentSentencePreview.textContent =
-    currentReadingSentence && typeof currentReadingSentence === "string"
-      ? stripHTML(currentReadingSentence)
-      : "Ready";
-}
-
-export async function extractTextFromPage(page) {
-  const content = await page.getTextContent();
-  let text = "",
-    lastItem = null;
-  let totalWidth = 0,
-    charCount = 0;
-  for (let item of content.items) {
-    if (item.str.trim().length > 0) {
-      totalWidth += item.width;
-      charCount += item.str.length;
-    }
-  }
-  const avgCharWidth = charCount > 0 ? totalWidth / charCount : 5;
-
-  for (let item of content.items) {
-    let str = item.str.replace(/\ufffd/g, '"');
-    str = str.normalize("NFKC");
-
-    if (!str.trim() && str !== " ") continue;
-
-    if (lastItem) {
-      const lastY = lastItem.transform[5],
-        currentY = item.transform[5];
-      const lastX = lastItem.transform[4],
-        lastWidth = lastItem.width;
-      const lastHeight = Math.abs(lastItem.transform[0]);
-      const currentX = item.transform[4];
-
-      const verticalGap = Math.abs(currentY - lastY);
-
-      if (verticalGap > lastHeight * 0.4) {
-        // Check if line ends with terminal punctuation
-        const textEnd = text.trimEnd();
-        const lastChar = textEnd.slice(-1);
-        const isTerminalChar = /[.!?;:。！？：；]/.test(lastChar);
-
-        // Don't treat common abbreviations as terminal (prevents breaking "Mr. Smith" into lines)
-        const abbreviations = [
-          "Mr.",
-          "Mrs.",
-          "Ms.",
-          "Dr.",
-          "Prof.",
-          "St.",
-          "Rd.",
-          "Ave.",
-          "Capt.",
-          "Gen.",
-          "Sen.",
-          "Rep.",
-          "Gov.",
-          "Fig.",
-          "No.",
-          "Op.",
-          "vs.",
-          "etc.",
-          "e.g.",
-          "i.e.",
-          "Inc.",
-          "Ltd.",
-          "Co.",
-        ];
-        const isAbbreviation = abbreviations.some((abbr) =>
-          textEnd.endsWith(abbr)
-        );
-
-        const isTerminal = isTerminalChar && !isAbbreviation;
-
-        if (!isTerminal && verticalGap < lastHeight * 2.5) {
-          const lastChar = text.trimEnd().slice(-1);
-          const nextChar = str.trimStart().charAt(0);
-          const isCJK = (c) =>
-            /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]/.test(
-              c
-            );
-
-          if (
-            !text.endsWith(" ") &&
-            !str.startsWith(" ") &&
-            !isCJK(lastChar) &&
-            !isCJK(nextChar)
-          ) {
-            text += " ";
-          }
-        } else {
-          text = text.trimEnd() + "\n";
-        }
-      } else {
-        const gap = currentX - (lastX + lastWidth);
-        if (gap > Math.max(1.5, avgCharWidth * 0.25)) {
-          const lastChar = text.trimEnd().slice(-1);
-          const nextChar = str.trimStart().charAt(0);
-          const noSpaceBefore = /[\"\'\(\[\{\u201c\u2018]/.test(lastChar);
-          const noSpaceAfter = /[\"\'\)\\\}\]\u201d\u2019]/.test(nextChar);
-          const isCJK = (c) =>
-            /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]/.test(
-              c
-            );
-
-          if (
-            !text.endsWith(" ") &&
-            !str.startsWith(" ") &&
-            !noSpaceBefore &&
-            !noSpaceAfter &&
-            (!isCJK(lastChar) || !isCJK(nextChar))
-          ) {
-            text += " ";
-          }
-        }
-      }
-    }
-    text += str;
-    lastItem = item;
-  }
-  return text
-    .trim()
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n\s+/g, "\n")
-    .replace(/-\s*\n\s*/g, "");
 }
 
 export async function processPdfBlob(blob, fileName) {
-  // Requires pdfjsLib to be available globally (loaded via script tag)
-  if (!window.pdfjsLib) {
-    showToast("PDF.js library not loaded");
-    return;
-  }
+    showToast("Processing PDF with native backend engine...");
+    
+    // Generate the unique ID upfront so we can send it to the backend route
+    const docId = crypto.randomUUID(); 
+    
+    const formData = new FormData();
+    formData.append("file", blob, fileName);
 
-  const reader = new FileReader();
-  reader.onload = async function () {
     try {
-      const pdf = await window.pdfjsLib.getDocument(new Uint8Array(this.result))
-        .promise;
-      const pagesText = [];
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        pagesText.push(await extractTextFromPage(page));
-      }
-      const docId = crypto.randomUUID();
-      const newDoc = {
-        id: docId,
-        fileName: fileName,
-        totalPages: pdf.numPages,
-        currentPage: 0,
-        lastSentenceIndex: 0,
-        lastAccessed: Date.now(),
-      };
+        // Send to our new PyMuPDF backend route
+        const response = await fetch(`/api/convert/pdf?id=${docId}`, {
+            method: "POST",
+            body: formData
+        });
 
-      await fetchJSON("/api/library", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newDoc),
-      });
-      await fetchJSON("/api/library/content", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: docId, pages: pagesText }),
-      });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `Server error: ${response.status}`);
+        }
 
-      selectDocument(newDoc);
-      showToast("Book added to library");
-    } catch (err) {
-      console.error("PDF processing error:", err);
-      showToast("Failed to process document: " + err.message);
+        const data = await response.json();
+        
+        // Feed the extracted pages, image map, and TOC directly into the unified JSON processor
+        await processJsonData(
+            data.pages, 
+            fileName.replace(/\.pdf$/i, ""), 
+            docId, 
+            data.image_map, 
+            data.toc_map
+        );
+
+    } catch (err) { 
+        console.error("PDF Conversion Error:", err);
+        showToast("Failed to process PDF: " + err.message); 
     }
-  };
-  reader.readAsArrayBuffer(blob);
+}
+
+export async function selectDocument(item) {
+    state.currentDoc = item;
+    showToast(`Opening ${item.fileName}...`);
+    const textContent = document.getElementById("textContent");
+    if (textContent) {
+        textContent.classList.remove("hidden");
+        textContent.innerHTML = '<div class="text-zinc-500 p-4 animate-pulse">Loading document content...</div>';
+    }
+
+    try {
+        const data = await fetchJSON(`/api/library/content/${item.id}`);
+        state.currentPages = data.pages;
+        
+        state.smartStartPage = data.smart_start_page || 0;
+        state.tocMap = data.toc_map || [];
+
+        if ((item.currentPage || 0) === 0 && state.smartStartPage > 0) {
+            state.readingPageIndex = state.smartStartPage;
+            state.viewPageIndex = state.smartStartPage;
+            state.currentSentenceIndex = 0;
+            showToast(`Have a good day`);
+        } else {
+            state.readingPageIndex = item.currentPage || 0;
+            state.viewPageIndex = item.currentPage || 0;
+            state.currentSentenceIndex = item.lastSentenceIndex || 0;
+        }
+
+        state.readingSentences = await getSentencesForPage(state.readingPageIndex);
+
+        const docTitle = document.getElementById("docTitle");
+        const pageNav = document.getElementById("pageNav");
+        const controls = document.getElementById("controls");
+        const emptyState = document.getElementById("emptyState");
+        const prevPage = document.getElementById("prevPage");
+        const nextPage = document.getElementById("nextPage");
+        const pageInput = document.getElementById("pageInput");
+        const searchBtn = document.getElementById("searchBtn");
+        const exportArea = document.getElementById("exportArea");
+        const textSizeArea = document.getElementById("textSizeArea");
+        
+        if (docTitle) docTitle.textContent = item.fileName;
+        if (pageNav) { pageNav.classList.remove("opacity-50", "pointer-events-none"); pageNav.removeAttribute("data-inactive"); }
+        if (prevPage) prevPage.disabled = false;
+        if (nextPage) nextPage.disabled = false;
+        if (pageInput) pageInput.disabled = false;
+        if (controls) controls.classList.remove("hidden");
+        if (emptyState) emptyState.classList.add("hidden");
+        if (searchBtn) searchBtn.classList.remove("hidden");
+
+        if (exportArea && window.isEngineReady) exportArea.style.display = 'block';
+        if (textSizeArea && window.isEngineReady) textSizeArea.style.display = 'block';
+
+        state.autoScrollEnabled = true;
+
+        await renderPage(); 
+        renderTOC(); 
+        loadLibrary(); 
+    } catch (e) {
+        console.error("Select document error:", e);
+        showToast("Failed to load document content");
+        if (textContent) textContent.innerHTML = '';
+    }
+}
+
+export function renderTOC() {
+    const tocList = document.getElementById('tocList');
+    if (!tocList) return;
+    tocList.innerHTML = '';
+    if (!state.tocMap || state.tocMap.length === 0) {
+        tocList.innerHTML = '<div class="p-4 text-xs text-zinc-500 italic">No Table of Contents available.</div>';
+        return;
+    }
+    const fragment = document.createDocumentFragment();
+    state.tocMap.forEach(item => {
+        const div = document.createElement('div');
+        const paddingLeft = item.level === 1 ? '0.5rem' : item.level === 2 ? '1.5rem' : '2.5rem';
+        div.className = `cursor-pointer py-2 px-2 hover:bg-zinc-800 text-sm transition-colors border-l-2 border-transparent hover:border-blue-500`;
+        div.style.paddingLeft = paddingLeft;
+        div.innerHTML = `<div class="flex justify-between items-center opacity-80 hover:opacity-100"><span class="truncate pr-2 ${item.level === 1 ? 'font-bold text-zinc-200' : 'text-zinc-400'}">${item.title}</span><span class="text-[10px] text-zinc-500 shrink-0">Pg ${item.page_index + 1}</span></div>`;
+        div.onclick = async () => {
+            state.viewPageIndex = item.page_index;
+            state.autoScrollEnabled = true;
+            const tocModal = document.getElementById('tocModal');
+            if (tocModal) tocModal.classList.add('hidden');
+            await renderPage();
+        };
+        fragment.appendChild(div);
+    });
+    tocList.appendChild(fragment);
 }
 
 export async function getSentencesForPage(pageIndex) {
-  if (!state.currentPages || !state.currentPages[pageIndex]) return [];
+    if (!state.currentPages || !state.currentPages[pageIndex]) return [];
+    const pageText = state.currentPages[pageIndex];
 
-  let text = state.currentPages[pageIndex];
-
-  // Apply header/footer filter if enabled
-  if (state.headerFooterMode !== "off" && state.currentDoc) {
-    try {
-      const filterData = await fetchJSON(
-        `/api/library/content/${state.currentDoc.id}/page/${pageIndex}`
-      );
-      text = filterData.filtered_text;
-    } catch (e) {
-      console.error("Filter fetch failed:", e);
+    if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>')) {        
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = pageText;
+        // 🌟 SURGICAL ALIGNMENT: Include Scenes and Images in array
+        const elements = Array.from(tempDiv.querySelectorAll('n, s, img.epub-image'));
+        return elements.map(el => {
+            if (el.tagName.toLowerCase() === 'img' || el.tagName.toLowerCase() === 's') return el.outerHTML; 
+            let text = el.textContent;
+            const pause = parseInt(el.getAttribute('data-pause') || "0");
+            if (pause > 0) text = `[PAUSE_${pause}] ` + text;
+            return text;
+        });
     }
-  }
 
-  // Preprocessing (Join broken lines)
-  text = text
-    .replace(/\n\n/g, "<!PARAGRAPH!>")
-    .replace(/([^.!?:;。！？：；])\n/g, "$1 ")
-    .replace(/<!PARAGRAPH!>/g, "\n\n")
-    .replace(/  +/g, " ");
+    let text = pageText.replace(/(\[H[1-6]\].*?\[\/H[1-6]\])/g, "\n\n$1\n\n").replace(/(\[SCENE_BREAK\])/g, "\n\n$1\n\n");
+    text = text.replace(/\n\n+/g, "<!PARAGRAPH!>").replace(/([^.!?:;。！？：；])\n/g, "$1 ").replace(/<!PARAGRAPH!>/g, "\n\n").replace(/  +/g, " ");
 
-  // Split sentences
-  const abbreviations = ["Mr", "Mrs", "Ms", "Dr", "Prof", "St", "Rd", "Ave", "Capt", "Gen", "Sen", "Rep", "Gov", "Fig", "No", "Op", "vs", "etc", "e\\.g", "i\\.e", "Inc", "Ltd", "Co"];
-  const abbrRegex = new RegExp(`\\b(${abbreviations.join('|')})\\.(?=\\s)`, 'gi');
-  const protectedText = text.replace(abbrRegex, '$1<DOT>');
+    const abbreviations = ["Mr", "Mrs", "Ms", "Dr", "Prof", "St", "Rd", "Ave", "Capt", "Gen", "Sen", "Rep", "Gov", "Fig", "No", "Op", "vs", "etc", "e\\.g", "i\\.e", "Inc", "Ltd", "Co"];
+    const abbrRegex = new RegExp(`\\b(${abbreviations.join('|')})\\.(?=\\s)`, 'gi');
+    const protectedText = text.replace(abbrRegex, '$1<DOT>');
 
-  const sentences = [];
-  const segmenter = new Intl.Segmenter(state.uiLanguage || 'en', { granularity: 'sentence' });
+    const sentences = [];
+    const segmenter = new Intl.Segmenter(state.uiLanguage || 'en', { granularity: 'sentence' });
 
-  for (const segmentItem of segmenter.segment(protectedText)) {
-    let s = segmentItem.segment.trim()
-      .replace(/<DOT>/g, '.') // Restore dots
-      .replace(/^[\"\'\u201c\u2018\u201d\u2019]+(?=[\"\'\u201c\u2018\u201d\u2019])/, '')
-      .replace(/[\"\'\u201c\u2018\u201d\u2019]+$/, (match) => match.length > 1 ? match[0] : match);
-    if (s) {
-        // Fix broken DIM tags
-        if (s.includes("[DIM]") && !s.includes("[/DIM]")) s += "[/DIM]";
-        if (!s.includes("[DIM]") && s.includes("[/DIM]")) s = "[DIM]" + s;
-        sentences.push(s);
+    for (const segmentItem of segmenter.segment(protectedText)) {
+        let s = segmentItem.segment.trim().replace(/<DOT>/g, '.').replace(/^[\"\'\u201c\u2018\u201d\u2019]+(?=[\"\'\u201c\u2018\u201d\u2019])/, '').replace(/[\"\'\u201c\u2018\u201d\u2019]+$/, (match) => match.length > 1 ? match[0] : match);
+        if (s) {
+            if (s.includes("[DIM]") && !s.includes("[/DIM]")) s += "[/DIM]";
+            if (!s.includes("[DIM]") && s.includes("[/DIM]")) s = "[DIM]" + s;
+            const hStartMatch = s.match(/\[H[1-6]\]/);
+            const hEndMatch = s.match(/\[\/H[1-6]\]/);
+            if (hStartMatch && !hEndMatch) s += `[/${hStartMatch[0].replace('[','').replace(']','')}]`;
+            if (!hStartMatch && hEndMatch) s = `[${hEndMatch[0].replace('[/','').replace(']','')}]` + s;
+            if (segmentItem.segment.includes('\n')) s += '\n'; 
+            sentences.push(s);
+        }
     }
-  }
-  return sentences;
+    return sentences;
+}
+
+export async function renderPage() {
+    const textContent = document.getElementById("textContent");
+    const pageInput = document.getElementById("pageInput");
+    const pageTotal = document.getElementById("pageTotal");
+    const scrollContainer = document.querySelector(".content-area");
+    const currentSentencePreview = document.getElementById("currentSentencePreview");
+    const backToReadingBtn = document.getElementById("backToReadingBtn");
+
+    if (!state.currentPages || !state.currentPages[state.viewPageIndex]) {
+        if (textContent) textContent.innerHTML = '<div class="text-zinc-500 p-4">Error: Page not found</div>';
+        return;
+    }
+
+    const hiddenModeBackBtn = document.getElementById("hiddenModeBackBtn");
+    
+    if (state.viewPageIndex !== state.readingPageIndex || !state.autoScrollEnabled) {
+        // Scrolled away
+        if (state.manualHidePlayer) {
+            if (backToReadingBtn) { backToReadingBtn.classList.add('hidden'); backToReadingBtn.classList.remove('flex'); }
+            if (hiddenModeBackBtn) { hiddenModeBackBtn.classList.replace('opacity-0', 'opacity-100'); hiddenModeBackBtn.classList.replace('pointer-events-none', 'pointer-events-auto'); }
+        } else {
+            if (hiddenModeBackBtn) { hiddenModeBackBtn.classList.replace('opacity-100', 'opacity-0'); hiddenModeBackBtn.classList.replace('pointer-events-auto', 'pointer-events-none'); }
+            if (backToReadingBtn) { backToReadingBtn.classList.remove('hidden'); backToReadingBtn.classList.add('flex'); }
+        }
+    } else {
+        // On track
+        if (backToReadingBtn) { backToReadingBtn.classList.add('hidden'); backToReadingBtn.classList.remove('flex'); }
+        if (hiddenModeBackBtn) { hiddenModeBackBtn.classList.replace('opacity-100', 'opacity-0'); hiddenModeBackBtn.classList.replace('pointer-events-auto', 'pointer-events-none'); }
+    }
+
+    state.viewSentences = await getSentencesForPage(state.viewPageIndex);
+    const pageText = state.currentPages[state.viewPageIndex];
+    const isReadingCurrentPage = state.viewPageIndex === state.readingPageIndex;
+    
+    // 🌟 FIX: Safety check to prevent a stale index from overwriting the next page
+    const isOnSavedPage = state.currentDoc && state.viewPageIndex === (state.currentDoc.currentPage || 0);
+
+    if (textContent) {
+        textContent.innerHTML = "";
+        
+        if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>')) {            
+            textContent.innerHTML = pageText;
+            state.sentenceElements = Array.from(textContent.querySelectorAll('n, s, img.epub-image'));
+            
+            if (isReadingCurrentPage && state.currentDoc && isOnSavedPage) {
+                let positionFound = false;
+                if (state.currentDoc.lastSentenceId) {
+                    const structuralIdIndex = state.sentenceElements.findIndex(el => el.getAttribute('id') === state.currentDoc.lastSentenceId);
+                    if (structuralIdIndex !== -1) {
+                        state.currentSentenceIndex = structuralIdIndex;
+                        positionFound = true;
+                    }
+                }
+                if (!positionFound && typeof state.currentDoc.lastSentenceIndex === 'number') {
+                    if (state.currentDoc.lastSentenceIndex >= 0 && state.currentDoc.lastSentenceIndex < state.sentenceElements.length) {
+                        state.currentSentenceIndex = state.currentDoc.lastSentenceIndex;
+                    } else state.currentSentenceIndex = 0; 
+                }
+            }
+
+            state.sentenceElements.forEach((tag, i) => {
+                tag.classList.add('sentence'); 
+                if (isReadingCurrentPage && i === state.currentSentenceIndex) tag.classList.add('active-sentence');
+                tag.onclick = () => {
+                    state.readingPageIndex = state.viewPageIndex;
+                    state.readingSentences = [...state.viewSentences];
+                    state.autoScrollEnabled = true; 
+                    window.dispatchEvent(new CustomEvent("jump-to-sentence", { detail: i }));
+                };
+            });
+        } else {
+            const fragment = document.createDocumentFragment();
+            state.viewSentences.forEach((s, i) => {
+                const span = document.createElement("span");
+                span.className = `sentence ${(isReadingCurrentPage && i === state.currentSentenceIndex) ? "active-sentence" : ""}`;
+                let cleanS = s;
+                const hMatch = cleanS.match(/\[(H[1-6])\](.*?)\[\/\1\]/);
+                const imgMatch = cleanS.match(/\[IMAGE_(\d+)\]/);
+
+                if (hMatch) span.innerHTML = `<${hMatch[1].toLowerCase()} class="book-heading ${hMatch[1].toLowerCase()}">${hMatch[2]}</${hMatch[1].toLowerCase()}>`;
+                else if (imgMatch) span.innerHTML = `<img src="/api/library/image/${state.currentDoc?.id}/${imgMatch[1]}" class="epub-image" onload="if(this.naturalWidth < 150 && this.naturalHeight < 150) { this.classList.add('epub-icon'); }" loading="lazy" alt="Illustration" />`;
+                else if (cleanS.includes("[SCENE_BREAK]")) span.innerHTML = `<div class="scene-break">♦ ♦ ♦</div>`;
+                else {
+                    if (cleanS.includes("[DIM]")) span.innerHTML = cleanS.replace(/\[DIM\](.*?)\[\/DIM\]/g, '<span class="dimmed-text">$1</span>');
+                    else span.textContent = cleanS;
+                }
+
+                span.onclick = () => {
+                    state.readingPageIndex = state.viewPageIndex;
+                    state.readingSentences = [...state.viewSentences];
+                    state.autoScrollEnabled = true; 
+                    window.dispatchEvent(new CustomEvent("jump-to-sentence", { detail: i }));
+                };
+                fragment.appendChild(span);
+            });
+            textContent.appendChild(fragment);
+            state.sentenceElements = Array.from(textContent.querySelectorAll(".sentence"));
+        }
+    }
+
+    if (pageInput) pageInput.value = state.viewPageIndex + 1;
+    if (pageTotal) pageTotal.textContent = state.currentPages.length;
+
+    // 🌟 FIX: THE BULLETPROOF MATHEMATICAL FOCUS CAMERA
+    if (scrollContainer) {
+        if (!isReadingCurrentPage) {
+            scrollContainer.scrollTop = 0;
+        } 
+        else if (state.autoScrollEnabled) {
+            // requestAnimationFrame ensures the DOM has physically painted before we calculate pixels
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    const activeEl = document.querySelector('.active-sentence');
+                    if (activeEl) {
+                        // Mathematically locate the exact pixel depth of the sentence
+                        const elRect = activeEl.getBoundingClientRect();
+                        const containerRect = scrollContainer.getBoundingClientRect();
+                        
+                        const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
+                        const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
+                        
+                        // Force the scroll container to snap perfectly to the center
+                        scrollContainer.scrollTop = Math.max(0, centerPosition);
+                    } else {
+                        scrollContainer.scrollTop = 0;
+                    }
+                }, 20); // 20ms buffer to guarantee Heavy PDFs are fully arranged
+            });
+        }
+    }
+
+    const currentReadingSentence = (state.readingSentences && state.readingSentences.length > 0) ? state.readingSentences[state.currentSentenceIndex] : "";
+    if (currentSentencePreview && currentReadingSentence) {
+        const cleanText = currentReadingSentence.replace(/\[PAUSE_\d+\]\s*/g, '');
+        const finalStr = typeof stripHTML === "function" ? stripHTML(cleanText) : cleanText;
+        
+        currentSentencePreview.textContent = finalStr;
+        
+        const monitorText = document.getElementById("monitorSentenceText");
+        if (monitorText) monitorText.textContent = finalStr;
+    }
+    if (state.currentSearchQuery && typeof highlightSearchTerm === "function") highlightSearchTerm(state.currentSearchQuery, state.searchMatchCase, state.searchWholeWord);
 }

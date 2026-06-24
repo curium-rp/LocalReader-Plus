@@ -1,12 +1,16 @@
+import os
+import sys
+import json
+import time
+import threading
+import platform
+from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import time
-import json
-import psutil
+from fastapi.responses import RedirectResponse
 
-# Import Refactored Modules
 from .config import (
     base_dir,
     userdata_dir,
@@ -16,68 +20,63 @@ from .config import (
 )
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
-from .routers import settings, library, tts, system, export, timer
-from .utils import safe_init_json
 
+from .routers import settings, library, tts, system, export, timer, theme
 
 # --- Lifespan Manager ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
     start_time = time.time()
 
-    # 1. Check directories
     if not base_dir.exists():
         print(f"[CRITICAL] Base dir missing: {base_dir}")
+    try:
+        if content_dir.exists():
+            for f in content_dir.glob("temp_*"):
+                try: f.unlink()
+                except: pass
+    except Exception:
+        pass
 
-    # 2. Init JSON files
+    # Simplified default settings (removed auto_load_engine and wait_engine_load)
     safe_init_json(
         settings_file,
         {
             "pronunciationRules": [],
             "ignoreList": [],
-            "voice_id": "af_bella",
+            "voice_id": "af_heart",
             "speed": 1.0,
             "engine_mode": "gpu",
-            "ui_language": "en",
+            "ui_language": "en"
         },
     )
     safe_init_json(library_file, [])
 
-    # 3. Check/Install FFMPEG (Async check could go here)
-    # We leave that for the frontend to query via /api/ffmpeg/status
+    from .routers.system import load_engine_logic
+    
+    def perform_boot():
+        try:
+            print("[BOOT] Loading Kokoro Engine (Blocking until ready)...")
+            load_engine_logic()
+            print(f"[BOOT] Kokoro Engine loaded in {time.time() - start_time:.2f}s")
+        except Exception as e:
+            # Bypass to app if engine fails to load or models are missing
+            print(f"[WARNING] Engine load bypassed (missing models or error): {e}")
 
-    # 4. Clean temp content
-    try:
-        if content_dir.exists():
-            for f in content_dir.glob("temp_*"):
-                try:
-                    f.unlink()
-                except:
-                    pass
-    except Exception as e:
-        print(f"[STARTUP] Cleanup warning: {e}")
-
-    # 5. Load model (Auto-load on startup)
-    try:
-        from .routers.system import load_engine_logic
-
-        print("[STARTUP] Checking for existing models to auto-load...")
-        load_engine_logic()
-    except Exception as e:
-        print(f"[STARTUP] Auto-load failed (non-critical): {e}")
-
-    print(f"[STARTUP] Server ready in {time.time() - start_time:.2f}s")
+    # Core Logic: Always try to load synchronously. 
+    # If it fails, the except block catches it and the app continues opening.
+    perform_boot()
 
     yield
 
-    # Shutdown logic
-    state_module.sleep_timer.stop_timer()
     print("[SHUTDOWN] Cleanup complete.")
-
+    try:
+        state_module.sleep_timer.stop_timer()
+    except Exception:
+        pass
 
 # --- App Definition ---
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(title="LocalReader Plus", lifespan=lifespan)
 
 # --- Middleware ---
 app.add_middleware(
@@ -95,9 +94,9 @@ app.include_router(tts.router)
 app.include_router(system.router)
 app.include_router(export.router)
 app.include_router(timer.router)
+app.include_router(theme.router)
 
 # --- Static Files ---
-# Mount static assets
 ui_dir = base_dir / "ui"
 if ui_dir.exists():
     app.mount("/css", StaticFiles(directory=ui_dir / "css"), name="css")
@@ -109,15 +108,11 @@ if ui_dir.exists():
 else:
     print(f"[WARNING] UI directory not found: {ui_dir}")
 
-
-# --- Legacy/Root Endpoints ---
+# --- Root Endpoints ---
 @app.get("/health")
 async def health_check():
-    process = psutil.Process()
-    return {"status": "ok", "memory_mb": process.memory_info().rss / 1024 / 1024}
+    return {"status": "ok"}
 
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/index.html")
