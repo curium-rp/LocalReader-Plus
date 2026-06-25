@@ -9,10 +9,11 @@ from .config import cache_db_path, MAX_CACHE_SIZE_MB, base_dir
 
 # Import AudioCache
 try:
-    from logic.audio_cache import AudioCache
+    # Standard import when launched via dist/main.py
+    from app.logic.audio_cache import AudioCache
 except ImportError:
-    sys.path.append(str(base_dir / "logic"))
-    from audio_cache import AudioCache
+    # Fallback import if launched directly
+    from logic.audio_cache import AudioCache
 
 # --- Global State Instances ---
 audio_cache = AudioCache(cache_db_path, max_size_mb=MAX_CACHE_SIZE_MB)

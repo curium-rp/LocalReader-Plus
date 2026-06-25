@@ -340,7 +340,8 @@
 .voice-settings-drawer {
   position: fixed;
   top: 0;
-  right: -400px;
+  /*  Pushed to -480px so the 40px shadow is completely off-screen */
+  right: -480px;
   width: 400px;
   height: 100vh;
   background: linear-gradient(to bottom, #18181b, #09090b);
@@ -566,19 +567,21 @@ h3 { font-size: 1.5em; }
 
 /* ELEGANT SCENE BREAKS */
 s {
-    text-decoration: none; /* Removes the default strikethrough */
-    display: block;
-    text-align: center;
-    margin: 2em 0;
-    color: #71717a; /* zinc-500 */
-    letter-spacing: 0.5em; /* Spreads the symbols out nicely */
+    text-decoration: none !important;
+    display: block !important;
+    width: 100%;
+    text-align: center !important;
+    margin: 1em 0 !important;
+    color: #71717a; 
+    letter-spacing: 0.5em; 
+    text-indent: 0.5em; /* 🌟 SURGICAL FIX: Mathematically balances the letter-spacing for true center */
     font-size: 1.2em;
 }
 
 p {
-  text-indent: 1.2em;      /* Indent all paragraphs after the first */
+  text-indent: 1.1em;      /* Indent all paragraphs after the first */
   margin: auto;            /* Space above paragraph */
-  text-align: justify;                                   
+  text-align: justify;          /* justify text */                        
   text-align-last: auto;  
 }
 

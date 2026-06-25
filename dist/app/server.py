@@ -20,6 +20,7 @@ from .config import (
 )
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
+from .models import AppSettings
 
 from .routers import settings, library, tts, system, export, timer, theme
 
@@ -38,18 +39,25 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
-    # Simplified default settings (removed auto_load_engine and wait_engine_load)
-    safe_init_json(
-        settings_file,
-        {
-            "pronunciationRules": [],
-            "ignoreList": [],
-            "voice_id": "af_heart",
-            "speed": 1.0,
-            "engine_mode": "gpu",
-            "ui_language": "en"
-        },
-    )
+    # 🌟 SURGICAL FIX: Use models.py as the absolute source of truth for defaults
+    try:
+        current_data = {}
+        if settings_file.exists():
+            with open(settings_file, "r", encoding="utf-8") as f:
+                current_data = json.load(f)
+                
+        # Satisfy mandatory Pydantic fields
+        if "pronunciationRules" not in current_data: current_data["pronunciationRules"] = []
+        if "ignoreList" not in current_data: current_data["ignoreList"] = []
+            
+        # Pydantic safely merges user data with models.py defaults
+        merged_settings = AppSettings(**current_data)
+        safe_save_json(settings_file, merged_settings.model_dump())
+    except Exception:
+        # Fallback if file is completely corrupted: Generate fresh from models.py
+        fallback_settings = AppSettings(pronunciationRules=[], ignoreList=[])
+        safe_save_json(settings_file, fallback_settings.model_dump())
+
     safe_init_json(library_file, [])
 
     from .routers.system import load_engine_logic
