@@ -130,6 +130,27 @@ export async function playNext() {
   currentSynthesisId++; // 🌟 Generate unique lock ID for this synthesis request
   const mySynthesisId = currentSynthesisId;
 
+  // 🌟 SELF-RECOVERING ONE-TIME CHECK (Session Memory)
+  // Ensures the language switcher isn't interrupted on subsequent plays or jumps
+  if (!window.hasCheckedVoiceMismatch) {
+    window.hasCheckedVoiceMismatch = true;
+    
+    // 50ms micro-delay to align with the first payload timing
+    await new Promise(resolve => setTimeout(resolve, 50)); 
+    
+    try {
+      const currentSettings = await fetchJSON(`/api/settings`);
+      const vs = document.getElementById("voiceSelect");
+      
+      // If a mismatch exists between the DOM and the saved truth, snap it back
+      if (vs && currentSettings.voice_id && vs.value !== currentSettings.voice_id) {
+        vs.value = currentSettings.voice_id;
+      }
+    } catch (err) {
+      console.error("Voice mismatch recovery failed", err);
+    }
+  }
+
   const targetIndex = state.currentSentenceIndex;
   if (!state.isPlaying || !window.isEngineReady) {
     stopPlayback();
