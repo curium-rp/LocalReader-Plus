@@ -27,7 +27,7 @@
    -  Support auto switch languages, for example you play in main language is English when it has japanese language, it will switch to jp and will go back to english, automaticlly.**only support English, Japanese, and China(Mandarin)**
    -  Improve reliability of apps.
    -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
-   -  Improve Export/generate/create audio system base on current settings.
+   -  Improve Export audio system it will use Pause/Behavior/voice settings.
    
    _Have detects 'ExecutionProvider' in Windows, Mac, and Linux for Kokoro_gpu models it should works in Gpu if it can will fallback to Cpu_
    (_default will run on Cpu, cuz Kokoro-onnx will install 'onnxruntime' **Cpu version** it will run on **Cpu** regradless of models 'Gpu'_)
@@ -284,7 +284,11 @@ LocalReader-Plus
 | **CUDA (12.xx)**            | 3.0 - 4.5 GB       | *Optional* - System-level GPU acceleration        |
 | **cuDNN (9.xx)**            | ~3.0 GB            | *Optional* - Deep learning GPU primitives         |
 
-> **🎙️ Export ** > Support export with Toc point to point and single point _point to point mean can select start point and end point with H tag and single point mean select only one chapter of books_ 
+> **🎙️ Export ** > Support export with Toc point to point and single point _
+   - Point to point mean can select start point and end point with Header tag (default)
+   - Separate files, mean point to point but will save one by one of chapter/header.
+   - Single mode, mean select only one chapter of books and Export.
+   
 
 
 #### Estimated Installation Totals

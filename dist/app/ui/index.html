@@ -435,8 +435,9 @@
     </button>
 
 
-    <button id="playbarRestoreBtn" class="fixed bottom-6 right-6 w-8 h-8 bg-zinc-900 text-zinc-400 border border-zinc-700 rounded-full flex items-center justify-center opacity-0 pointer-events-none transition-all duration-300 z-50 shadow-lg hover:bg-zinc-800 hover:text-white" title="Show Player">
-      ^
+    <!--size of manual hide current sentence display -->
+    <button id="playbarRestoreBtn" class="fixed bottom-6 right-6 w-6 h-6 bg-zinc-800/70 backdrop-blur-md text-zinc-300 border border-white/10 rounded-full flex items-center justify-center opacity-0 pointer-events-none transition-colors duration-300 z-50 shadow-xl hover:bg-zinc-700/90 hover:text-white" title="Show Player">
+      <i data-lucide="chevron-up" class="w-4 h-4"></i>
     </button>
 
     <button id="hiddenModeBackBtn" class="fixed bottom-6 left-[calc(var(--sidebar-width)+(100%-var(--sidebar-width))/2)] -translate-x-1/2 px-4 py-1.5 bg-zinc-800/80 backdrop-blur-md border border-zinc-600/50 rounded-full text-zinc-300 text-[11px] font-bold cursor-pointer opacity-0 pointer-events-none flex items-center gap-1.5 transition-all hover:bg-zinc-700/90 hover:text-white z-[99] shadow-lg shadow-black/40" title="Back to Reading">
@@ -447,29 +448,31 @@
     <!-- Voice Settings Button (Floating) -->
     <button
       id="voiceSettingsBtn"
-      class="voice-settings-button"
+      class="voice-settings-button w-9 h-9 flex items-center justify-center bg-zinc-800/70 backdrop-blur-md border border-white/10 shadow-xl transition-colors hover:bg-zinc-700/90 text-zinc-300 hover:text-white"
       title="Voice & Audio Settings"
     >
-      <i data-lucide="audio-lines" class="w-5 h-5"></i>
+      <i data-lucide="audio-lines" class="w-4 h-4"></i>
     </button>
 
     <!-- Sleep Timer Button -->
     <button
       id="timerSettingsBtn"
-      class="voice-settings-button"
+      class="voice-settings-button w-9 h-9 flex items-center justify-center bg-zinc-800/70 backdrop-blur-md border border-white/10 shadow-xl transition-colors hover:bg-zinc-700/90 text-zinc-300 hover:text-white"
       style="top: calc(50% + 60px)"
       title="Sleep Timer"
     >
-      <i data-lucide="timer" class="w-5 h-5"></i>
+      <i data-lucide="timer" class="w-4 h-4"></i>
       <span id="timerBtnText" style="display: none"></span>
     </button>
+    
+    <!-- Playback Behavior Button -->
     <button
       id="behaviorSettingsBtn"
-      class="voice-settings-button"
+      class="voice-settings-button w-9 h-9 flex items-center justify-center bg-zinc-800/70 backdrop-blur-md border border-white/10 shadow-xl transition-colors hover:bg-zinc-700/90 text-zinc-300 hover:text-white"
       style="top: calc(50% + 120px)"
       title="Playback Behavior"
     >
-      <i data-lucide="activity" class="w-5 h-5"></i>
+      <i data-lucide="activity" class="w-4 h-4"></i>
     </button>
     <!-- Drawer Overlay -->
     <div id="drawerOverlay" class="drawer-overlay"></div>
@@ -540,16 +543,17 @@
             value="1.00"
             class="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
           />
-          <div class="flex justify-between text-[9px] text-zinc-600 mt-1">
-            <span>0.5x</span>
-            <span>1.0x</span>
-            <span>2.0x</span>
-            <span>3.0x</span>
+          <!--  FIX: Mathematically align labels to 0%, 20%, 60%, and 100% of the slider track -->
+          <div class="relative w-full h-4 text-[9px] text-zinc-600 mt-1 select-none pointer-events-none">
+            <span class="absolute left-0">0.5x</span>
+            <span class="absolute left-[20%] -translate-x-1/2">1.0x</span>
+            <span class="absolute left-[60%] -translate-x-1/2">2.0x</span>
+            <span class="absolute right-0">3.0x</span>
           </div>
         </div>
 
-        <!-- Header/Footer Filter -->
-        <div>
+        <!-- Header/Footer Filter (Disabled for EPUB overhaul) -->
+        <div class="opacity-50 pointer-events-none">
           <label
             class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
           >
@@ -558,23 +562,14 @@
           </label>
           <select
             id="headerFooterMode"
-            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+            disabled
+            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-500"
           >
-            <option value="off" data-i18n="settings.header_footer_off">
-              Off
-            </option>
-            <option value="clean" data-i18n="settings.header_footer_clean">
-              Clean (Remove)
-            </option>
-            <option value="dim" data-i18n="settings.header_footer_dim">
-              Dim (Show Faded)
-            </option>
+            <option value="off" data-i18n="settings.header_footer_off">Off</option>
           </select>
-          <p
-            class="text-[9px] text-zinc-600 mt-2"
-            data-i18n="settings.header_footer_desc"
-          >
-            Automatically hide repeated page headers & footers
+          <!-- 🌟 SURGICAL FIX: Removed data-i18n tag so the engine stops overwriting this text -->
+          <p class="text-[10px] text-orange-400/80 font-bold mt-2">
+            Currently disabled for EPUB overhaul
           </p>
         </div>
 
@@ -966,12 +961,21 @@
                   <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-red-500"></div> End</span>
                   <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-purple-500"></div> Single</span>
               </div>
-              <label class="flex items-center gap-1.5 cursor-pointer group pr-2" title="Export only one chapter">
-                <input type="checkbox" id="toggleSingleChapter" class="w-3 h-3 accent-purple-600 rounded bg-zinc-800 border-zinc-700 cursor-pointer transition-colors">
-                <span class="text-[9px] font-bold text-zinc-500 group-hover:text-purple-400 uppercase tracking-widest flex items-center gap-1 transition-colors">
-                  Single Chapter Mode
-                </span>
-              </label>
+              <div class="flex items-center gap-4 pr-2">
+                  <label class="flex items-center gap-1.5 cursor-pointer group" title="Export only one chapter">
+                    <input type="checkbox" id="toggleSingleChapter" class="w-3 h-3 accent-purple-600 rounded bg-zinc-800 border-zinc-700 cursor-pointer transition-colors">
+                    <span class="text-[9px] font-bold text-zinc-500 group-hover:text-purple-400 uppercase tracking-widest flex items-center gap-1 transition-colors">
+                      Single Mode
+                    </span>
+                  </label>
+                  
+                  <label class="flex items-center gap-1.5 cursor-pointer group" title="Export selected range as separate files">
+                    <input type="checkbox" id="toggleSeparateFiles" class="w-3 h-3 accent-orange-500 rounded bg-zinc-800 border-zinc-700 cursor-pointer transition-colors">
+                    <span class="text-[9px] font-bold text-zinc-500 group-hover:text-orange-400 uppercase tracking-widest flex items-center gap-1 transition-colors">
+                      Separate Files
+                    </span>
+                  </label>
+              </div>
            </div>
 
            <!-- TOC List Container -->
