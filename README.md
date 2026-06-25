@@ -24,7 +24,7 @@
    -  Add ToC/Table of Content support. (redeign convertor of EPUB and PDF)
    -  Add Images supprt.
    -  Add Match Case and Match Whole Word for search functions and imporve jump to selects result.
-   -  Support auto switch languages, for example you play in main language is English when it has japanese language, it will switch to jp and will go back to english, automaticlly.**only support English, Japanese, and China(Mandarin)**
+   -  Support auto switch languages, it currently Only support when use models voice English it will has fallback support with Japanese and China(Mandarin).
    -  Improve reliability of apps.
    -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
    -  Improve Export audio system it will use Pause/Behavior/voice settings.
