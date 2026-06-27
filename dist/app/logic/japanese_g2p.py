@@ -12,10 +12,9 @@ from typing import Dict, List, Optional
 # ==========================================
 try:
     import fugashi
-    import mojimoji
     import jaconv
 except ImportError as e:
-    raise ImportError(f"[Fatal] Missing core NLP dependency. Run: pip install fugashi unidic-lite mojimoji jaconv\nError: {e}")
+    raise ImportError(f"[Fatal] Missing core NLP dependency. Run: pip install fugashi unidic-lite jaconv\nError: {e}")
 
 try:
     from jamdict import Jamdict
@@ -183,8 +182,8 @@ class UltimateJapaneseG2P:
         for kanji, katakana in self.custom_dict.items():
             text = text.replace(kanji, katakana)
 
-        text = mojimoji.han_to_zen(text, ascii=False)
-        text = mojimoji.zen_to_han(text, kana=False)
+        text = jaconv.h2z(text, ascii=False)
+        text = jaconv.z2h(text, kana=False)
         
         def replace_alpha(match):
             word = match.group(0).upper()
