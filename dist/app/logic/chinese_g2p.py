@@ -1,5 +1,5 @@
 import re
-import mojimoji
+import jaconv
 from typing import Dict
 
 class UltimateChineseProcessor:
@@ -98,8 +98,8 @@ class UltimateChineseProcessor:
             text = text.replace(word, replacement)
 
         # Step 2: Width Normalization (Mojimoji handles the heavy lifting)
-        text = mojimoji.han_to_zen(text, ascii=False)
-        text = mojimoji.zen_to_han(text, kana=False)
+        text = jaconv.h2z(text, ascii=False)
+        text = jaconv.z2h(text, kana=False)
         
         # 🌟 NEW: Native Python Width Supplement
         # Mojimoji sometimes misses Chinese-specific full-width Alphanumerics.

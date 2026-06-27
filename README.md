@@ -45,7 +45,8 @@
 ---
 # Windows installation
 
-   _Install **Python 3.12** if not install yet, _support Python 3.10, 3.11, 3.12, 3.13_
+   _Install **Python 3.12** if not install yet, _support Python 3.10-3.13_
+   (Python 3.12 and 3.13 has been test, it can run no problem if it has I'll fix it)
    
   
   ## **First method for download** 
@@ -139,9 +140,9 @@ To completely remove the supporting software (Python and Libraries):
 
 ### Linux / Manual Installation
 
-**Prerequisites:** Python 3.10 - 3.13 (Recommended: Python 3.12 for the best performance)
+**Prerequisites:** Python 3.10 - 3.13 (Recommended: Python 3.12 )
 
-> ⚠️ **Important:** Python 3.14+ is not yet supported due to `onnxruntime` compatibility.
+> ⚠️ **Important:** Python 3.14 I didn't test yet, for 3.13 it can run and no problem has been found
 
 **Step 1: Install Python**
 
@@ -353,7 +354,8 @@ This project is made possible thanks to the following open-source libraries and 
 | **[EbookLib](https://github.com/aerkalov/ebooklib)**                   | AGPL         | EPUB document parsing and unpacking    |
 | **[BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/)**   | MIT          | HTML sanitization and TOC generation   |
 | **[Fugashi](https://github.com/polm/fugashi)**                         | MIT          | Japanese morphological analysis        |
-| **[Mojimoji](https://github.com/studio-ousia/mojimoji)**               | MIT          | Asian character width normalization    |
+| **[jaconv](https://github.com/ikegami-yukino/jaconv)**                 | MIT          | Jp/zh character width normalization    |
+| **[num2words](https://github.com/savoirfairelinux/num2words)**         |  LGPL        |Handle reading number             |
 | **[FFmpeg](https://ffmpeg.org/)**                                      | GPL / LGPL   | On-demand audio format conversion      |
 ---
 
@@ -388,7 +390,7 @@ This project is made possible thanks to the following open-source libraries and 
 
 **Last Original LocalReader Pro updated:**January 6, 2026
 ---
-**Last Updated** June 24, 2026
+**Last Updated** June 27, 2026
 
 ---
 ***Epub or Pdf files should not be DRM (Digital Rights Management)***

@@ -1,18 +1,18 @@
-# --- Core Framework & Servers ---
+## --- Core Framework & Servers ---##
 fastapi
 uvicorn
 python-multipart
 pywebview
 
-# --- AI & Audio Processing ---
+## --- Audio Processing ---##
 kokoro-onnx
 huggingface_hub
 numpy
 soundfile
 pydub
-audioop-lts; python_version >= "3.13"
 
-# --- Text Processing & Utilities ---
+
+## --- Text Processing & Utilities ---##
 requests
 pydantic
 beautifulsoup4
@@ -20,16 +20,18 @@ lxml
 num2words
 eng_to_ipa
 
-# --- Document Parsing ---
+## --- Document Parsing ---##
 ebooklib
 PyMuPDF
 
-# --- CJK Voice Support (Chinese & Japanese) ---
+## --- CJK Voice Support (Chinese & Japanese) ---##
 misaki[zh]
 fugashi
 unidic-lite
-mojimoji
 jaconv
 jamdict
 
-##scipy xhtml2pdf lxml psutil pykakasi torch no need to use it ##
+##For audioop-lts it seem didn't requirement when run in 3.13##
+##audioop-lts; python_version >= "3.13"##
+##scipy xhtml2pdf lxml psutil pykakasi torch no need to use it 
+##mojimoji no support for 3.13 use jaconv instead. ####
