@@ -6,7 +6,7 @@
 ---
 <div align="center">
   <h1>Brief</h1>
-  <img src="docs/images/image1.png" alt="Beief" width="70%">
+  <img src="docs/images/image1.png" alt="Brief" width="70%">
 </div>
 
 
@@ -24,7 +24,7 @@
    -  Add ToC/Table of Content support. (redeign convertor of EPUB and PDF)
    -  Add Images supprt.
    -  Add Match Case and Match Whole Word for search functions and imporve jump to selects result.
-   -  Support auto switch languages, it currently Only support when use models voice English it will has fallback support with Japanese and China(Mandarin).
+   -  Support auto switch languages, it currently Only support when use models voice English it will fallback support with Japanese and China(Mandarin).
    -  Improve reliability of apps.
    -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
    -  Improve Export audio system it will use Pause/Behavior/voice settings.
@@ -36,7 +36,7 @@
    
    **-Fix pause setting not respond.**
    
-   **-Fix preload system when apply pause setthing.** _tread off, is may happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, i mean it need to wait -old buffer setting end._
+   **-Fix preload system when apply pause setthing.**  _Trade-off, is may happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, i mean it need to wait -old buffer setting end._
    
    **-Fix cache system cause repreat and skip reading, randomly.**
    
@@ -336,10 +336,12 @@ LocalReader-Plus
 
 ## 🔳 License
 
-###LocalReader plus (main LocalReader Pro )
+### LocalReader Plus (Fork of LocalReader Pro)
 
-- **Code:** Proprietary (review, modify, use personally)
-- **Redistribution:** Contact author for permission
+- **Application Logic:** Proprietary modification fork (Feel free to review, modify, and use personally).
+- **Redistribution:** Please contact the author for permission.
+- **Open Source Copyleft Note:** This project links to and utilizes dependencies licensed under open-source agreements (including MIT, AGPL, and GPL). In compliance with those underlying libraries, the raw source code of this fork is publicly accessible for review and personal modification here on GitHub.
+
 
 ### 📜 Open Source Acknowledgements
 
