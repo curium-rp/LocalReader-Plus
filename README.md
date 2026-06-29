@@ -2,7 +2,7 @@
 
 **A modern, that I fix and improve and fix many things.**
 ---
-##🚨 due to redesign of code for this update if you download before it need to reinstall or remove any Library/books that your have inside apps, because in not compatibles with these update and do import again(add Epub/PDF)##
+##🚨Update June 29, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -189,7 +189,8 @@ _(IF Mac or Linux has problem with error in Termimal when first run >main.py Do 
 1. Open **"Pause Settings"** section in sidebar
 2. Adjust sliders to set pause duration (0-2000ms):
    - **Comma (,)** - Default: 250ms
-   - **Period (.)** - Default: 0ms (_it overlap with segment pause `N`, cuz logic cut sentence use preiod stop_)
+   - **spam symbols (...,?!?,???)** - Default: 0ms _it will start apply when have to full stop, (?) and (!), more then 2 
+      -it can mix together and it can stack when it has more spam it, more spam more pause default: 0ms or disable
    - **Question (?)** - Default: 600ms
    - **Exclamation (!)** - Default: 600ms
    - **Colon (:)** - Default: 500ms
@@ -197,18 +198,15 @@ _(IF Mac or Linux has problem with error in Termimal when first run >main.py Do 
 
  **!(New) Behavior settings:**
    - `Header Pause (H)` Gives the user breathing room between a Chapter Title and the story text (0ms to 10s). default 2 second
+         -It will apply in front of header 100% and close H 30% 
+         -It will apply less settings ms by H2/2, H3/1.5 - apply H2 half of H1 tag
+
    - `Image Pause` Creates a temporary silence while an image or cover is displayed on the screen before reading continues (0ms to 20s). default 3 second
    - `Scene Pause` Handles dramatic pauses for elegant scene changes (like *** or ◇◇◇).have it (0ms to 5s). default 1 second
    - `Segment Pause (N)` Controls the tiny micro-pauses between standard text blocks/sentences will have 0-2000ms. default 500ms
 
    
 3. Settings save automatically
-
-   **Smart Behavior:**
-
-- Pauses apply only to single punctuation or the last char of a group
-- `"..."` creates ONE pause (e.g. 600ms), not three
-- `"?!` creates ONE pause (based on `!`)
 
   
 ---
@@ -279,7 +277,7 @@ LocalReader-Plus
 | **TTS Engine (CPU)**        | ~87 MB             | Quantized INT8 model                              |
 | **Voice Pack**              | ~30 MB             | Shared acoustic data for voices                   |
 | **Audio Cache (SQLite)**    | ~200 MB            | Auto-managed (Maximum limit)                      |
-| **Document Cache**          | 1 - 10+ MB         | Size per parsed book                              |
+| **Document Cache**          | ~~~~               | A little bit larger then original files                               |
 | **FFmpeg**                  | ~100 MB            | *Optional* - Downloaded on-demand for MP3 exports |
 | **Exported Audio**          | Varies             | ~1 MB (MP3) / ~2.7 MB (WAV) per minute of audio   |
 | **CUDA (12.xx)**            | 3.0 - 4.5 GB       | *Optional* - System-level GPU acceleration        |
@@ -392,7 +390,7 @@ This project is made possible thanks to the following open-source libraries and 
 
 **Last Original LocalReader Pro updated:**January 6, 2026
 ---
-**Last Updated** June 27, 2026
+**Last Updated** June 29, 2026
 
 ---
 ***Epub or Pdf files should not be DRM (Digital Rights Management)***

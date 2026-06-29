@@ -182,8 +182,8 @@ class UltimateJapaneseG2P:
         for kanji, katakana in self.custom_dict.items():
             text = text.replace(kanji, katakana)
 
-        text = jaconv.h2z(text, ascii=False)
-        text = jaconv.z2h(text, kana=False)
+        text = jaconv.h2z(text, ascii=False, digit=False)
+        text = jaconv.z2h(text, kana=False, digit=True, ascii=True)
         
         def replace_alpha(match):
             word = match.group(0).upper()
@@ -238,7 +238,9 @@ class UltimateJapaneseG2P:
             if re.search(r'[\u4e00-\u9faf]', pron_kata):
                 continue
                 
-            romaji = jaconv.kata2alphabet(pron_kata)
+            # Force Hiragana to Katakana first to prevent fallback engine crashes
+            safe_kata = jaconv.hira2kata(pron_kata)
+            romaji = jaconv.kata2alphabet(safe_kata)
             pos1 = getattr(feature, 'pos1', '')
             
             if pos1 == '接続詞' and surface in ('では', 'ては', 'でも', 'ても', 'じゃ', 'じゃあ'):
