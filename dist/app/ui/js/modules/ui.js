@@ -174,7 +174,15 @@ export function highlightSearchTerm(query, matchCase = false, wholeWord = false)
     const regex = new RegExp(`(${pattern})`, matchCase ? 'g' : 'gi');
 
     textElements.forEach(el => {
-        highlightTextNodes(el, regex);
+        if (state.searchTargetSnippet) {
+            const cleanSnippet = stripHTML(state.searchTargetSnippet).replace(/\s+/g, '');
+            const cleanSentence = el.textContent.replace(/\s+/g, '');
+            if (cleanSnippet && (cleanSentence.includes(cleanSnippet) || cleanSnippet.includes(cleanSentence))) {
+                highlightTextNodes(el, regex);
+            }
+        } else {
+            highlightTextNodes(el, regex);
+        }
     });
 }
 
