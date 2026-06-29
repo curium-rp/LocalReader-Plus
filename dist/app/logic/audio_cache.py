@@ -1,36 +1,33 @@
-"""
-SQLite-based Audio Cache with LRU eviction logic.
-Replaces file-based .cache/ directory with a database.
-"""
-
 import sqlite3
 import time
-import threading  # SURGICAL CHANGE 1: Import threading
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
 class AudioCache:
     """
-    SQLite-based audio cache with LRU (Least Recently Used) eviction.
-    Stores WAV audio data as BLOB with automatic size management.
+    SQLite-based audio cache with High/Low Watermark LRU eviction.
+    Implements strict thread-locking to prevent "Database is Locked" collisions.
     """
 
     def __init__(self, db_path: Path, max_size_mb: float = 200.0):
         self.db_path = db_path
         self.max_size_mb = max_size_mb
-        self.lock = threading.Lock()  # SURGICAL CHANGE 2: Create a Database Lock
+        self.lock = threading.Lock()
         self._init_db()
 
     def _init_db(self):
-        """Create database schema if not exists, safely locked."""
+        """Create database schema if it does not exist, safely locked."""
         with self.lock:
             try:
-                conn = sqlite3.connect(str(self.db_path))
-                # SURGICAL CHANGE 3: Enable WAL mode. This prevents "Database is Locked" 
-                # crashes when FastAPI background threads try to read/write at the same time.
+                # timeout=15.0 ensures threads wait in line politely during heavy TTS generation
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                
+                # WAL mode prevents read/write blocking
                 conn.execute('PRAGMA journal_mode=WAL;')
+                conn.execute('PRAGMA synchronous=NORMAL;')
+                
                 cursor = conn.cursor()
-
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS audio_cache (
@@ -40,246 +37,215 @@ class AudioCache:
                         created_at REAL NOT NULL,
                         accessed_at REAL NOT NULL
                     )
-                """
-                )
-
-                cursor.execute(
                     """
-                    CREATE INDEX IF NOT EXISTS idx_accessed_at 
-                    ON audio_cache(accessed_at)
-                """
                 )
+                
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_accessed_at ON audio_cache(accessed_at)")
+                
                 conn.commit()
                 conn.close()
             except Exception as e:
-                print(f"[CACHE WARNING] Init Database failed: {e}")
+                print(f"[CACHE WARNING] Database initialization failed: {e}")
 
     def put(self, cache_key: str, audio_bytes: bytes):
-        """Save audio to cache with a Garbage Guard."""
-        
-        # SURGICAL CHANGE 4: The Garbage Guard
-        # A normal spoken sentence in WAV format is usually 50KB to 500KB.
-        # If the AI glitches and outputs "con con", it's usually under 10KB.
-        # We refuse to save it, forcing the engine to generate a fresh one next time.
-        if len(audio_bytes) < 10240:  # 10 KB limit
-            print(f"[CACHE GUARD] Audio too small ({len(audio_bytes)} bytes). Refusing to save broken file.")
+        """
+        Safely store audio data in the cache.
+        Includes a Garbage Guard to reject broken files and triggers watermark cleanup.
+        """
+        # 1. Garbage Guard: Reject corrupt or purely empty audio.
+        # Anything under 2048 bytes is mathematically a crashed or empty generation.
+        if len(audio_bytes) < 2048:
+            print(f"[CACHE GUARD] Audio too small ({len(audio_bytes)} bytes). Refusing to save.")
             return
 
         size_bytes = len(audio_bytes)
-        now = time.time()
+        current_time = time.time()
 
-        # Safely lock the database while writing
+        # 2. Database Write with Lock
         with self.lock:
             try:
-                conn = sqlite3.connect(str(self.db_path))
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
                 cursor = conn.cursor()
+                
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO audio_cache 
                     (cache_key, audio_data, size_bytes, created_at, accessed_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (cache_key, audio_bytes, size_bytes, now, now),
+                    (cache_key, audio_bytes, size_bytes, current_time, current_time),
                 )
+                
                 conn.commit()
                 conn.close()
             except Exception as e:
-                print(f"[CACHE WARNING] Failed to write to DB: {e}")
+                print(f"[CACHE WARNING] Failed to write to database: {e}")
 
-        # Enforce size limit outside the lock to prevent deadlocks
-        self._enforce_size_limit()
-        
-    def _ensure_db_ready(self):
-        """Self-healing: Ensure table exists before any operation."""
-        try:
-            conn = sqlite3.connect(str(self.db_path))
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM audio_cache LIMIT 1")
-            conn.close()
-        except sqlite3.OperationalError:
-            print("[CACHE RECOVERY] Table missing, re-initializing database...")
-            self._init_db()
+        # 3. Enforce limits outside of the lock to prevent deadlocks
+        self._cleanup_if_needed()
 
     def get(self, cache_key: str) -> Optional[bytes]:
-        """
-        Retrieve audio data from cache.
-        Updates access time (LRU tracking).
+        """Retrieve audio data and update its access time for LRU tracking."""
+        with self.lock:
+            try:
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                cursor = conn.cursor()
 
-        Returns:
-            bytes: WAV audio data, or None if not found
-        """
-        self._ensure_db_ready()
-        try:
-            conn = sqlite3.connect(str(self.db_path))
-            cursor = conn.cursor()
+                cursor.execute("SELECT audio_data FROM audio_cache WHERE cache_key = ?", (cache_key,))
+                row = cursor.fetchone()
 
-            # Get audio data
-            cursor.execute(
-                "SELECT audio_data FROM audio_cache WHERE cache_key = ?", (cache_key,)
-            )
-            row = cursor.fetchone()
+                if row is not None:
+                    # Update access time to prevent eviction
+                    cursor.execute(
+                        "UPDATE audio_cache SET accessed_at = ? WHERE cache_key = ?",
+                        (time.time(), cache_key),
+                    )
+                    conn.commit()
+                    conn.close()
+                    
+                    return row[0]
 
-            if row:
-                # Update access time (LRU)
-                cursor.execute(
-                    "UPDATE audio_cache SET accessed_at = ? WHERE cache_key = ?",
-                    (time.time(), cache_key),
-                )
-                conn.commit()
                 conn.close()
-                return row[0]
-
-            conn.close()
-            return None
-        except sqlite3.OperationalError:
-            self._init_db()
-            return None
-
-    def put(self, cache_key: str, audio_data: bytes):
-        """
-        Store audio data in cache.
-        Triggers LRU cleanup if size limit exceeded.
-
-        Args:
-            cache_key: MD5 hash key
-            audio_data: WAV file bytes
-        """
-        self._ensure_db_ready()
-        size_bytes = len(audio_data)
-        current_time = time.time()
-
-        try:
-            conn = sqlite3.connect(str(self.db_path))
-            cursor = conn.cursor()
-
-            # Insert or replace
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO audio_cache 
-                (cache_key, audio_data, size_bytes, created_at, accessed_at)
-                VALUES (?, ?, ?, ?, ?)
-            """,
-                (cache_key, audio_data, size_bytes, current_time, current_time),
-            )
-
-            conn.commit()
-            conn.close()
-
-            # Check if cleanup needed
-            self._cleanup_if_needed()
-        except sqlite3.OperationalError:
-            self._init_db()
+                return None
+                
+            except Exception as e:
+                print(f"[CACHE WARNING] Failed to read from database: {e}")
+                return None
 
     def _cleanup_if_needed(self):
         """
-        Evict oldest entries (LRU) if cache exceeds max size.
+        High/Low Watermark Cleanup logic. 
+        If max size is hit, purges the oldest files down to 75% capacity to prevent infinite loops.
         """
-        self._ensure_db_ready()
         total_size_mb = self.get_size_mb()
 
         if total_size_mb <= self.max_size_mb:
-            return  # Within limit
+            return
 
-        print(
-            f"\n[CACHE CLEANUP] Size {total_size_mb:.2f}MB exceeds {self.max_size_mb}MB limit"
-        )
+        # Calculate Low Watermark (75% of max size)
+        target_size_mb = self.max_size_mb * 0.75
+        target_size_bytes = int(target_size_mb * 1024 * 1024)
 
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
+        print(f"\n[CACHE CLEANUP] High Watermark reached: {total_size_mb:.2f}MB.")
+        print(f"[CACHE CLEANUP] Purging down to {target_size_mb:.2f}MB to restore breathing room...")
 
-        # Get all entries sorted by access time (oldest first)
-        cursor.execute(
-            """
-            SELECT cache_key, size_bytes, accessed_at 
-            FROM audio_cache 
-            ORDER BY accessed_at ASC
-        """
-        )
+        with self.lock:
+            try:
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                cursor = conn.cursor()
 
-        entries = cursor.fetchall()
-        current_size_bytes = sum(e[1] for e in entries)
-        target_size_bytes = int(self.max_size_mb * 1024 * 1024)
+                # Fetch all entries sorted by oldest access time
+                cursor.execute("SELECT cache_key, size_bytes FROM audio_cache ORDER BY accessed_at ASC")
+                entries = cursor.fetchall()
 
-        # Delete oldest until under limit
-        deleted_count = 0
-        for cache_key, size_bytes, accessed_at in entries:
-            if current_size_bytes <= target_size_bytes:
-                break
+                current_size_bytes = sum(entry[1] for entry in entries)
+                deleted_count = 0
 
-            cursor.execute("DELETE FROM audio_cache WHERE cache_key = ?", (cache_key,))
-            current_size_bytes -= size_bytes
-            deleted_count += 1
+                for cache_key, size_bytes in entries:
+                    if current_size_bytes <= target_size_bytes:
+                        break 
 
-        conn.commit()
-        conn.close()
+                    cursor.execute("DELETE FROM audio_cache WHERE cache_key = ?", (cache_key,))
+                    current_size_bytes -= size_bytes
+                    deleted_count += 1
 
-        final_size_mb = current_size_bytes / (1024 * 1024)
-        print(f"[CACHE CLEANUP] Deleted {deleted_count} entries")
-        print(f"[CACHE CLEANUP] New size: {final_size_mb:.2f}MB\n")
+                conn.commit()
+
+                # Force SQLite to physically shrink the .db file on the hard drive
+                cursor.execute("VACUUM")
+                conn.commit()
+                conn.close()
+
+                final_size_mb = current_size_bytes / (1024 * 1024)
+                print(f"[CACHE CLEANUP] Deleted {deleted_count} old entries.")
+                print(f"[CACHE CLEANUP] New disk size: {final_size_mb:.2f}MB. VACUUM complete.\n")
+                
+            except Exception as e:
+                print(f"[CACHE CLEANUP ERROR] Cleanup failed: {e}")
 
     def get_size_mb(self) -> float:
-        """Get total cache size in MB."""
-        self._ensure_db_ready()
-        try:
-            conn = sqlite3.connect(str(self.db_path))
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT SUM(size_bytes) FROM audio_cache")
-            total_bytes = cursor.fetchone()[0] or 0
-
-            conn.close()
-            return total_bytes / (1024 * 1024)
-        except sqlite3.OperationalError:
-            self._init_db()
-            return 0.0
+        """Calculate total cache size."""
+        with self.lock:
+            try:
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT SUM(size_bytes) FROM audio_cache")
+                result = cursor.fetchone()
+                total_bytes = result[0] if result[0] is not None else 0
+                
+                conn.close()
+                return total_bytes / (1024 * 1024)
+            except Exception:
+                return 0.0
 
     def get_count(self) -> int:
-        """Get total number of cached entries."""
-        self._ensure_db_ready()
-        try:
-            conn = sqlite3.connect(str(self.db_path))
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT COUNT(*) FROM audio_cache")
-            count = cursor.fetchone()[0]
-
-            conn.close()
-            return count
-        except sqlite3.OperationalError:
-            self._init_db()
-            return 0
+        """Count total cached entries."""
+        with self.lock:
+            try:
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT COUNT(*) FROM audio_cache")
+                result = cursor.fetchone()
+                count = result[0] if result[0] is not None else 0
+                
+                conn.close()
+                return count
+            except Exception:
+                return 0
 
     def clear_all(self) -> Tuple[int, float]:
-        """
-        Delete the database file and recreate schema.
+        """Wipe the entire database and instantly reclaim disk space by deleting the file."""
+        import os
+        with self.lock:
+            try:
+                # 1. Grab stats before destroying the database
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT COUNT(*), SUM(size_bytes) FROM audio_cache")
+                row = cursor.fetchone()
+                
+                count = row[0] if row[0] is not None else 0
+                size_mb = (row[1] / (1024 * 1024)) if row[1] is not None else 0.0
+                conn.close()
 
-        Returns:
-            (files_deleted, freed_mb)
-        """
-        try:
-            count = self.get_count()
-            size_mb = self.get_size_mb()
+                # 2. 🌟 INSTANT NUKE: Physically delete the database and WAL temporary files
+                # This is infinitely faster and safer than using DELETE FROM or VACUUM
+                for ext in ["", "-wal", "-shm"]:
+                    target_file = Path(str(self.db_path) + ext)
+                    if target_file.exists():
+                        try:
+                            target_file.unlink()
+                        except Exception as e:
+                            print(f"[CACHE WARNING] Could not delete {target_file.name}: {e}")
 
-            # Delete the file
-            if self.db_path.exists():
-                try:
-                    self.db_path.unlink()
-                    print(f"[CACHE] Deleted database file: {self.db_path}")
-                except Exception as e:
-                    print(
-                        f"[CACHE] Failed to delete file, falling back to DELETE FROM: {e}"
+                # 3. 🌟 SILENT REBUILD: Create a fresh, completely empty database
+                # (We do this inline to prevent thread-lock deadlocks)
+                conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                conn.execute('PRAGMA journal_mode=WAL;')
+                conn.execute('PRAGMA synchronous=NORMAL;')
+                cursor = conn.cursor()
+                
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audio_cache (
+                        cache_key TEXT PRIMARY KEY,
+                        audio_data BLOB NOT NULL,
+                        size_bytes INTEGER NOT NULL,
+                        created_at REAL NOT NULL,
+                        accessed_at REAL NOT NULL
                     )
-                    conn = sqlite3.connect(str(self.db_path))
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM audio_cache")
-                    conn.commit()
-                    conn.close()
+                    """
+                )
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_accessed_at ON audio_cache(accessed_at)")
+                conn.commit()
+                conn.close()
 
-            # Re-init
-            self._init_db()
-
-            return count, size_mb
-        except Exception as e:
-            print(f"[CACHE ERROR] Clear all failed: {e}")
-            self._init_db()
-            return 0, 0.0
+                print(f"\n[CACHE WIPE] Total Wipe Successful. Freed {size_mb:.2f}MB from {count} files.\n")
+                return count, size_mb
+                
+            except Exception as e:
+                print(f"[CACHE ERROR] Clear all failed: {e}")
+                return 0, 0.0

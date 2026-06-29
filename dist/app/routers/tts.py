@@ -10,6 +10,8 @@ from typing import Dict
 import sys
 import json
 from pathlib import Path
+import threading
+import multiprocessing
 
 # Add app logic to path for imports
 base_dir_parent = Path(__file__).parent.parent
@@ -29,7 +31,6 @@ except ImportError:
     from text_normalizer import apply_custom_pronunciations, fix_special_formats
     from syllable import estimate_phonemes
     from language_switcher import smart_polyglot_split  
-    # 🌟 FIX 1: Corrected fallback import paths
     from japanese_g2p import pure_japanese_to_romaji
     from chinese_g2p import cleanse_chinese_text 
 
@@ -41,65 +42,39 @@ from kokoro_onnx import SAMPLE_RATE
 
 router = APIRouter()
 
-# ==========================================
-# AUDIO ENGINEERING MASTER FIXES
-# ==========================================
-
 def create_anti_skip_silence(duration_ms, sample_rate=24000):
-    """Generates mathematically non-zero silence to prevent browser/OS optimization skipping."""
     if duration_ms <= 0:
         return np.array([], dtype=np.float32)
     frames = int((duration_ms / 1000.0) * sample_rate)
-    # Inject microscopic noise (-80dB) to defeat pure-silence fast-forwarding
     return np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
 
-import threading
-import multiprocessing
-import hashlib
-
-# ==========================================
-# CPU CORE MANAGER & ROBUST CACHE LINKING
-# ==========================================
-# Count total cores for every 6 that have will reserved more 1 core/thread
-# For example has 6 thread will reserved 1 if has 16 will reserved 2 core/thread
 _total_cores = multiprocessing.cpu_count()
 _reserved_cores = max(1, _total_cores // 6)
 _safe_cores = max(1, _total_cores - _reserved_cores)
 cpu_semaphore = threading.Semaphore(_safe_cores)
 
-print(f"[Engine] CPU Core Manager active: Utilizing {_safe_cores}/{_total_cores} threads (Reserved: {_reserved_cores}).")
-
-# Thread-safe dictionary for exact audio matches to prevent redundant processing
 _robust_link_cache = {}
 _cache_lock = threading.Lock()
 
 def generate_locked_audio(kokoro_inst, text, voice, speed, lang, target_len):
-    """Safely generates audio using CPU core limits and robust cache linking."""
-    
-    # 1. Generate unique Link ID for the cache check
     cache_string = f"{text}|{voice}|{speed}|{lang}".encode('utf-8')
     cache_key = hashlib.md5(cache_string).hexdigest()
     
-    # 2. Check Link Cache (Robust Read)
     with _cache_lock:
         if cache_key in _robust_link_cache:
             return _robust_link_cache[cache_key]
             
-    # 3. Generate using available CPU threads (Semaphore limit)
     try:
         with cpu_semaphore:
             audio_data = kokoro_inst.create(text, voice, speed, lang)
             
-        # 4. Save to Link Cache (Robust Write)
         if audio_data is not None and len(audio_data[0].flatten()) > 0:
             with _cache_lock:
-                # Prevent memory overflow by capping cache size at 500 links
                 if len(_robust_link_cache) > 500:
                     _robust_link_cache.clear()
                 _robust_link_cache[cache_key] = audio_data
                 
         return audio_data
-        
     except Exception as e:
         print(f"[Engine] Audio generation failed on CPU thread: {e}. Bypassing with silence.")
         return create_anti_skip_silence(500, 24000), 24000
@@ -168,80 +143,182 @@ def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
             
     return final_chunks
 
-# 🌟 FIX 2: Added `lang` parameter to securely pass the 'en-us' Romaji override
+# ==========================================
+# 🌟 NEW FUNCTION: PRE-PROCESSOR SHIELD 🌟
+# ==========================================
+def sanitize_typography_for_engine(text: str) -> str:
+    if not text:
+        return text
+        
+    import re
+    import unicodedata
+
+    # ==========================================
+    # 🛡️ PHASE 1: UNICODE & INVISIBLE CHARACTERS
+    # ==========================================
+    # 1. NFKC Normalization: Converts "Full-Width" Asian/English hybrids (Ｈｅｌｌｏ) 
+    # and weird ligatures into standard ASCII so Kokoro can read them.
+    text = unicodedata.normalize('NFKC', text)
+
+    # 2. Vaporize Invisible Formatting (Zero-Width Spaces, BOMs, LRM/RLM markers)
+    # These characters are invisible but cause Kokoro to output heavy, awkward pauses.
+    text = re.sub(r'[\u200B-\u200D\uFEFF\u200E\u200F\u00A0]', ' ', text)
+
+    # 3. The Emoji & Symbol Vaporizer 
+    # Kokoro crashes on Emojis. This regex safely strips out high-plane emojis 
+    # while perfectly preserving English, Japanese, Chinese, and standard punctuation.
+    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
+
+    # ==========================================
+    # 🛡️ PHASE 2: TYPOGRAPHY & PUNCTUATION
+    # ==========================================
+    # 4. Standardize all quote formats
+    text = text.replace('’', "'").replace('‘', "'").replace('“', '"').replace('”', '"')
+    text = text.replace('«', '"').replace('»', '"').replace('`', "'")
+    
+    # 5. Asian punctuation to Standard ASCII
+    text = text.replace('。', '.').replace('、', ',').replace('！', '!').replace('？', '?')
+    text = text.replace('…', '...').replace('．', '.').replace('，', ',')
+    
+    # 6. Normalize mutant ellipses (e.g., ".....", "....") into a standard 3 dots
+    text = re.sub(r'\.{4,}', '...', text)
+
+    # ==========================================
+    # 🛡️ PHASE 3: THE COMMA & NUMBER SHIELDS
+    # ==========================================
+    # 7. Protect decimals and thousands separators (100,000 / 3.14)
+    text = re.sub(r'(?<=\d),(?=\d)', '<NUM_COM>', text)
+    text = re.sub(r'(?<=\d)\.(?=\d)', '<NUM_DOT>', text)
+    text = re.sub(r'(?<=\d):(?=\d)', '<NUM_COL>', text)
+    
+    # 8. Group 1: Zero-Pause Bypass (Direct addresses, conversational glue, tags)
+    g1_before = r"(?i),\s*(too|sir|ma'am|yeah|then|ever|right|isn't it|is it|do you|don't you|won't you|can you|will you|man|bro|buddy|honey|darling|my lord|child|boy|girl|guys|idiot|fool|no matter what)(?:\b|\?)"
+    text = re.sub(g1_before, r'<BYP_COM> \1', text)
+
+    g1_after = r"(?i)\b(oh|ah|me|you|wait|please|no|yes)\s*,"
+    text = re.sub(g1_after, r'\1<BYP_COM>', text)
+
+    # 9. Group 2: Micro-Pause Cap (Transitions, starters, modifiers)
+    g2_after = r"(?i)\b(again|then|huh|after all|are they|guys|anyway|either|indeed|though|now|later|soon|first|next|finally|suddenly|however|therefore|furthermore|in fact|of course|for example|meanwhile|otherwise|besides|honestly|seriously|luckily|fortunately|sadly|obviously|clearly|actually|basically|well|so|say|listen|look)\s*,"
+    text = re.sub(g2_after, r'\1<CAP_COM>', text)
+    
+    # 10. Fix squished punctuation safely (e.g., "Wait!Stop" -> "Wait! Stop")
+    text = re.sub(r'([\.!\?:;,]+)(?=[a-zA-Z0-9])', r'\1 ', text)
+    
+    # 11. Drop the Number shield (So normalizers can read the numbers correctly)
+    text = text.replace('<NUM_COM>', ',').replace('<NUM_DOT>', '.').replace('<NUM_COL>', ':')
+    
+    # 12. Final cleanup of multiple spaces created by replacements
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
 def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause_settings: Dict[str, int], behavior_settings: Dict[str, int] = None):
     if behavior_settings is None:
         behavior_settings = {}
         
     import app.state as state_module
+    import re
     
-    active_punc = ""
-    if pause_settings.get("comma", 100) > 0: active_punc += r",，、"
-    if pause_settings.get("period", 100) > 0: active_punc += r"\.。"
-    if pause_settings.get("question", 100) > 0: active_punc += r"\?？"
-    if pause_settings.get("exclamation", 100) > 0: active_punc += r"!！"
-    if pause_settings.get("colon", 100) > 0: active_punc += r":："
-    if pause_settings.get("semicolon", 100) > 0: active_punc += r";；"
+    # 🌟 SHIELD: Strip trailing newlines to prevent the internal loop from 
+    # double-stacking 500ms on top of your H1/Img behavioral pauses!
+    text = text.strip()
     
-    if active_punc:
-        split_regex = f"([{active_punc}]+|\n)"
-        match_regex = f"^[{active_punc}]+$"
-    else:
-        split_regex = r"(\n)"
-        match_regex = r"^\n$"
-
-    segments = re.split(split_regex, text)
+    # Number shield (Phase 2)
+    
+    # Number shield (Phase 2)
+    text = re.sub(r'(?<=\d),(?=\d)', '<NUM_COM>', text)
+    text = re.sub(r'(?<=\d)\.(?=\d)', '<NUM_DOT>', text)
+    text = re.sub(r'(?<=\d):(?=\d)', '<NUM_COL>', text)
+    
+    # 🌟 ADDED <CAP_COM> TO THE SPLITTER 🌟
+    # Notice <BYP_COM> is missing. This intentionally traps Group 1 commas 
+    # in the buffer so they are bypassed completely!
+    split_regex = r"([,，、\.。\?？!！:：;；]+|<CAP_COM>|\n)"
+    raw_pieces = re.split(split_regex, text)
+    
     sample_rate = SAMPLE_RATE
     plan = []
-
-    char_map = {
-        ",": "comma", "，": "comma", "、": "comma", ".": "period", "。": "period",
-        "?": "question", "？": "question", "!": "exclamation", "！": "exclamation",
-        ":": "colon", "：": "colon", ";": "semicolon", "；": "semicolon",
-    }
-
-    for i, segment in enumerate(segments):
-        clean_segment = segment.strip()
+    char_map = {",": "comma", "，": "comma", "、": "comma", ".": "period", "。": "period", "?": "question", "？": "question", "!": "exclamation", "！": "exclamation", ":": "colon", "：": "colon", ";": "semicolon", "；": "semicolon"}
+    
+    current_text_buffer = ""
+    
+    for i in range(0, len(raw_pieces), 2):
+        text_chunk = raw_pieces[i]
+        punc_chunk = raw_pieces[i+1] if i + 1 < len(raw_pieces) else ""
         
-        if segment == "\n":
-            dynamic_newline_ms = behavior_settings.get("N", 500)
-            plan.append({"type": "silence", "ms": dynamic_newline_ms})
-            continue
+        current_text_buffer += text_chunk + punc_chunk
+        punc_str = punc_chunk.strip()
+        
+        pause_ms = 0
+        
+        if punc_chunk == "\n":
+            pause_ms = behavior_settings.get("N", 500)
+        elif punc_str == "<CAP_COM>":
+            # ==========================================
+            # 🌟 ROUTE C: DYNAMIC MICRO-PAUSE CAP 🌟
+            # ==========================================
+            base_pause = int(pause_settings.get("comma", 0))
+            dynamic_cap = int(150 / speed) # Math: 1.0x = 150ms | 1.35x = 111ms
+            
+            # Use the user's comma setting, UNLESS it exceeds the dynamic cap.
+            pause_ms = min(base_pause, dynamic_cap) if base_pause > 0 else 0
+            
+        elif punc_str:
+            spam_count = len(re.findall(r'[\.。\?？!！]', punc_str))
+            
+            if spam_count >= 2:
+                spam_multiplier = int(pause_settings.get("period", 0))
+                pause_ms = spam_multiplier * (spam_count - 1)
+            else:
+                last_char = punc_str[-1]
+                mapped_key = char_map.get(last_char)
+                if mapped_key:
+                    pause_ms = int(pause_settings.get(mapped_key, 0))
+                    
+        if pause_ms > 0:
+            has_words = bool(re.search(r'[a-zA-Z0-9\u3040-\u30ff\u4e00-\u9faf]', current_text_buffer))
+            
+            if has_words:
+                # 🌟 UNSHIELD EVERYTHING 🌟
+                clean_text = current_text_buffer.strip().replace('<NUM_COM>', ',').replace('<NUM_DOT>', '.').replace('<NUM_COL>', ':').replace('<BYP_COM>', ',').replace('<CAP_COM>', ',')
+                
+                plan.append({"type": "tts", "text": clean_text})
+                plan.append({"type": "silence", "ms": pause_ms})
+                current_text_buffer = "" 
+            else:
+                plan.append({"type": "silence", "ms": pause_ms})
 
-        if not clean_segment:
-            continue
+    if current_text_buffer.strip():
+        has_words = bool(re.search(r'[a-zA-Z0-9\u3040-\u30ff\u4e00-\u9faf]', current_text_buffer))
+        if has_words:
+            # 🌟 UNSHIELD EVERYTHING ON FINAL FLUSH 🌟
+            clean_text = current_text_buffer.strip().replace('<NUM_COM>', ',').replace('<NUM_DOT>', '.').replace('<NUM_COL>', ':').replace('<BYP_COM>', ',').replace('<CAP_COM>', ',')
+            plan.append({"type": "tts", "text": clean_text})
 
-        if re.match(match_regex, clean_segment):
-            last_char = clean_segment[-1]
-            pause_ms = pause_settings.get(char_map.get(last_char), 100) if char_map.get(last_char) else 0
-            plan.append({"type": "silence", "ms": pause_ms})
-        else:
-            if re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", clean_segment):
-                sub_chunks = graceful_chunk_for_tts(clean_segment)
-                full_paragraph_len = estimate_phonemes(clean_segment)
-                for sc_idx, sc_dict in enumerate(sub_chunks):
-                    plan.append({
-                        "type": "tts", 
-                        "text": sc_dict["text"], 
-                        "index": f"{i}_{sc_idx}",
-                        "target_len": full_paragraph_len,
-                        "is_cut": sc_dict["is_cut"]
-                    })
-
-    tts_tasks = [p for p in plan if p["type"] == "tts"]
+    # ==========================================
+    # AUDIO GENERATION & CONCATENATION 
+    # ==========================================
     audio_map = {}
+    tts_tasks = [p for p in plan if p["type"] == "tts"]
 
     if tts_tasks and state_module.kokoro:
-        for t in tts_tasks:
-            idx = t["index"]
-            target_len = t.get("target_len", 510)
-            try:
-                # 🌟 Safely uses the passed-in `lang` override
-                samples, _ = generate_locked_audio(state_module.kokoro, t["text"], voice, speed, lang, target_len)
-                audio_map[idx] = samples.flatten()
-            except Exception as e:
-                print(f"Segment {idx} failed: {e}")
-                audio_map[idx] = None
+        for idx, t in enumerate(tts_tasks):
+            t["index"] = f"task_{idx}" 
+            full_len = estimate_phonemes(t["text"])
+            
+            sub_chunks = graceful_chunk_for_tts(t["text"])
+            chunk_audios = []
+            
+            for sc_dict in sub_chunks:
+                try:
+                    samples, _ = generate_locked_audio(state_module.kokoro, sc_dict["text"], voice, speed, lang, full_len)
+                    if samples is not None and len(samples.flatten()) > 0:
+                        chunk_audios.append(samples.flatten())
+                except Exception as e:
+                    print(f"Segment failed: {e}")
+                    
+            audio_map[t["index"]] = np.concatenate(chunk_audios) if chunk_audios else None
 
     final_segments = []
     for item in plan:
@@ -317,26 +394,34 @@ async def get_locale(lang: str):
 async def synthesize(request: SynthesisRequest):
     import app.state as state_module
     from fastapi import HTTPException
+    import re
+    import io
+    import numpy as np
+    import soundfile as sf
+    from fastapi.responses import StreamingResponse
     
     if state_module.kokoro is None: raise HTTPException(status_code=503, detail="TTS Engine not initialized.")
 
     original_text = request.text
-    structural_pause_ms = 0
     
+    # 🌟 CAPTURE TRAILING NEWLINE BEFORE SANITIZER EATS IT
+    had_trailing_newline = original_text.endswith('\n')
+    
+    structural_pause_ms = 0
     pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", original_text)
     if pause_match:
         structural_pause_ms = int(pause_match.group(1))
         original_text = original_text.replace(pause_match.group(0), "")
 
-    # FRONTEND TAG VAPORIZER
     safe_text = re.sub(r'<img[^>]*>', '', original_text, flags=re.IGNORECASE)
     safe_text = re.sub(r'<[^>]+>', '', safe_text) 
     safe_text = re.sub(r'\[(?:IMAGE|IMG|VIDEO).*?\]', '', safe_text, flags=re.IGNORECASE)
     
+    safe_text = sanitize_typography_for_engine(safe_text)
+    
     request.text = safe_text
     original_text = safe_text 
 
-    # 1. Secure Voice and Language First
     try:
         voices = state_module.kokoro.get_voices()
         selected_voice = request.voice if request.voice in voices else "af_heart"
@@ -345,7 +430,6 @@ async def synthesize(request: SynthesisRequest):
         selected_voice = "af_heart"
         main_voice_lang = "en-us"
 
-    # 2. Process Text Normalization with Active Language Context
     try:
         text = fix_special_formats(request.text, main_voice_lang)
         rules_data = [r.model_dump() for r in request.rules] if request.rules else []
@@ -354,23 +438,74 @@ async def synthesize(request: SynthesisRequest):
         text = fix_special_formats(request.text, main_voice_lang)
 
     try:
-        # POLYGLOT SLICER INTERCEPTOR
         polyglot_segments = smart_polyglot_split(text, selected_voice, get_language_from_voice)
         
         pause_settings = request.pause_settings or {}
         b_type = request.behavior_type or "N"
         b_settings = request.behavior_settings or {"H": 2000, "Img": 3000, "S": 1000, "N": 500}
         
+        # ==========================================
+        # 🌟 NEW: THE SPLIT-PAUSE BEHAVIOR ENGINE 🌟
+        # ==========================================
+        behavior_front_pause_ms = 0
+        behavior_end_pause_ms = 0
+        
         if b_type.startswith("H"):
             h_base = b_settings.get("H", 2000)
-            if h_base <= 0: behavior_pause_ms = 0
-            elif b_type == "H1": behavior_pause_ms = h_base
-            elif b_type == "H2": behavior_pause_ms = h_base / 2.0
-            elif b_type == "H3": behavior_pause_ms = (h_base / 2.0) / 1.5
-            else: behavior_pause_ms = ((h_base / 2.0) / 1.5) / 1.5
-            behavior_pause_ms = int(behavior_pause_ms)
-        else:
-            behavior_pause_ms = b_settings.get(b_type, 500)
+            if h_base > 0:
+                if b_type == "H1": base_calc = h_base
+                elif b_type == "H2": base_calc = h_base / 2.0
+                elif b_type == "H3": base_calc = (h_base / 2.0) / 1.5
+                else: base_calc = ((h_base / 2.0) / 1.5) / 1.5
+                
+                # The Golden Ratio for Headings!
+                # 100% pause BEFORE reading, 30% pause AFTER reading. Max cap 10 seconds.
+                behavior_front_pause_ms = min(int(base_calc), 10000) 
+                behavior_end_pause_ms = min(int(base_calc * 0.30), 10000)
+                
+        elif b_type == "Img":
+            behavior_end_pause_ms = int(b_settings.get("Img", 3000))
+            
+        elif b_type == "S":
+            behavior_end_pause_ms = int(b_settings.get("S", 1000))
+            
+        elif b_type == "N":
+            if had_trailing_newline:
+                stripped_text = original_text.strip()
+                has_hard_punc_at_end = False
+                
+                if stripped_text:
+                    last_char = stripped_text[-1]
+                    if last_char in [".", "!", "?", "。", "！", "？", "…"]:
+                        has_hard_punc_at_end = True
+                    elif len(stripped_text) > 1 and last_char in ['"', "'", '”', '’', '」', '』']:
+                        if stripped_text[-2] in [".", "!", "?", "。", "！", "？", "…"]:
+                            has_hard_punc_at_end = True
+                
+                # THE NULLIFIER
+                if has_hard_punc_at_end:
+                    behavior_end_pause_ms = 0
+                else:
+                    behavior_end_pause_ms = int(b_settings.get("N", 500))
+            if had_trailing_newline:
+                stripped_text = original_text.strip()
+                has_hard_punc_at_end = False
+                
+                if stripped_text:
+                    last_char = stripped_text[-1]
+                    # Check 1: Does it end exactly on a punctuation mark?
+                    if last_char in [".", "!", "?", "。", "！", "？", "…"]:
+                        has_hard_punc_at_end = True
+                    # Check 2: The Quote Penetrator (e.g. "Are you crazy?!")
+                    elif len(stripped_text) > 1 and last_char in ['"', "'", '”', '’', '」', '』']:
+                        if stripped_text[-2] in [".", "!", "?", "。", "！", "？", "…"]:
+                            has_hard_punc_at_end = True
+                
+                # 🌟 THE NULLIFIER: If punctuation handled the pause, N becomes 0!
+                if has_hard_punc_at_end:
+                    behavior_pause_ms = 0
+                else:
+                    behavior_pause_ms = int(b_settings.get("N", 500))
 
         cache_key = generate_cache_key(original_text, selected_voice, float(request.speed or 1.0), pause_settings, request.rules, request.ignore_list, b_settings, b_type)
         
@@ -378,12 +513,11 @@ async def synthesize(request: SynthesisRequest):
         if cached_audio:
             return StreamingResponse(io.BytesIO(cached_audio), media_type="audio/wav", headers={"Content-Length": str(len(cached_audio))})
 
-        has_pause_settings = any(val > 0 for val in pause_settings.values()) if isinstance(pause_settings, dict) else False
         punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
         has_punctuation = any(p in text for p in punctuation_chars)
 
         if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text):
-            total_pause = structural_pause_ms + behavior_pause_ms
+            total_pause = structural_pause_ms + behavior_end_pause_ms + behavior_front_pause_ms
             if total_pause <= 0: total_pause = 100
             samples = create_anti_skip_silence(total_pause, 24000)
             sample_rate = 24000
@@ -402,45 +536,29 @@ async def synthesize(request: SynthesisRequest):
                 if not raw_text.strip(): 
                     continue
                     
-                # ==========================================
-                # THE POLYGLOT RESOLUTION MATRIX (Overlap Protection)
-                # ==========================================
                 final_text = raw_text
                 final_engine_lang = native_voice_lang
                 
-                # 1. JAPANESE OVERLAP PROTECTION (Pure-Python Bypass)
                 if detected_lang == 'ja' or native_voice_lang.startswith('ja'):
                     final_text = pure_japanese_to_romaji(final_text)
-                    # Force engine to read Romaji via US phonetics to bypass missing C++ openjtalk dependency
                     final_engine_lang = 'en-us'
-                
-                # 2. CHINESE OVERLAP PROTECTION (Acoustic Shield)
                 elif detected_lang == 'cmn' or native_voice_lang.startswith('cmn') or native_voice_lang.startswith('zh'):
                     final_text = cleanse_chinese_text(final_text)
-                    # If Main Voice is English but reading Chinese Pinyin, protect the English phonetic rules
                     if main_voice_lang.startswith('en') and seg_voice == selected_voice:
                         final_engine_lang = 'en-us'
                     else:
                         final_engine_lang = native_voice_lang
-                
-                # 3. ENGLISH & EUROPEAN OVERLAP PROTECTION
                 else:
-                    # If a Main Japanese/Chinese Voice encounters isolated English text, 
-                    # switch engine flag to 'en-us' to prevent tokenizer crash and silence
                     if main_voice_lang.startswith('ja') or main_voice_lang.startswith('cmn'):
                         final_engine_lang = 'en-us'
                     else:
                         final_engine_lang = native_voice_lang
 
-                # Re-verify text is not empty after conversion filters to prevent zero-length crashes
                 if not final_text.strip():
                     continue
 
-                # ==========================================
-                # AUDIO GENERATION & QUEUE RECORDING
-                # ==========================================
                 try:
-                    if has_pause_settings and has_punctuation:
+                    if has_punctuation:
                         seg_samples, sr = synthesize_with_pauses(
                             text=final_text, 
                             voice=seg_voice, 
@@ -474,18 +592,26 @@ async def synthesize(request: SynthesisRequest):
                         
             samples = np.concatenate(chunk_audios) if chunk_audios else np.array([], dtype=np.float32)
 
-            if b_type == "N" and text.endswith("\n") and has_pause_settings and has_punctuation:
-                behavior_pause_ms = 0
-                
-            total_end_pause_ms = structural_pause_ms + behavior_pause_ms
+            total_front_pause_ms = behavior_front_pause_ms
+            total_end_pause_ms = structural_pause_ms + behavior_end_pause_ms
             
+            # 🌟 Apply the Pre-Reading Delay (Front Pause)
+            if total_front_pause_ms > 0:
+                frames = int((total_front_pause_ms / 1000.0) * sample_rate)
+                front_pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
+                if len(samples) > 0:
+                    samples = np.concatenate([front_pause_arr, samples])
+                else:
+                    samples = front_pause_arr
+
+            # 🌟 Apply the Post-Reading Delay (End Pause)
             if total_end_pause_ms > 0:
                 frames = int((total_end_pause_ms / 1000.0) * sample_rate)
-                pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
+                end_pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
                 if len(samples) > 0:
-                    samples = np.concatenate([samples, pause_arr])
+                    samples = np.concatenate([samples, end_pause_arr])
                 else:
-                    samples = pause_arr
+                    samples = end_pause_arr
 
             if len(samples) == 0:
                 samples = create_anti_skip_silence(100, 24000)

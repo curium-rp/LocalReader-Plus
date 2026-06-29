@@ -2,30 +2,111 @@ import re
 from typing import List, Dict, Any
 from num2words import num2words
 
+
+
+# 1. The Stutter Map: Supports 1-3 letter stutters (Digraphs and Blends)
+STUTTER_MAP = {
+    'b': 'bih', 'c': 'kih', 'd': 'dih', 'f': 'fih', 'g': 'gih', 'h': 'hih', 
+    'j': 'jih', 'k': 'kih', 'l': 'lih', 'm': 'mih', 'n': 'nih', 'p': 'pih', 
+    'q': 'kwih', 'r': 'rih', 's': 'sih', 't': 'tih', 'v': 'vih', 'w': 'wih', 
+    'y': 'yih', 'z': 'zih',
+    'a': 'ah', 'e': 'eh', 'i': 'ih', 'o': 'oh', 'u': 'uh',
+    'sh': 'shih', 'ch': 'chih', 'th': 'thih', 'ph': 'fih', 'wh': 'wih',
+    'br': 'brih', 'cr': 'krih', 'dr': 'drih', 'fr': 'frih', 'gr': 'grih', 'pr': 'prih', 'tr': 'trih',
+    'bl': 'blih', 'cl': 'klih', 'fl': 'filih', 'gl': 'glih', 'pl': 'plih', 'sl': 'slih',
+    'sc': 'skih', 'sm': 'smih', 'sn': 'snih', 'sp': 'spih', 'st': 'stih', 'sw': 'swih'
+}
+
+# 2. The Interjection Map: Added missing fillers (hmm, mmm, uh)
+INTERJECTION_MAP = {
+    r'h+m+': 'hum',       
+    r'm{2,}': 'uhm',      
+    r'u+h+': 'uh',        
+    r'rgh+': 'urgh',      
+    r'grr+': 'gurr',      
+    r'ugh+': 'uhg', 
+    r'tch': 'tisk', 
+    r'gah': 'gah',
+    r'ngh+': 'ung',       
+    r'oof+': 'oof', 
+    r'ack': 'ack', 
+    r'urk': 'erk',
+    r'hmph': 'humph', 
+    r'pff+t?': 'pufft',   
+    r'bah': 'bah', 
+    r'tsk(?:\-tsk)?': 'tisk, tisk',
+    r'eep': 'eep', 
+    r'kyaa+': 'kya', 
+    r'hiii+e?': 'heee',   
+    r'phew': 'fyoo', 
+    r'whew': 'hweo',
+    r'hngh+': 'hung',
+    r'sigh': 'haah'
+}
+
 def fix_broken_words(text: str) -> str:
-    """Fixes PDF artifacts like ligatures, ghost spaces, and mid-word hyphens."""
+    if not text:
+        return text
+
+    # ==========================================
+    # 🌟 NEW: THE PDF GHOST SPACE MAGNET 🌟
+    # ==========================================
+    # Snaps broken contractions "We ' re" perfectly into "We're"
+    text = re.sub(r'([a-zA-Z])\s*([\'’])\s*([a-zA-Z])', r'\1\2\3', text)
+    
+    # Protects plural possessives: Snaps "boys '" back into "boys'"
+    text = re.sub(r'([sS])\s+([\'’])(?=\s|$)', r'\1\2', text)
+
     # 0. Ligatures
     ligatures = {'\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl', '\ufb03': 'ffi', '\ufb04': 'ffl', '\ufb05': 'ft', '\ufb06': 'st', '\u00a0': ' ', '\u2013': '-', '\u2014': '--'}
-    for char, rep in ligatures.items(): text = text.replace(char, rep)
+    for char, rep in ligatures.items(): 
+        text = text.replace(char, rep)
 
-    # 1. De-hyphenation
+    # 1. De-hyphenation 
     text = re.sub(r'(\w+)-\s+(\w+)', r'\1 \2', text)
     
-    # 2. Ghost spaces in common words
-    common = [(r'\bo\s+ff\b', 'off'), (r'\bo\s+f\b', 'of'), (r'\ba\s+nd\b', 'and'), (r'\bt\s+he\b', 'the'), (r'\bi\s+n\b', 'in'), (r'\bi\s+t\b', 'it'), (r'\bi\s+s\b', 'is'), (r'\bt\s+o\b', 'to'), (r'\bs\s+t\b', 'st')]
-    for pat, rep in common: text = re.sub(pat, rep, text, flags=re.IGNORECASE)
+    # 2. Ghost spaces in common words & Broken PDF Ellipses
+    common = [
+        (r'\bo\s+ff\b', 'off'), (r'\bo\s+f\b', 'of'), (r'\ba\s+nd\b', 'and'), 
+        (r'\bt\s+he\b', 'the'), (r'\bi\s+n\b', 'in'), (r'\bi\s+t\b', 'it'), 
+        (r'\bi\s+s\b', 'is'), (r'\bt\s+o\b', 'to'), (r'\bs\s+t\b', 'st'),
+        (r'\.\s+\.\s+\.', '...'), (r'\.\s+\.', '..')
+    ]
+    for pat, rep in common: 
+        text = re.sub(pat, rep, text, flags=re.IGNORECASE)
 
-    # 3. Recursive single letter join (e.g. "W o r d" -> "Word")
+    # 3. Recursive single letter join 
     old = ""
     while old != text:
         old = text
         text = re.sub(r'(?:^|(?<=\s))([a-zA-Z])\s+([a-zA-Z])(?=\s|$)', r'\1\2', text)
     
-    # 4. Cleanup punctuation spaces
-    text = re.sub(r'([\"\'\(\[\{\u201c\u2018\u201d\u2019])\s+', r'\1', text)
-    text = re.sub(r'\s+([\"\'\)\\\}\]\u201c\u2018\u201d\u2019])', r'\1', text)
-    text = re.sub(r'(?<=[\"\'\u201c\u2018\u201d\u2019])\s+', '', text)
-    text = re.sub(r'\s+(?=[\"\'\u201c\u2018\u201d\u2019])', '', text)
+    # 4. Dynamic Stutter Resolution (Strict Map Activation 1-3 letters)
+    def resolve_stutter(match):
+        original_letters = match.group(1)
+        remainder_of_word = match.group(2)
+        lookup_letter = original_letters.lower()
+        
+        if lookup_letter in STUTTER_MAP:
+            phonetic = STUTTER_MAP[lookup_letter]
+            phonetic_cased = phonetic.capitalize() if original_letters[0].isupper() else phonetic
+            return f"{phonetic_cased} {remainder_of_word}"
+        
+        return f"{original_letters}-{remainder_of_word}"
+
+    # Shield apostrophes/numbers, allow 1 to 3 letters for blends
+    text = re.sub(r'(?<![a-zA-Z0-9\'])([a-zA-Z]{1,3})-([a-zA-Z]+)', resolve_stutter, text)
+
+    # 5. Static Interjections (Match Whole Words)
+    for pattern, phonetic_replacement in INTERJECTION_MAP.items():
+        text = re.sub(r'\b' + pattern + r'\b', phonetic_replacement, text, flags=re.IGNORECASE)
+
+    # 6. Grammar-Aware Punctuation Cleanup
+    # ONLY targets structural brackets and double-quotes. 
+    # Apostrophes (') are explicitly EXCLUDED to permanently protect possessives (boys').
+    
+    text = re.sub(r'([\"\(\[\{\u201c])\s+', r'\1', text) # Remove spaces AFTER opening quotes/brackets
+    text = re.sub(r'\s+([\"\)\}\]\u201d])', r'\1', text) # Remove spaces BEFORE closing quotes/brackets
     
     return re.sub(r'\s+', ' ', text).strip()
 

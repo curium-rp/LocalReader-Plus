@@ -27,31 +27,29 @@ try:
     from logic.smart_content_detector import (
         detect_headers_footers,
         apply_header_footer_filter,
-        generate_toc
+        detect_strict_scene_break
     )
+    from logic.html_normalizer import generate_toc
 except ImportError:
     sys.path.append(str(base_dir))
     try:
         from logic.smart_content_detector import (
             detect_headers_footers,
             apply_header_footer_filter,
-            generate_toc
+            detect_strict_scene_break
         )
+        from logic.html_normalizer import generate_toc
     except ImportError:
         pass
 
 router = APIRouter()
 
-# =========================================
-# NEW STRUCTURAL PAYLOAD MODEL
-# =========================================
 class ProgressUpdatePayload(BaseModel):
     currentPage: int
     lastSentenceId: Optional[str] = None
     lastSentenceIndex: int
     lastAccessed: float
 
-# --- SURGICAL HELPER: Backward Compatibility ---
 def get_doc_json_path(doc_id: str) -> Path:
     new_path = content_dir / doc_id / f"{doc_id}.json"
     if new_path.exists():
@@ -61,18 +59,71 @@ def get_doc_json_path(doc_id: str) -> Path:
         return old_path
     raise HTTPException(status_code=404, detail="Document not found")
 
+# =========================================
+# 🌟 NEW: THE MASTER SENTENCE SPLITTER 🌟
+# =========================================
+def master_sentence_splitter(text: str, start_idx: int = 0):
+    text = text.strip()
+    if not text: 
+        return "", start_idx
+        
+    import re
+    text = re.sub(r'\.\s+\.\s+\.', '...', text)
+    
+    abbreviations = [
+        "Mr", "Mrs", "Ms", "Dr", "Prof", "St", "Rd", "Ave", "Capt",
+        "Gen", "Sen", "Rep", "Gov", "Fig", "No", "Op", "vs", "etc",
+        "Inc", "Ltd", "Co"
+    ]
+    for abbr in abbreviations:
+        text = re.sub(rf'\b({abbr})\.(?=\s)', r'\1<ABBR>', text, flags=re.IGNORECASE)
+        
+    text = re.sub(r'(?i)\b(e\.g)\.(?=\s)', r'\1<ABBR>', text)
+    text = re.sub(r'(?i)\b(i\.e)\.(?=\s)', r'\1<ABBR>', text)
+    
+    # 🌟 FIX 1: FULL STOP ONLY 
+    # Removed ! and ? so fast dialogue and questions stay glued together!
+    pattern = (
+        r'(?<=[.])\s+(?=[A-Z"\'\u201c\u2018])|'
+        r'(?<=[.][\'"”’])\s+(?=[A-Z"\'\u201c\u2018])|'
+        r'(?<=[。])\s*(?=[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])|'
+        r'(?<=[。][\'"”’])\s*(?=[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
+    )
+    # 🌟 FIX: Clean chunks early so we can index them accurately
+    raw_chunks = re.split(pattern, text)
+    chunks = [c.strip() for c in raw_chunks if c.strip()]
+    
+    html_out = ""
+    current_idx = start_idx
+    buffer = ""
+    
+    for i, c in enumerate(chunks):
+        if buffer:
+            buffer += " " + c
+        else:
+            buffer = c
+            
+        # Count approximate words in the current buffer
+        word_count = len(re.findall(r'\b\w+\b', buffer))
+        
+        # 🌟 FIX: Bulletproof array index check
+        # Wait if it's too short AND not the last chunk in the array
+        if word_count < 4 and i != len(chunks) - 1:
+            continue
+            
+        clean_chunk = buffer.replace('<ABBR>', '.')
+        html_out += f'<n id="s_{current_idx}">{clean_chunk}</n> '
+        current_idx += 1
+        buffer = ""
+            
+    return html_out.strip(), current_idx
+
+
 @router.post("/api/convert/epub")
 async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)): 
-    import re
-    import shutil
-    import posixpath
-    import urllib.parse
-    from bs4 import BeautifulSoup
-    import ebooklib
-    from ebooklib import epub
     from fastapi import HTTPException
-    from logic.smart_content_detector import clean_epub_html, generate_toc
-
+    import html
+    
     if not file.filename.lower().endswith(".epub"):
         raise HTTPException(status_code=400, detail="Not an EPUB file")
 
@@ -80,16 +131,6 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
     book_dir = content_dir / doc_id
     book_dir.mkdir(parents=True, exist_ok=True)
     temp_epub = book_dir / "temp.epub"
-
-    def split_sentences(text):
-        text = text.strip()
-        if not text: return []
-        
-        # 🌟 CJK SPLIT FIX: 
-        # Matches English punctuation followed by a space, OR CJK punctuation (。！？) without needing a space.
-        pattern = r'(?<=[.!?])\s+(?=[A-Z"\'\u201c\u2018])|(?<=[。！？])\s*(?=[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
-        chunks = re.split(pattern, text)
-        return [c for c in chunks if c.strip()]
 
     try:
         with open(temp_epub, "wb") as f:
@@ -102,10 +143,52 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             shutil.rmtree(book_dir, ignore_errors=True)
             raise HTTPException(status_code=400, detail="Cannot read protected file (DRM)")
 
+        # 🌟 EXTRACT NATIVE TOC TITLES EARLY FOR HTML NORMALIZATION
+        known_toc_titles = set()
+        
+        try:
+            # BRANCH 1: Native EPUB Metadata TOC (Bulletproofed & Sanitized)
+            if hasattr(book, 'toc'):
+                def extract_early_titles(items):
+                    if not isinstance(items, (list, tuple)): return
+                    for item in items:
+                        try:
+                            if isinstance(item, (tuple, list)) and len(item) == 2:
+                                if hasattr(item[0], 'title') and item[0].title:
+                                    clean_title = " ".join(str(item[0].title).split()).lower()
+                                    known_toc_titles.add(clean_title)
+                                extract_early_titles(item[1])
+                            elif hasattr(item, 'title') and item.title:
+                                clean_title = " ".join(str(item.title).split()).lower()
+                                known_toc_titles.add(clean_title)
+                        except Exception:
+                            pass
+                extract_early_titles(book.toc)
+
+            # BRANCH 2: Fallback to HTML TOC (nav.xhtml, toc.xhtml)
+            if len(known_toc_titles) < 3:
+                for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+                    name_lower = item.get_name().lower()
+                    if any(x in name_lower for x in ['toc', 'nav', 'tableofcontents', 'contents']):
+                        try:
+                            toc_soup = BeautifulSoup(item.get_content().decode('utf-8', 'ignore'), 'html.parser')
+                            for a_tag in toc_soup.find_all('a'):
+                                title = a_tag.get_text(separator=" ", strip=True)
+                                clean_title = " ".join(title.split()).lower()
+                                if clean_title and len(clean_title) > 2 and not clean_title.isdigit():
+                                    known_toc_titles.add(clean_title)
+                        except Exception:
+                            pass
+        except Exception as e:
+            # 🌟 ARMOR: If TOC extraction fails, it logs a warning but DOES NOT crash!
+            print(f"[Warning] Early TOC Extractor encountered an error: {e}")
+
         pages = []
         image_map = {}
         image_counter = 1
         global_sentence_idx = 0
+        
+        href_to_page = {}
 
         spine_tuples = getattr(book, 'spine', [])
         
@@ -115,11 +198,26 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             
             if not item or item.get_type() != ebooklib.ITEM_DOCUMENT:
                 continue
-
+                
+            actual_href = item.get_name()
             raw_html = item.get_content().decode('utf-8', 'ignore')
             
-            cleaned_html = clean_epub_html(raw_html)
-            soup = BeautifulSoup(cleaned_html, "html.parser")
+            # 🌟 1. Pre-burn XML headers natively before Soup
+            try:
+                from logic.html_normalizer import pre_parse_clean, normalize_epub_html
+                raw_html = pre_parse_clean(raw_html)
+            except Exception:
+                pass
+            
+            soup = BeautifulSoup(raw_html, "html.parser")
+            
+            # 🌟 2. Execute the Master Pipeline (handles tags, headings, cleanup)
+            try:
+                # pass known_toc_titles generated earlier in convert_epub
+                normalize_epub_html(soup, known_toc_titles=known_toc_titles) 
+            except Exception as e:
+                print(f"[Warning] HTML Normalizer failed: {e}")
+                
             html_dir = posixpath.dirname(item.get_name())
             
             href_to_image_id = {}
@@ -132,7 +230,6 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 if src:
                     src = src.split('#')[0]
                     resolved_href = urllib.parse.unquote(posixpath.normpath(posixpath.join(html_dir, src))).lstrip('/')
-                    
                     image_item = book.get_item_with_href(resolved_href)
                     
                     if not image_item:
@@ -152,7 +249,6 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                     
                     if image_item:
                         actual_item_name = image_item.get_name()
-                        
                         if actual_item_name in href_to_image_id:
                             assigned_id = href_to_image_id[actual_item_name]
                         else:
@@ -198,76 +294,118 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 if not p.find('img'):
                     p_text = p.get_text(strip=True)
                     chars = [c for c in p_text if not c.isspace()]
+                    if not chars: continue
                     
-                    if not chars:
-                        continue
-                        
                     length = len(chars)
-                    if length > 20:
-                        continue
+                    if length > 20: continue
                         
-                    # 1. Ban if it contains ANY letters or numbers (English, European, Asian)
                     if re.search(r'[a-zA-Z0-9\u00C0-\u00FF\u0400-\u04FF\u3041-\u3096\u30A1-\u30FA\u4E00-\u9FAF\uAC00-\uD7AF]', p_text):
                         continue
                         
-                    # 2. Ban common punctuation, quotes, ellipses, and ALL DOTS! 
-                    # This explicitly protects "...", "・・・", and "。。" from being marked as scene breaks.
                     forbidden_punctuation = set(".,!?:;\"'“”‘’「」『』()[]{}<>。、・？！…")
                     if any(c in forbidden_punctuation for c in chars):
                         continue
                         
                     is_scene_break = False
-                    
-                    # 3. If it has 2+ characters and survived the bans above, it is a true scene break (e.g., ***, ###, ◇◇◇, ――)
-                    if length >= 2:
-                        is_scene_break = True
-                        
-                    # 4. If it's a single character, it MUST be a verified novel separator symbol
+                    if length >= 2: is_scene_break = True
                     elif length == 1:
                         valid_singles = set("*#-_~♦◇◆○●■□▼▽★☆❖✦⁂※—–―─")
                         if chars[0] in valid_singles:
                             is_scene_break = True
                             
-                    # Inject the scene break <s> tag for the TTS engine
                     if is_scene_break:
                         sb = soup.new_tag('s')
                         sb.string = p_text
                         p.replace_with(sb)
 
-            for element in soup.find_all(string=True):
-                if not element.parent or element.parent.name in ['script', 'style', 'head', 'title', 'meta', '[document]', 's']:
+            for block in soup.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']):
+                # 🌟 FIX: Protect native headings from being eaten by parent DIVs
+                if block.find(['p', 'div', 'ul', 'ol', 'table', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
                     continue
                 
-                text = str(element).strip()
-                if not text: continue
-                    
-                sentences = split_sentences(text)
-                if sentences:
-                    new_html = ""
-                    for s in sentences:
-                        new_html += f'<n id="s_{global_sentence_idx}">{s}</n> '
-                        global_sentence_idx += 1
-                    
-                    wrapper = BeautifulSoup(new_html, "html.parser")
-                    safe_container = soup.new_tag("span")
-                    for child in list(wrapper.contents):
-                        safe_container.append(child)
-                        
-                    element.replace_with(safe_container)
-                    safe_container.unwrap()
+                if block.find(['img', 's', 'picture', 'svg', 'figure']):
+                    continue
 
-            for block in soup.find_all(['div', 'p', 'figure']):
-                if not block.get_text(strip=True) and not block.find(['img', 'hr', 'br', 'svg', 'picture']):
+                # 🌟 FIX: Protect <br> tags from being wiped out by get_text()
+                for br in block.find_all('br'):
+                    br.replace_with(" XBRX ")
+
+                text = block.get_text(separator=" ", strip=True)
+                
+                # If the block was ONLY <br> tags, restore them visually and skip TTS wrapping
+                if text.replace("XBRX", "").strip() == "":
+                    block.clear()
+                    for _ in range(text.count("XBRX")):
+                        block.append(BeautifulSoup("<br/>", "html.parser"))
+                    continue
+
+                if not text:
+                    continue
+
+                safe_text = html.escape(text)
+
+                new_html, global_sentence_idx = master_sentence_splitter(safe_text, global_sentence_idx)
+                
+                if new_html:
+                    # 🌟 FIX: Inject the <br> tags back into the HTML stream!
+                    new_html = new_html.replace(" XBRX ", "<br/>").replace("XBRX", "<br/>")
+                    
+                    block.clear() 
+                    wrapper = BeautifulSoup(new_html, "html.parser")
+                    block.append(wrapper)
+
+            for block in soup.find_all(['div', 'p', 'figure', 'span']):
+                if not block.get_text(strip=True) and not block.find(['img', 'hr', 'br', 'svg', 'picture', 's', 'n']):
                     block.decompose()
 
             body = soup.find('body')
             page_html = str(body) if body else str(soup)
             
             if "<n id=" in page_html or "<img" in page_html or "<s>" in page_html:
+                href_to_page[actual_href] = len(pages)
                 pages.append(page_html)
 
         temp_epub.unlink(missing_ok=True)
-        toc_map = generate_toc(pages)
+        
+        def parse_native_toc(items, level=1):
+            res = []
+            for item in items:
+                if isinstance(item, tuple) or isinstance(item, list):
+                    if len(item) == 2 and hasattr(item[0], 'title'):
+                        section = item[0]
+                        children = item[1]
+                        href = getattr(section, 'href', '') or ''
+                        clean_href = href.split('#')[0]
+                        idx = href_to_page.get(clean_href, -1)
+                        if idx == -1:
+                            for h, p in href_to_page.items():
+                                if posixpath.basename(h) == posixpath.basename(clean_href):
+                                    idx = p
+                                    break
+                        if idx != -1:
+                            res.append({"title": section.title, "level": level, "page_index": idx})
+                        res.extend(parse_native_toc(children, level + 1))
+                    else:
+                        res.extend(parse_native_toc(item, level))
+                elif hasattr(item, 'title') and hasattr(item, 'href'):
+                    href = item.href or ''
+                    clean_href = href.split('#')[0]
+                    idx = href_to_page.get(clean_href, -1)
+                    if idx == -1:
+                        for h, p in href_to_page.items():
+                            if posixpath.basename(h) == posixpath.basename(clean_href):
+                                idx = p
+                                break
+                    if idx != -1:
+                        res.append({"title": item.title, "level": level, "page_index": idx})
+            return res
+
+        toc_map = []
+        if hasattr(book, 'toc'):
+            toc_map = parse_native_toc(book.toc)
+            
+        if not toc_map:
+            toc_map = generate_toc(pages)
 
         return {
             "pages": pages,
@@ -278,17 +416,19 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
     except Exception as e:
         shutil.rmtree(book_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @router.post("/api/convert/pdf")
 async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     import shutil
     try:
-        import fitz  # PyMuPDF
+        import fitz
     except ImportError:
-        raise HTTPException(status_code=500, detail="PyMuPDF library not installed. Run 'pip install PyMuPDF'")
+        raise HTTPException(status_code=500, detail="PyMuPDF library not installed.")
         
     from fastapi import HTTPException
-    from logic.smart_content_detector import detect_strict_scene_break, split_pdf_sentences, generate_toc
+    # Removed the legacy split_pdf_sentences import. Master splitter does it now!
+    from logic.smart_content_detector import detect_strict_scene_break
+    from logic.html_normalizer import generate_toc
 
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Not a PDF file")
@@ -332,7 +472,6 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
         global_sentence_idx = 0
         held_text = "" 
         
-        # ONLY true full-stops complete a <p> tag. Commas and semicolons trigger cross-page holding.
         paragraph_terminators = (".", "!", "?", "…", "。", "！", "？", "”", '"', "’", "'", "」", "』")
 
         for page_index in range(len(doc)):
@@ -340,23 +479,15 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
             page_html = ""
             elements = []
             
-            # 1. Extract Tables (No over-engineering, just pull the grid)
             table_bboxes = []
             if hasattr(page, "find_tables"):
                 for tab in page.find_tables():
-                    elements.append({
-                        "type": "table",
-                        "bbox": tab.bbox,
-                        "data": tab.extract()
-                    })
+                    elements.append({"type": "table", "bbox": tab.bbox, "data": tab.extract()})
                     table_bboxes.append(tab.bbox)
 
-            # 2. Extract Text and Images
             blocks = page.get_text("dict")["blocks"]
             for block in blocks:
                 b_bbox = block["bbox"]
-                
-                # Safety: If this text block is inside a table we already extracted, skip it to prevent duplicates
                 is_in_table = False
                 for t_bbox in table_bboxes:
                     cx = (b_bbox[0] + b_bbox[2]) / 2
@@ -366,13 +497,8 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                         break
                         
                 if not is_in_table:
-                    elements.append({
-                        "type": "text" if block["type"] == 0 else "image",
-                        "bbox": b_bbox,
-                        "block": block
-                    })
+                    elements.append({"type": "text" if block["type"] == 0 else "image", "bbox": b_bbox, "block": block})
             
-            # 3. Sort everything strictly top-to-bottom so the flow is flawless
             elements.sort(key=lambda e: (e["bbox"][1], e["bbox"][0]))
 
             for element in elements:
@@ -389,26 +515,22 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                     
                     block_text = " ".join(block_text.split()).strip()
                     block_text = block_text.replace('\uf0b7', '').replace('\uf020', '').strip()
-                    if block_text.startswith('•'):
-                        block_text = block_text[1:].strip()
+                    if block_text.startswith('•'): block_text = block_text[1:].strip()
                         
-                    if not block_text or block_text in ['•', '-', '·']:
-                        continue
+                    if not block_text or block_text in ['•', '-', '·']: continue
 
-                    # Pre-check types to see if we need to forcefully flush the held text
                     is_header = False
                     if max_fontsize > 14 and len(block_text) < 100 and not block_text.endswith(paragraph_terminators):
                         is_header = True
                         
                     is_scene_break = detect_strict_scene_break(block_text, allow_scene_breaks)
 
-                    # If the new block is a structural break (header/scene), the previous paragraph MUST be finished
                     if (is_header or is_scene_break) and held_text:
-                        sentences_html, global_sentence_idx = split_pdf_sentences(held_text, global_sentence_idx)
+                        # 🌟 UNIFIED SPLIT FIX 🌟
+                        sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
                         page_html += f"<p>{sentences_html}</p>\n"
                         held_text = ""
 
-                    # 🌟 THE STITCHING FIX: If no structural break, fuse with previous held text
                     if not is_header and not is_scene_break and held_text:
                         if held_text.endswith("-") and not held_text.endswith(" -"):
                             block_text = held_text[:-1] + block_text
@@ -416,25 +538,22 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                             block_text = held_text + " " + block_text
                         held_text = ""
 
-                    # Determine if this combined block STILL needs to be held (e.g. crossing to next page)
                     if not is_header and not is_scene_break and not block_text.endswith(paragraph_terminators):
                         held_text = block_text
                         continue
 
-                    # Final Output Generation
                     if is_scene_break:
                         page_html += f"<s>{block_text}</s>\n"
                     elif is_header:
-                        sentences_html, global_sentence_idx = split_pdf_sentences(block_text, global_sentence_idx)
+                        sentences_html, global_sentence_idx = master_sentence_splitter(block_text, global_sentence_idx)
                         page_html += f"<h2>{sentences_html}</h2>\n"
                     else:
-                        sentences_html, global_sentence_idx = split_pdf_sentences(block_text, global_sentence_idx)
+                        sentences_html, global_sentence_idx = master_sentence_splitter(block_text, global_sentence_idx)
                         page_html += f"<p>{sentences_html}</p>\n"
 
                 elif element["type"] == "image":
-                    # Force flush held text before rendering an image
                     if held_text:
-                        sentences_html, global_sentence_idx = split_pdf_sentences(held_text, global_sentence_idx)
+                        sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
                         page_html += f"<p>{sentences_html}</p>\n"
                         held_text = ""
                         
@@ -442,14 +561,11 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                     try:
                         width = block.get("width", 0)
                         height = block.get("height", 0)
-                        if width < 50 or height < 50:
-                            continue
+                        if width < 50 or height < 50: continue
                             
                         image_bytes = block.get("image")
                         image_ext = block.get("ext", "jpg")
-                        
-                        if not image_bytes or len(image_bytes) < 1024:
-                            continue
+                        if not image_bytes or len(image_bytes) < 1024: continue
                             
                         image_filename = f"image_{image_counter}.{image_ext}"
                         image_path = book_dir / image_filename
@@ -460,15 +576,12 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                         image_map[str(image_counter)] = image_filename
                         assigned_id = str(image_counter)
                         image_counter += 1
-                        
                         page_html += f'<img src="/api/library/image/{doc_id}/{assigned_id}" class="epub-image" loading="lazy" style="max-width:100%; height:auto;" />\n'
-                    except Exception:
-                        pass 
+                    except Exception: pass 
 
                 elif element["type"] == "table":
-                    # Force flush held text before rendering a table
                     if held_text:
-                        sentences_html, global_sentence_idx = split_pdf_sentences(held_text, global_sentence_idx)
+                        sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
                         page_html += f"<p>{sentences_html}</p>\n"
                         held_text = ""
                         
@@ -478,7 +591,7 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                         for cell in row:
                             cell_text = str(cell) if cell else ""
                             if cell_text.strip():
-                                chunk, global_sentence_idx = split_pdf_sentences(cell_text.strip(), global_sentence_idx)
+                                chunk, global_sentence_idx = master_sentence_splitter(cell_text.strip(), global_sentence_idx)
                                 table_html += f"<td style='padding: 6px;'>{chunk}</td>"
                             else:
                                 table_html += "<td></td>"
@@ -489,13 +602,11 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
             if page_html.strip():
                 pages.append(f'<div class="pdf-page">\n{page_html}</div>')
             else:
-                # 🌟 FIX: Wrap blank pages in the structural <n> tag to prevent frontend legacy fallback
                 pages.append(f'<div class="pdf-page">\n<p><n id="s_{global_sentence_idx}">[Blank Page]</n></p>\n</div>')
                 global_sentence_idx += 1
 
-        # Clean up any dangling text at the very end of the document
         if held_text:
-            sentences_html, global_sentence_idx = split_pdf_sentences(held_text, global_sentence_idx)
+            sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
             if pages:
                 pages[-1] = pages[-1].replace('</div>', f'<p>{sentences_html}</p>\n</div>')
             else:
@@ -575,7 +686,6 @@ def delete_library_item(doc_id: str):
 @router.get("/api/library/content/{doc_id}")
 def get_content(doc_id: str):
     file_path = get_doc_json_path(doc_id)
-    # 🌟 SURGICAL FIX: Force UTF-8 decoding to prevent Windows crash
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     data["smart_start_page"] = 0
@@ -671,19 +781,11 @@ def search_book(doc_id: str, q: str, match_case: bool = False, whole_word: bool 
 
     return {"results": results, "total_matches": total_matches, "query": q, "pages_with_matches": len(results)}
 
-# =========================================
-# THE NEW DUAL-SAVE CHECKPOINT ROUTE
-# =========================================
 @router.post("/api/library/progress/{doc_id}")
 async def update_book_progress_checkpoint(doc_id: str, payload: ProgressUpdatePayload):
-    """
-    Surgically dual-saves the reading state.
-    Updates the global library.json AND the specific book's internal JSON.
-    """
     if not library_file.exists():
         raise HTTPException(status_code=404, detail="Library inventory log absent.")
 
-    # 1. Update Global Library (library.json)
     try:
         with open(library_file, "r", encoding="utf-8") as f:
             books_inventory = json.load(f)
@@ -706,14 +808,12 @@ async def update_book_progress_checkpoint(doc_id: str, payload: ProgressUpdatePa
     except Exception as io_error:
         raise HTTPException(status_code=500, detail=f"Global database sync failure: {str(io_error)}")
 
-    # 2. Update Specific Book Content JSON (Dual-Save)
     try:
         book_file_path = get_doc_json_path(doc_id)
         if book_file_path.exists():
             with open(book_file_path, "r", encoding="utf-8") as f:
                 book_data = json.load(f)
             
-            # Inject progress metadata directly into the book file
             book_data["currentPage"] = payload.currentPage
             book_data["lastSentenceId"] = payload.lastSentenceId
             book_data["lastSentenceIndex"] = payload.lastSentenceIndex
