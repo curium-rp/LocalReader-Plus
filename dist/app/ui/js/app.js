@@ -773,7 +773,9 @@ document.getElementById("searchInput").oninput = (e) => {
       document.getElementById("searchEmpty").classList.add("hidden");
       const fragment = document.createDocumentFragment();
       
-      const hlRegex = new RegExp(`(${escapeRegex(query)})`, searchMatchCase ? 'g' : 'gi');
+      let snippetPattern = escapeRegex(query);
+      if (searchWholeWord) snippetPattern = `\\b${snippetPattern}\\b`;
+      const hlRegex = new RegExp(`(${snippetPattern})`, searchMatchCase ? 'g' : 'gi');
       
       data.results.forEach((result) => {
         result.matches.forEach((match) => {
@@ -782,9 +784,10 @@ document.getElementById("searchInput").oninput = (e) => {
           div.innerHTML = `<div class="flex justify-between mb-2"><span class="text-xs font-bold text-blue-400">Page ${result.page_index + 1}</span></div><div class="search-result-snippet">${match.snippet.replace(hlRegex, '<mark>$1</mark>')}</div>`;
           div.onclick = async () => {
             // Keep the query state so renderPage() applies the yellow <mark> highlights
-            state.currentSearchQuery = data.query;
+            state.currentSearchQuery = query; // Fixed from data.query to guarantee term existence
             state.searchMatchCase = searchMatchCase;
             state.searchWholeWord = searchWholeWord;
+            state.searchTargetSnippet = match.snippet; // Isolate highlight to this exact match
             
             // 1. Change ONLY the view page. Do NOT change the reading page!
             state.viewPageIndex = result.page_index;
