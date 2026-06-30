@@ -303,17 +303,51 @@ document.getElementById("backToReadingBtn").onclick = async () => {
     await renderPage();
 };
 
-document.getElementById("skipBack").onclick = () => {
-  if (state.currentSentenceIndex > 0)
+document.getElementById("skipBack").onclick = async () => {
+  if (state.currentSentenceIndex > 0) {
     safeJumpToSentence(state.currentSentenceIndex - 1);
+  } else {
+    // We are at the start of the page. Scan backwards for the closest non-empty page.
+    let targetPage = state.readingPageIndex - 1;
+    let foundSentences = [];
+    
+    while (targetPage >= 0) {
+        foundSentences = await getSentencesForPage(targetPage);
+        if (foundSentences && foundSentences.length > 0) break;
+        targetPage--; // Skip empty pages (like full-page images)
+    }
+
+    if (targetPage >= 0 && foundSentences.length > 0) {
+        state.readingPageIndex = targetPage;
+        state.viewPageIndex = targetPage; // 🌟 CAMERA FIX: Sync the UI screen to the new page!
+        state.readingSentences = foundSentences;
+        // Jump to the LAST sentence of the found previous page
+        safeJumpToSentence(foundSentences.length - 1);
+    }
+  }
 };
+
 document.getElementById("skipForward").onclick = async () => {
   if (state.currentSentenceIndex < state.readingSentences.length - 1) {
     safeJumpToSentence(state.currentSentenceIndex + 1);
-  } else if (state.readingPageIndex < state.currentPages.length - 1) {
-    state.readingPageIndex++;
-    state.readingSentences = await getSentencesForPage(state.readingPageIndex);
-    safeJumpToSentence(0);
+  } else {
+    // We are at the end of the page. Scan forwards for the closest non-empty page.
+    let targetPage = state.readingPageIndex + 1;
+    let foundSentences = [];
+
+    while (targetPage < state.currentPages.length) {
+        foundSentences = await getSentencesForPage(targetPage);
+        if (foundSentences && foundSentences.length > 0) break;
+        targetPage++; // Skip empty pages
+    }
+
+    if (targetPage < state.currentPages.length && foundSentences.length > 0) {
+        state.readingPageIndex = targetPage;
+        state.viewPageIndex = targetPage; // 🌟 CAMERA FIX: Sync the UI screen to the new page!
+        state.readingSentences = foundSentences;
+        // Jump to the FIRST sentence of the found next page
+        safeJumpToSentence(0);
+    }
   }
 };
 
