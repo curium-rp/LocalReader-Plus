@@ -221,6 +221,22 @@ export async function playNext() {
 
   console.log(`Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..." | Type: ${bType}`);
 
+  // 🌟  IMAGE BYPASS 
+  // Generate a silent buffer locally for Images and empty Scene Breaks.
+  // This prevents the TTS API from crashing on punctuation or "Image." strings
+  // which previously caused `stopPlayback()` to trigger and permanently stick the player!
+  if (bType === "Img" || (bType === "S" && cleanText.trim() === "•••")) {
+      initAudioContext();
+      const durationSeconds = bType === "Img" ? 1.5 : 1.0; // 1.5s pause for images, 1s for breaks
+      const sampleRate = state.audioContext.sampleRate || 44100;
+      const silentBuffer = state.audioContext.createBuffer(1, Math.floor(sampleRate * durationSeconds), sampleRate);
+      
+      if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return;
+      
+      playAudioBuffer(silentBuffer, bType, displayChars);
+      return; // STOP execution here. Do NOT send to backend!
+  }
+
   const voiceSelect = document.getElementById("voiceSelect");
   const speedRange = document.getElementById("speedRange");
   const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}`;
@@ -311,8 +327,17 @@ export async function jumpToSentence(i) {
   
   if (state.sentenceElements && state.sentenceElements[i]) {
     const targetEl = state.sentenceElements[i];
-    if (targetEl.hasAttribute('id') && state.currentDoc) {
-        state.currentDoc.lastSentenceId = targetEl.getAttribute('id');
+    if (state.currentDoc) {
+        // 🌟 THE MISSING LINE FIX: Always update the mathematical fallback index!
+        // This guarantees renderPage() knows exactly where you are, even if the element has no ID.
+        state.currentDoc.lastSentenceIndex = i;
+
+        // 🌟 THE RUBBER-BAND FIX: 
+        if (targetEl.hasAttribute('id')) {
+            state.currentDoc.lastSentenceId = targetEl.getAttribute('id');
+        } else {
+            state.currentDoc.lastSentenceId = null; 
+        }
     }
   }
 
@@ -447,6 +472,9 @@ export async function preCacheNextSentences() {
       const hasNarrativeText = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(cleanText);
       
       if (bType === "N" && cleanText.trim().length < 2 && !hasNarrativeText) continue;
+      
+      // 🌟 SKIP network preloading for local elements to prevent backend errors!
+      if (bType === "Img" || (bType === "S" && cleanText.trim() === "•••")) continue;
 
       const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${voiceSelect.value}_${speedRange.value}`;
       if (state.audioBufferCache.has(cacheKey)) continue;
