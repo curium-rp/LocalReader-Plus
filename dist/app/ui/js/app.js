@@ -783,29 +783,32 @@ document.getElementById("searchInput").oninput = (e) => {
           div.className = "search-result-item";
           div.innerHTML = `<div class="flex justify-between mb-2"><span class="text-xs font-bold text-blue-400">Page ${result.page_index + 1}</span></div><div class="search-result-snippet">${match.snippet.replace(hlRegex, '<mark>$1</mark>')}</div>`;
           div.onclick = async () => {
-            // Keep the query state so renderPage() applies the yellow <mark> highlights
-            state.currentSearchQuery = query; // Fixed from data.query to guarantee term existence
+            state.currentSearchQuery = query; 
             state.searchMatchCase = searchMatchCase;
             state.searchWholeWord = searchWholeWord;
-            state.searchTargetSnippet = match.snippet; // Isolate highlight to this exact match
+            state.searchTargetSnippet = match.snippet; 
             
-            // 1. Change ONLY the view page. Do NOT change the reading page!
             state.viewPageIndex = result.page_index;
-            
-            // Disable monitor mode so the camera doesn't fight the search scroll
             state.autoScrollEnabled = false;
             
             document.getElementById("searchModal").classList.add("hidden");
             
-            // 2. Render the page to physically generate the DOM and the highlights
             await renderPage();
             
-            // 3. Smoothly center the physical screen on the highlighted text.
-            // Notice: The audio jump event has been completely removed so it will NOT auto-play.
-            setTimeout(() => {
+            // 3. Robust scrolling: Use a polling interval to wait for the DOM to finish rendering
+            // A fixed 200ms timeout fails on heavy pages. This checks repeatedly until it finds it.
+            let checkCount = 0;
+            const scrollInterval = setInterval(() => {
                 const finalHl = document.querySelector('.search-highlight');
-                if (finalHl) finalHl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }, 200);
+                if (finalHl) {
+                    clearInterval(scrollInterval);
+                    finalHl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } else if (checkCount > 20) {
+                    // Give up after 2 seconds to prevent infinite loops
+                    clearInterval(scrollInterval);
+                }
+                checkCount++;
+            }, 100);
           };
           fragment.appendChild(div);
         });
