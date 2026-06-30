@@ -166,24 +166,56 @@ export function highlightSearchTerm(query, matchCase = false, wholeWord = false)
     const textElements = textContent.querySelectorAll('.sentence');
     const escapedQuery = escapeRegex(query);
     
-    // Apply whole word boundary boundary if activated
-    let pattern = escapedQuery;
+    // Handle hidden newlines or spaces in PDFs for multi-word searches
+    let pattern = escapedQuery.replace(/\s+/g, '\\s+');
     if (wholeWord) pattern = `\\b${pattern}\\b`;
     
-    // Apply case sensitivity flag
     const regex = new RegExp(`(${pattern})`, matchCase ? 'g' : 'gi');
 
-    textElements.forEach(el => {
-        if (state.searchTargetSnippet) {
-            const cleanSnippet = stripHTML(state.searchTargetSnippet).replace(/\s+/g, '');
-            const cleanSentence = el.textContent.replace(/\s+/g, '');
-            if (cleanSnippet && (cleanSentence.includes(cleanSnippet) || cleanSnippet.includes(cleanSentence))) {
-                highlightTextNodes(el, regex);
+    if (state.searchTargetSnippet) {
+        let bestEl = null;
+        let maxScore = -1;
+        
+        // Create a "fingerprint" of the snippet by extracting words (ignores punctuation/languages)
+        const snippetWords = stripHTML(state.searchTargetSnippet)
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+            .split(/\s+/)
+            .filter(w => w.length > 2);
+        
+        textElements.forEach(el => {
+            regex.lastIndex = 0;
+            
+            // Only evaluate sentences that actually contain the search query
+            if (regex.test(el.textContent)) {
+                let score = 0;
+                const sentenceText = el.textContent.toLowerCase();
+                
+                // Score this sentence based on how much context it shares with the snippet
+                snippetWords.forEach(w => {
+                    if (sentenceText.includes(w)) score++;
+                });
+                
+                // The sentence with the highest overlap wins
+                if (score > maxScore) {
+                    maxScore = score;
+                    bestEl = el;
+                }
             }
-        } else {
-            highlightTextNodes(el, regex);
+        });
+        
+        // Highlight ONLY the exact sentence the user clicked
+        if (bestEl) {
+            regex.lastIndex = 0;
+            highlightTextNodes(bestEl, regex);
         }
-    });
+    } else {
+        // Fallback
+        textElements.forEach(el => {
+            regex.lastIndex = 0;
+            highlightTextNodes(el, regex);
+        });
+    }
 }
 
 function highlightTextNodes(node, regex) {
