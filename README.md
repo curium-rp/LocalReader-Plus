@@ -2,7 +2,7 @@
 
 **A modern, that I fix and improve and fix many things.**
 ---
-##🚨Update June 29, 2026 ##
+##🚨Update June 30, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -45,8 +45,8 @@
 ---
 # Windows installation
 
-   _Install **Python 3.12** if not install yet, _support Python 3.10-3.13_
-   (Python 3.12 and 3.13 has been test, it can run no problem if it has I'll fix it)
+   _Install **Python 3.12** if not install yet, _support Python 3.10-3.14_
+   (Python 3.12, 3.13 and 3.14 has been test, it can run no problem if it has I'll fix it)
    
   
   ## **First method for download** 
@@ -390,7 +390,6 @@ This project is made possible thanks to the following open-source libraries and 
 
 **Last Original LocalReader Pro updated:**January 6, 2026
 ---
-**Last Updated** June 29, 2026
 
 ---
 ***Epub or Pdf files should not be DRM (Digital Rights Management)***
