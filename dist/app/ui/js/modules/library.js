@@ -176,18 +176,75 @@ export function renderTOC() {
         return;
     }
     const fragment = document.createDocumentFragment();
+    
     state.tocMap.forEach(item => {
         const div = document.createElement('div');
         const paddingLeft = item.level === 1 ? '0.5rem' : item.level === 2 ? '1.5rem' : '2.5rem';
         div.className = `cursor-pointer py-2 px-2 hover:bg-zinc-800 text-sm transition-colors border-l-2 border-transparent hover:border-blue-500`;
         div.style.paddingLeft = paddingLeft;
         div.innerHTML = `<div class="flex justify-between items-center opacity-80 hover:opacity-100"><span class="truncate pr-2 ${item.level === 1 ? 'font-bold text-zinc-200' : 'text-zinc-400'}">${item.title}</span><span class="text-[10px] text-zinc-500 shrink-0">Pg ${item.page_index + 1}</span></div>`;
+        
         div.onclick = async () => {
-            state.viewPageIndex = item.page_index;
-            state.autoScrollEnabled = true;
             const tocModal = document.getElementById('tocModal');
             if (tocModal) tocModal.classList.add('hidden');
+
+            // 1. Fetch the sentences for the target page to find the heading position
+            const targetSentences = await getSentencesForPage(item.page_index);
+            
+            // 2. Find the exact sentence index that matches this heading's title
+            let targetIndex = 0; 
+            if (item.title && targetSentences && targetSentences.length > 0) {
+                const cleanTitle = item.title.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+                
+                let bestMatchIndex = 0;
+                let foundHeading = false;
+
+                for (let i = 0; i < targetSentences.length; i++) {
+                    const rawSentence = targetSentences[i];
+                    const sText = stripHTML(rawSentence).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+                    
+                    if (cleanTitle && sText && (sText.includes(cleanTitle) || cleanTitle.includes(sText))) {
+                        const isHeading = /<h[1-6]/i.test(rawSentence) || /\[H[1-6]\]/i.test(rawSentence);
+                        if (isHeading) {
+                            bestMatchIndex = i;
+                            foundHeading = true;
+                            break; 
+                        } else if (!foundHeading) {
+                            bestMatchIndex = i; 
+                        }
+                    }
+                }
+                targetIndex = bestMatchIndex;
+            }
+
+            // 3. THE EXPLORER FIX: Only move the CAMERA (viewPageIndex), do NOT change the reading position!
+            // This preserves the user's bookmark, keeps the "Back to Reading" button visible, and stops audio from auto-playing.
+            state.viewPageIndex = item.page_index;
+            state.autoScrollEnabled = false; // Disable auto-scroll so renderPage() doesn't fight us
+
+            // 4. Render the page silently without triggering TTS
             await renderPage();
+
+            // 5. Manually scroll the screen down to the specific heading
+            const sentences = document.querySelectorAll('.sentence');
+            if (sentences && sentences[targetIndex]) {
+                const targetEl = sentences[targetIndex];
+                const scrollContainer = document.querySelector(".content-area");
+                if (scrollContainer) {
+                    // requestAnimationFrame ensures the DOM has physically painted before we calculate pixels
+                    requestAnimationFrame(() => {
+                        setTimeout(() => {
+                            const elRect = targetEl.getBoundingClientRect();
+                            const containerRect = scrollContainer.getBoundingClientRect();
+                            
+                            const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
+                            
+                            // Scroll so the heading is nicely visible near the top third of the screen
+                            scrollContainer.scrollTop = Math.max(0, relativeTop - (containerRect.height / 3));
+                        }, 50); // 50ms buffer to guarantee Heavy PDFs are fully arranged
+                    });
+                }
+            }
         };
         fragment.appendChild(div);
     });
