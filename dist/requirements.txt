@@ -11,7 +11,6 @@ numpy
 soundfile
 pydub
 
-
 ## --- Text Processing & Utilities ---##
 requests
 pydantic
@@ -24,14 +23,9 @@ eng_to_ipa
 ebooklib
 PyMuPDF
 
-## --- CJK Voice Support (Chinese & Japanese) ---##
+## --- CJK Voice Support ---##
 misaki[zh]
 fugashi
 unidic-lite
 jaconv
 jamdict
-
-##For audioop-lts it seem didn't requirement when run in 3.13##
-##audioop-lts; python_version >= "3.13"##
-##scipy xhtml2pdf lxml psutil pykakasi torch no need to use it 
-##mojimoji no support for 3.13 use jaconv instead. ####
