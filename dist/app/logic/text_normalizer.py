@@ -17,7 +17,6 @@ STUTTER_MAP = {
     'sc': 'skih', 'sm': 'smih', 'sn': 'snih', 'sp': 'spih', 'st': 'stih', 'sw': 'swih'
 }
 
-# 2. The Interjection Map: Added missing fillers (hmm, mmm, uh)
 INTERJECTION_MAP = {
     r'h+m+': 'hum',       
     r'm{2,}': 'uhm',      
@@ -28,10 +27,14 @@ INTERJECTION_MAP = {
     r'tch': 'tisk', 
     r'gah': 'gah',
     r'ngh+': 'ung',       
+    r'n+g+h+': 'ung',         # Catch variations like ngh, nngh
     r'oof+': 'oof', 
     r'ack': 'ack', 
     r'urk': 'erk',
     r'hmph': 'humph', 
+    r'n{2,}h?': 'uhn',        # 🌟 FIX: Forces a nasal hum instead of spelling N-N-N
+    r'm+h+': 'um',            # 🌟 FIX: Forces a hum instead of spelling M-M        
+    r'm+[\-]?p+h+': 'umph',   # Catches Mmph, Mmm-ph, Mmmph
     r'pff+t?': 'pufft',   
     r'bah': 'bah', 
     r'tsk(?:\-tsk)?': 'tisk, tisk',
@@ -41,7 +44,20 @@ INTERJECTION_MAP = {
     r'phew': 'fyoo', 
     r'whew': 'hweo',
     r'hngh+': 'hung',
-    r'sigh': 'haah'
+    r'w+a+h+': 'wah',         ## Catches Wah, waah
+    r'b+r{2,}': 'burr',       # Catches brrr, brr
+    r's+h{2,}': 'shush',      # Catches shhh, shh
+    r'p+s+t+': 'pist',        # Catches psst, pst
+    r'z{2,}': 'zuh',          # Catches zzz, zz
+    r'a+w{2,}': 'aw'          # Catches aww, awww
+}
+
+EXACT_STUTTER_MAP = {
+        r'i-i': 'I I',
+        r'i-i-i': 'I I I',
+        r'a-and': 'ah and',
+        r'a-are': 'ah are',
+        r'o-okay': 'oh okay'
 }
 
 def fix_broken_words(text: str) -> str:
@@ -81,21 +97,44 @@ def fix_broken_words(text: str) -> str:
         old = text
         text = re.sub(r'(?:^|(?<=\s))([a-zA-Z])\s+([a-zA-Z])(?=\s|$)', r'\1\2', text)
     
-    # 4. Dynamic Stutter Resolution (Strict Map Activation 1-3 letters)
+    # 4.5. Dynamic Stutter Resolution (The Master Pattern Matcher)
     def resolve_stutter(match):
-        original_letters = match.group(1)
+        original_prefix = match.group(1)
         remainder_of_word = match.group(2)
-        lookup_letter = original_letters.lower()
+        lookup = original_prefix.lower()
         
-        if lookup_letter in STUTTER_MAP:
-            phonetic = STUTTER_MAP[lookup_letter]
-            phonetic_cased = phonetic.capitalize() if original_letters[0].isupper() else phonetic
+        # 🌟 THE SHIELD: Only applies phonetic stutters if the word starts with that letter!
+        # (This intentionally bypasses 'T-shirt' or 'X-ray' so Kokoro reads them normally).
+        if lookup in STUTTER_MAP and remainder_of_word.lower().startswith(lookup):
+            
+            # 🌟 KOKORO PHONETIC OVERRIDES: Fixes AI mispronunciation of hard consonants
+            kokoro_fixes = {
+                't': 'tuh', 'th': 'thuh', 
+                'w': 'wuh', 'wh': 'wuh',
+                'b': 'buh', 'd': 'duh', 
+                'p': 'puh', 'k': 'kuh', 'c': 'kuh'
+            }
+            
+            # Fetch the hard override, or fall back to the standard STUTTER_MAP
+            phonetic = kokoro_fixes.get(lookup, STUTTER_MAP[lookup])
+                
+            # Preserve the original capitalization for the AI engine
+            phonetic_cased = phonetic.capitalize() if original_prefix[0].isupper() else phonetic
+            
+            # Fast flow execution (Space only, zero commas)
             return f"{phonetic_cased} {remainder_of_word}"
         
-        return f"{original_letters}-{remainder_of_word}"
+        # If it fails the shield, leave the hyphen completely intact
+        return f"{original_prefix}-{remainder_of_word}"
 
-    # Shield apostrophes/numbers, allow 1 to 3 letters for blends
-    text = re.sub(r'(?<![a-zA-Z0-9\'])([a-zA-Z]{1,3})-([a-zA-Z]+)', resolve_stutter, text)
+    # 🌟 THE LOOP: Recursively slices through chained stutters
+    old_stutter = ""
+    while old_stutter != text:
+        old_stutter = text
+        text = re.sub(r'(?<![a-zA-Z0-9\'])([a-zA-Z]{1,3})[-—–]+([a-zA-Z]+)', resolve_stutter, text)
+
+    # 4.8. Cutoff Words (e.g., "He- ")
+    text = re.sub(r'\b([a-zA-Z]+)[-—–]+(?=\s|$|[.,!?])', r'\1,', text)
 
     # 5. Static Interjections (Match Whole Words)
     for pattern, phonetic_replacement in INTERJECTION_MAP.items():
