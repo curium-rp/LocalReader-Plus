@@ -163,20 +163,27 @@ export function highlightSearchTerm(query, matchCase = false, wholeWord = false)
     const textContent = document.getElementById('textContent');
     if (!query || !textContent) return;
 
+    // 🌟 STRICT PAGE GATE FIX: 
+    // If the user turns the page away from the search result, stop highlighting immediately!
+    // This absolutely kills the "ghosting whole book" bug.
+    if (state.searchTargetPage !== undefined && state.viewPageIndex !== state.searchTargetPage) {
+        return; 
+    }
+
     const textElements = textContent.querySelectorAll('.sentence');
     const escapedQuery = escapeRegex(query);
     
-    // Handle hidden newlines or spaces in PDFs for multi-word searches
     let pattern = escapedQuery.replace(/\s+/g, '\\s+');
     if (wholeWord) pattern = `\\b${pattern}\\b`;
     
     const regex = new RegExp(`(${pattern})`, matchCase ? 'g' : 'gi');
 
+    // 🌟 ONLY highlight if a specific snippet was clicked
     if (state.searchTargetSnippet) {
         let bestEl = null;
-        let maxScore = -1;
+        let maxScore = 0; // Score must be strictly greater than 0 to prevent random matching
         
-        // Create a "fingerprint" of the snippet by extracting words (ignores punctuation/languages)
+        // Fingerprint the snippet
         const snippetWords = stripHTML(state.searchTargetSnippet)
             .toLowerCase()
             .replace(/[^\p{L}\p{N}\s]/gu, ' ')
@@ -186,17 +193,14 @@ export function highlightSearchTerm(query, matchCase = false, wholeWord = false)
         textElements.forEach(el => {
             regex.lastIndex = 0;
             
-            // Only evaluate sentences that actually contain the search query
             if (regex.test(el.textContent)) {
                 let score = 0;
                 const sentenceText = el.textContent.toLowerCase();
                 
-                // Score this sentence based on how much context it shares with the snippet
                 snippetWords.forEach(w => {
                     if (sentenceText.includes(w)) score++;
                 });
                 
-                // The sentence with the highest overlap wins
                 if (score > maxScore) {
                     maxScore = score;
                     bestEl = el;
@@ -204,18 +208,12 @@ export function highlightSearchTerm(query, matchCase = false, wholeWord = false)
             }
         });
         
-        // Highlight ONLY the exact sentence the user clicked
+        // Highlight ONLY the single exact sentence the user clicked
         if (bestEl) {
             regex.lastIndex = 0;
             highlightTextNodes(bestEl, regex);
         }
-    } else {
-        // Fallback
-        textElements.forEach(el => {
-            regex.lastIndex = 0;
-            highlightTextNodes(el, regex);
-        });
-    }
+    } 
 }
 
 function highlightTextNodes(node, regex) {

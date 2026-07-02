@@ -158,13 +158,14 @@ def strip_junk_attributes(soup: BeautifulSoup) -> None:
 
 
 def heavy_paragraph_cleanup(soup: BeautifulSoup) -> None:
+    # Global link unwrap: Clears <a> tags from headers (image cases) and normal text
+    for block in soup.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+        for a_tag in block.find_all('a'):
+            a_tag.unwrap()
+
     for block in soup.find_all(['p', 'div']):
         if block.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
             continue
-
-        # Unwrap links
-        for a_tag in block.find_all('a'):
-            a_tag.unwrap()
 
         raw_text = block.get_text(strip=True)
         

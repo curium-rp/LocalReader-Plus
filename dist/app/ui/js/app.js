@@ -822,6 +822,10 @@ document.getElementById("searchInput").oninput = (e) => {
             state.searchWholeWord = searchWholeWord;
             state.searchTargetSnippet = match.snippet; 
             
+            //  Tell the app exactly which page this highlight belongs to
+            state.searchTargetPage = result.page_index; 
+            
+            //  EXPLORER MODE: Only move the camera, do not change reading position!
             state.viewPageIndex = result.page_index;
             state.autoScrollEnabled = false;
             
@@ -829,8 +833,7 @@ document.getElementById("searchInput").oninput = (e) => {
             
             await renderPage();
             
-            // 3. Robust scrolling: Use a polling interval to wait for the DOM to finish rendering
-            // A fixed 200ms timeout fails on heavy pages. This checks repeatedly until it finds it.
+            // Robust scrolling: Wait for DOM to finish rendering
             let checkCount = 0;
             const scrollInterval = setInterval(() => {
                 const finalHl = document.querySelector('.search-highlight');
@@ -838,7 +841,6 @@ document.getElementById("searchInput").oninput = (e) => {
                     clearInterval(scrollInterval);
                     finalHl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } else if (checkCount > 20) {
-                    // Give up after 2 seconds to prevent infinite loops
                     clearInterval(scrollInterval);
                 }
                 checkCount++;
