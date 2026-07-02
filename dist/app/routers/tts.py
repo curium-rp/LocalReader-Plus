@@ -224,7 +224,6 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
     # double-stacking 500ms on top of your H1/Img behavioral pauses!
     text = text.strip()
     
-    # Number shield (Phase 2)
     
     # Number shield (Phase 2)
     text = re.sub(r'(?<=\d),(?=\d)', '<NUM_COM>', text)
