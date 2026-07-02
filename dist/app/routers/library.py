@@ -185,7 +185,7 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
 
         pages = []
         image_map = {}
-        image_counter = 1
+        extracted_images = set() # Replaces counter to track across all chapters
         global_sentence_idx = 0
         
         href_to_page = {}
@@ -220,7 +220,6 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 
             html_dir = posixpath.dirname(item.get_name())
             
-            href_to_image_id = {}
             for img in soup.find_all(['img', 'image']):
                 if img.parent is None:
                     continue
@@ -249,23 +248,25 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                     
                     if image_item:
                         actual_item_name = image_item.get_name()
-                        if actual_item_name in href_to_image_id:
-                            assigned_id = href_to_image_id[actual_item_name]
-                        else:
-                            ext = posixpath.splitext(actual_item_name)[1].lower()
-                            if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']: 
-                                ext = ".jpg" 
+                        
+                        # Flatten the native filename to prevent directory escaping
+                        safe_filename = actual_item_name.replace('/', '_').replace('\\', '_')
+                        
+                        ext = posixpath.splitext(safe_filename)[1].lower()
+                        if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']: 
+                            safe_filename += ".jpg"
                             
-                            image_filename = f"image_{image_counter}{ext}"
-                            image_path = book_dir / image_filename
-                            
+                        # If image hasn't been extracted from ANY chapter yet, save it
+                        if actual_item_name not in extracted_images:
+                            image_path = book_dir / safe_filename
                             with open(image_path, "wb") as img_file:
                                 img_file.write(image_item.get_content())
                             
-                            image_map[str(image_counter)] = image_filename
-                            href_to_image_id[actual_item_name] = str(image_counter)
-                            assigned_id = str(image_counter)
-                            image_counter += 1
+                            image_map[safe_filename] = safe_filename
+                            extracted_images.add(actual_item_name)
+                        
+                        # Ensure URL safety for the src attribute
+                        assigned_id = urllib.parse.quote(safe_filename)
 
                         new_img = soup.new_tag('img')
                         new_img['src'] = f"/api/library/image/{doc_id}/{assigned_id}"
