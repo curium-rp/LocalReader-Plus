@@ -221,7 +221,7 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                 return
 
             # 4. Core Audio Engineering Import
-            from .tts import synthesize_with_pauses, create_anti_skip_silence, graceful_chunk_for_tts, generate_locked_audio
+            from .tts import synthesize_with_pauses, create_anti_skip_silence, graceful_chunk_for_tts, generate_locked_audio, sanitize_typography_for_engine
             from logic.text_normalizer import apply_custom_pronunciations, fix_special_formats
             from logic.language_switcher import smart_polyglot_split
             from logic.japanese_g2p import pure_japanese_to_romaji
@@ -279,17 +279,38 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                     # Apply Polyglot Routing
                     polyglot_segments = smart_polyglot_split(text_norm, request.voice, get_language_from_voice)
 
-                    # Calculate Document Spacing / Pauses
+                    # ==========================================
+                    # 🌟 SHIELD & STRUCTURAL EXTRACTOR
+                    # ==========================================
+                    structural_pause_ms = 0
+                    pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", raw_text)
+                    if pause_match:
+                        structural_pause_ms = int(pause_match.group(1))
+                        raw_text = raw_text.replace(pause_match.group(0), "")
+
+                    # Apply TTS typographic shielding
+                    raw_text = sanitize_typography_for_engine(raw_text)
+
+                    # ==========================================
+                    # 🌟 GOLDEN RATIO BEHAVIOR ENGINE
+                    # ==========================================
+                    behavior_front_pause_ms = 0
+                    behavior_end_pause_ms = 0
+                    
                     if b_type.startswith("H"):
                         h_base = behavior_settings.get("H", 2000)
-                        if h_base <= 0: behavior_pause_ms = 0
-                        elif b_type == "H1": behavior_pause_ms = h_base
-                        elif b_type == "H2": behavior_pause_ms = h_base / 2.0
-                        elif b_type == "H3": behavior_pause_ms = (h_base / 2.0) / 1.5
-                        else: behavior_pause_ms = ((h_base / 2.0) / 1.5) / 1.5
-                        behavior_pause_ms = int(behavior_pause_ms)
+                        if h_base > 0:
+                            if b_type == "H1": base_calc = h_base
+                            elif b_type == "H2": base_calc = h_base / 2.0
+                            elif b_type == "H3": base_calc = (h_base / 2.0) / 1.5
+                            else: base_calc = ((h_base / 2.0) / 1.5) / 1.5
+                            
+                            behavior_front_pause_ms = min(int(base_calc), 10000) 
+                            behavior_end_pause_ms = min(int(base_calc * 0.30), 10000)
+                    elif b_type in ["Img", "S"]:
+                        behavior_end_pause_ms = int(behavior_settings.get(b_type, 1000))
                     else:
-                        behavior_pause_ms = behavior_settings.get(b_type, 500)
+                        behavior_end_pause_ms = int(behavior_settings.get("N", 500))
 
                     has_pause_settings = any(val > 0 for val in pause_settings.values())
                     punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
@@ -300,7 +321,7 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                     
                     # Shield against non-narrative components
                     if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text_norm):
-                        total_pause = behavior_pause_ms
+                        total_pause = structural_pause_ms + behavior_end_pause_ms + behavior_front_pause_ms
                         if total_pause <= 0: total_pause = 100
                         samples = create_anti_skip_silence(total_pause, 24000)
                     else:
@@ -354,13 +375,35 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                                     
                         samples = np.concatenate(chunk_audios) if chunk_audios else np.array([], dtype=np.float32)
                         
-                        if b_type == "N" and text_norm.endswith("\n") and has_pause_settings and has_punctuation:
-                            behavior_pause_ms = 0
+                        # 🌟 THE NULLIFIER (Match tts.py behavior exactly)
+                        if b_type == "N":
+                            stripped_text = text_norm.strip()
+                            has_hard_punc_at_end = False
+                            if stripped_text:
+                                last_char = stripped_text[-1]
+                                if last_char in [".", "!", "?", "。", "！", "？", "…"]:
+                                    has_hard_punc_at_end = True
+                                elif len(stripped_text) > 1 and last_char in ['"', "'", '”', '’', '」', '』']:
+                                    if stripped_text[-2] in [".", "!", "?", "。", "！", "？", "…"]:
+                                        has_hard_punc_at_end = True
                             
-                        if behavior_pause_ms > 0:
-                            frames = int((behavior_pause_ms / 1000.0) * sample_rate)
-                            pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
-                            samples = np.concatenate([samples, pause_arr]) if len(samples) > 0 else pause_arr
+                            if has_hard_punc_at_end or (has_pause_settings and has_punctuation and text_norm.endswith("\n")):
+                                behavior_end_pause_ms = 0
+
+                        total_front_pause_ms = behavior_front_pause_ms
+                        total_end_pause_ms = structural_pause_ms + behavior_end_pause_ms
+                        
+                        # 🌟 Apply Pre-Reading Delay (Front Pause)
+                        if total_front_pause_ms > 0:
+                            frames = int((total_front_pause_ms / 1000.0) * sample_rate)
+                            front_pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
+                            samples = np.concatenate([front_pause_arr, samples]) if len(samples) > 0 else front_pause_arr
+
+                        # 🌟 Apply Post-Reading Delay (End Pause)
+                        if total_end_pause_ms > 0:
+                            frames = int((total_end_pause_ms / 1000.0) * sample_rate)
+                            end_pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
+                            samples = np.concatenate([samples, end_pause_arr]) if len(samples) > 0 else end_pause_arr
                                 
                         if len(samples) == 0:
                             samples = create_anti_skip_silence(100, sample_rate)
@@ -391,9 +434,8 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             if request.format == "mp3":
                 export_status["progress"] = export_status["total"]
                 try:
-                    import subprocess
                     subprocess.run(
-                        [resolved_ffmpeg_path, "-y", "-i", str(temp_wav_path), "-codec:a", "libmp3lame", "-b:a", "128k", str(output_path)],
+                        [str(resolved_ffmpeg_path), "-y", "-i", str(temp_wav_path), "-codec:a", "libmp3lame", "-b:a", "128k", str(output_path)],
                         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                     )
                 except Exception as e:
