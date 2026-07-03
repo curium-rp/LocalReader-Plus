@@ -255,13 +255,13 @@ export async function getSentencesForPage(pageIndex) {
     if (!state.currentPages || !state.currentPages[pageIndex]) return [];
     const pageText = state.currentPages[pageIndex];
 
-    if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>')) {        
+    if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>') || /<h[1-6]/i.test(pageText)) {        
         const tempDiv = document.createElement('div');
         tempDiv.innerHTML = pageText;
-        // 🌟 SURGICAL ALIGNMENT: Include Scenes and Images in array
-        const elements = Array.from(tempDiv.querySelectorAll('n, s, img.epub-image'));
+        // 🌟 PURE H-TAG SUPPORT: Include native headings in the DOM array
+        const elements = Array.from(tempDiv.querySelectorAll('n, s, img.epub-image, h1, h2, h3, h4, h5, h6'));
         return elements.map(el => {
-            if (el.tagName.toLowerCase() === 'img' || el.tagName.toLowerCase() === 's') return el.outerHTML; 
+            if (el.tagName.match(/^(img|s|h[1-6])$/i)) return el.outerHTML; 
             let text = el.textContent;
             const pause = parseInt(el.getAttribute('data-pause') || "0");
             if (pause > 0) text = `[PAUSE_${pause}] ` + text;
@@ -335,9 +335,9 @@ export async function renderPage() {
     if (textContent) {
         textContent.innerHTML = "";
         
-        if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>')) {            
+        if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>') || /<h[1-6]/i.test(pageText)) {            
             textContent.innerHTML = pageText;
-            state.sentenceElements = Array.from(textContent.querySelectorAll('n, s, img.epub-image'));
+            state.sentenceElements = Array.from(textContent.querySelectorAll('n, s, img.epub-image, h1, h2, h3, h4, h5, h6'));
             
             if (isReadingCurrentPage && state.currentDoc && isOnSavedPage) {
                 let positionFound = false;
