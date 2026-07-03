@@ -137,11 +137,32 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             content = await file.read()
             f.write(content)
 
+        # ==========================================
+        # 🌟 THE GHOST FILE MONKEY-PATCH SHIELD 🌟
+        # ==========================================
+        # ebooklib fatally crashes during read_epub() if the manifest 
+        # lists a file that isn't actually inside the ZIP archive.
+        # We temporarily hijack the internal read function to return empty bytes instead of crashing.
+        original_read_file = epub.EpubReader.read_file
+
+        def ghost_proof_read_file(self, name):
+            try:
+                return original_read_file(self, name)
+            except KeyError:
+                print(f"[Warning] EbookLib monkey-patch suppressed Ghost File: {name}")
+                return b""
+
+        epub.EpubReader.read_file = ghost_proof_read_file
+
         try:
-            book = epub.read_epub(str(temp_epub))
-        except Exception:
+            # We also pass ignore_ncx=True to shield against broken native TOC tables
+            book = epub.read_epub(str(temp_epub), {'ignore_ncx': True})
+        except Exception as e:
             shutil.rmtree(book_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail="Cannot read protected file (DRM)")
+            raise HTTPException(status_code=400, detail=f"Cannot read file (Corrupted or DRM): {e}")
+        finally:
+            # ALWAYS restore the original library function after reading so we don't break other processes!
+            epub.EpubReader.read_file = original_read_file
 
         # 🌟 EXTRACT NATIVE TOC TITLES EARLY FOR HTML NORMALIZATION
         known_toc_titles = set()
@@ -247,37 +268,72 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                                     break
                     
                     if image_item:
-                        actual_item_name = image_item.get_name()
-                        
-                        # Flatten the native filename to prevent directory escaping
-                        safe_filename = actual_item_name.replace('/', '_').replace('\\', '_')
-                        
-                        ext = posixpath.splitext(safe_filename)[1].lower()
-                        if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']: 
-                            safe_filename += ".jpg"
-                            
-                        # If image hasn't been extracted from ANY chapter yet, save it
-                        if actual_item_name not in extracted_images:
-                            image_path = book_dir / safe_filename
-                            with open(image_path, "wb") as img_file:
-                                img_file.write(image_item.get_content())
-                            
-                            image_map[safe_filename] = safe_filename
-                            extracted_images.add(actual_item_name)
-                        
-                        # Ensure URL safety for the src attribute
-                        assigned_id = urllib.parse.quote(safe_filename)
+                        # 🌟 FIX 1: Shield against "Ghost Files" (in manifest, but missing in archive)
+                        try:
+                            img_content = image_item.get_content()
+                        except Exception as e:
+                            print(f"[Warning] Ghost file skipped (missing in archive): {image_item.get_name()}")
+                            img_content = None
 
-                        new_img = soup.new_tag('img')
-                        new_img['src'] = f"/api/library/image/{doc_id}/{assigned_id}"
-                        new_img['class'] = "epub-image"
-                        new_img['loading'] = "lazy"
-                        
-                        svg_wrapper = img.find_parent('svg')
-                        if svg_wrapper:
-                            svg_wrapper.replace_with(new_img)
+                        if img_content:
+                            actual_item_name = image_item.get_name()
+                            
+                            # 1. Strip URL parameters
+                            clean_name = actual_item_name.split('?')[0].split('#')[0]
+                            
+                            # 2. Separate base name and extension
+                            base_name = posixpath.splitext(clean_name)[0]
+                            ext = posixpath.splitext(clean_name)[1].lower()
+                            
+                            # 3. Flatten slashes and strip illegal Windows OS characters
+                            import re
+                            safe_base = re.sub(r'[\\/*?:"<>|]', "", base_name.replace('/', '_').replace('\\', '_'))
+                            
+                            # 4. TRUNCATE long filenames to prevent MAX_PATH OS crashes
+                            if len(safe_base) > 50:
+                                import uuid
+                                safe_base = safe_base[:40] + "_" + uuid.uuid4().hex[:6]
+                            elif not safe_base:
+                                import uuid
+                                safe_base = f"img_{uuid.uuid4().hex[:8]}"
+
+                            if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']: 
+                                ext = ".jpg"
+                                
+                            safe_filename = f"{safe_base}{ext}"
+                                
+                            # If image hasn't been extracted from ANY chapter yet, save it
+                            if actual_item_name not in extracted_images:
+                                image_path = book_dir / safe_filename
+                                try:
+                                    with open(image_path, "wb") as img_file:
+                                        img_file.write(img_content)
+                                    
+                                    image_map[safe_filename] = safe_filename
+                                    extracted_images.add(actual_item_name)
+                                except Exception as e:
+                                    print(f"[Warning] Failed to save image {safe_filename} to disk: {e}")
+                            
+                            # Ensure URL safety for the src attribute
+                            assigned_id = urllib.parse.quote(safe_filename)
+
+                            new_img = soup.new_tag('img')
+                            new_img['src'] = f"/api/library/image/{doc_id}/{assigned_id}"
+                            new_img['class'] = "epub-image"
+                            new_img['loading'] = "lazy"
+                            
+                            svg_wrapper = img.find_parent('svg')
+                            if svg_wrapper:
+                                svg_wrapper.replace_with(new_img)
+                            else:
+                                img.replace_with(new_img)
                         else:
-                            img.replace_with(new_img)
+                            # 🌟 FIX 2: If Ghost File failed to load, gracefully delete the broken image tag
+                            svg_wrapper = img.find_parent('svg')
+                            if svg_wrapper:
+                                svg_wrapper.decompose()
+                            else:
+                                img.decompose()
                     else:
                         svg_wrapper = img.find_parent('svg')
                         if svg_wrapper:
@@ -343,7 +399,18 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 if not text:
                     continue
 
+                if not text:
+                    continue
+
                 safe_text = html.escape(text)
+
+
+                if block.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                    block.clear()
+                    block['id'] = f"s_{global_sentence_idx}"
+                    block.append(BeautifulSoup(safe_text, "html.parser"))
+                    global_sentence_idx += 1
+                    continue
 
                 new_html, global_sentence_idx = master_sentence_splitter(safe_text, global_sentence_idx)
                 
@@ -366,47 +433,73 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 href_to_page[actual_href] = len(pages)
                 pages.append(page_html)
 
-        temp_epub.unlink(missing_ok=True)
+        # 🌟 FIX: Stop Windows WinError 32 from crashing the finish line
+        try:
+            temp_epub.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"[Warning] Windows locked temp.epub, cleanup deferred: {e}")
         
         def parse_native_toc(items, level=1):
             res = []
+            if not items: return res
+            
             for item in items:
-                if isinstance(item, tuple) or isinstance(item, list):
-                    if len(item) == 2 and hasattr(item[0], 'title'):
-                        section = item[0]
-                        children = item[1]
-                        href = getattr(section, 'href', '') or ''
-                        clean_href = href.split('#')[0]
+                try:
+                    if isinstance(item, (tuple, list)):
+                        if len(item) == 2 and hasattr(item[0], 'title'):
+                            section = item[0]
+                            children = item[1]
+                            href = getattr(section, 'href', '') or ''
+                            clean_href = str(href).split('#')[0]
+                            
+                            idx = href_to_page.get(clean_href, -1)
+                            if idx == -1:
+                                for h, p in href_to_page.items():
+                                    if posixpath.basename(h) == posixpath.basename(clean_href):
+                                        idx = p
+                                        break
+                                        
+                            if idx != -1:
+                                # Shield against 'None' titles crashing the UI later
+                                title_str = str(getattr(section, 'title') or f"Chapter (Page {idx + 1})")
+                                res.append({"title": title_str, "level": level, "page_index": idx})
+                                
+                            res.extend(parse_native_toc(children, level + 1))
+                        else:
+                            res.extend(parse_native_toc(item, level))
+                    elif hasattr(item, 'title') and hasattr(item, 'href'):
+                        href = getattr(item, 'href', '') or ''
+                        clean_href = str(href).split('#')[0]
+                        
                         idx = href_to_page.get(clean_href, -1)
                         if idx == -1:
                             for h, p in href_to_page.items():
                                 if posixpath.basename(h) == posixpath.basename(clean_href):
                                     idx = p
                                     break
+                                    
                         if idx != -1:
-                            res.append({"title": section.title, "level": level, "page_index": idx})
-                        res.extend(parse_native_toc(children, level + 1))
-                    else:
-                        res.extend(parse_native_toc(item, level))
-                elif hasattr(item, 'title') and hasattr(item, 'href'):
-                    href = item.href or ''
-                    clean_href = href.split('#')[0]
-                    idx = href_to_page.get(clean_href, -1)
-                    if idx == -1:
-                        for h, p in href_to_page.items():
-                            if posixpath.basename(h) == posixpath.basename(clean_href):
-                                idx = p
-                                break
-                    if idx != -1:
-                        res.append({"title": item.title, "level": level, "page_index": idx})
+                            # Shield against 'None' titles crashing the UI later
+                            title_str = str(getattr(item, 'title') or f"Chapter (Page {idx + 1})")
+                            res.append({"title": title_str, "level": level, "page_index": idx})
+                except Exception:
+                    # Automatically skip malformed .ncx items without crashing the pipeline
+                    continue
             return res
 
         toc_map = []
-        if hasattr(book, 'toc'):
-            toc_map = parse_native_toc(book.toc)
+        try:
+            if hasattr(book, 'toc') and book.toc:
+                toc_map = parse_native_toc(book.toc)
+        except Exception as e:
+            print(f"[Warning] Native TOC parser failed: {e}")
             
         if not toc_map:
-            toc_map = generate_toc(pages)
+            try:
+                toc_map = generate_toc(pages)
+            except Exception as e:
+                print(f"[Warning] Fallback HTML TOC gen failed: {e}")
+                toc_map = [{"title": "Start of Book", "level": 1, "page_index": 0}]
 
         return {
             "pages": pages,
@@ -415,6 +508,12 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
         }
 
     except Exception as e:
+        import traceback
+        print("\n" + "="*60)
+        print("🚨 FATAL EPUB EXTRACTION CRASH 🚨")
+        traceback.print_exc()
+        print("="*60 + "\n")
+        
         shutil.rmtree(book_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -546,8 +645,10 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                     if is_scene_break:
                         page_html += f"<s>{block_text}</s>\n"
                     elif is_header:
-                        sentences_html, global_sentence_idx = master_sentence_splitter(block_text, global_sentence_idx)
-                        page_html += f"<h2>{sentences_html}</h2>\n"
+                        import html
+                        safe_header = html.escape(block_text)
+                        page_html += f'<h2 id="s_{global_sentence_idx}">{safe_header}</h2>\n'
+                        global_sentence_idx += 1
                     else:
                         sentences_html, global_sentence_idx = master_sentence_splitter(block_text, global_sentence_idx)
                         page_html += f"<p>{sentences_html}</p>\n"
@@ -626,6 +727,12 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
         }
 
     except Exception as e:
+        import traceback
+        print("\n" + "="*60)
+        print("🚨 FATAL PDF EXTRACTION CRASH 🚨")
+        traceback.print_exc()
+        print("="*60 + "\n")
+        
         shutil.rmtree(book_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
 
