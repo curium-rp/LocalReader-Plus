@@ -246,101 +246,117 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                     continue
 
                 src = img.get('src') or img.get('xlink:href') or img.get('href')
+                if not src:
+                    svg_wrapper = img.find_parent('svg')
+                    if svg_wrapper: svg_wrapper.decompose()
+                    else: img.decompose()
+                    continue
+
+                src = src.split('#')[0]
+                resolved_href = urllib.parse.unquote(posixpath.normpath(posixpath.join(html_dir, src))).lstrip('/')
                 
-                if src:
-                    src = src.split('#')[0]
-                    resolved_href = urllib.parse.unquote(posixpath.normpath(posixpath.join(html_dir, src))).lstrip('/')
-                    image_item = book.get_item_with_href(resolved_href)
-                    
-                    if not image_item:
-                        search_href = resolved_href.lower()
+                # Try Engine 1: Standard EbookLib Lookup
+                image_item = book.get_item_with_href(resolved_href)
+                if not image_item:
+                    search_href = resolved_href.lower()
+                    for i in book.get_items():
+                        if i.get_name().lower() == search_href:
+                            image_item = i
+                            break
+                            
+                if not image_item:
+                    search_basename = posixpath.basename(resolved_href).lower()
+                    if search_basename:
                         for i in book.get_items():
-                            if i.get_name().lower() == search_href:
+                            if posixpath.basename(i.get_name()).lower() == search_basename:
                                 image_item = i
                                 break
-                                
-                    if not image_item:
-                        search_basename = posixpath.basename(resolved_href).lower()
-                        if search_basename:
-                            for i in book.get_items():
-                                if posixpath.basename(i.get_name()).lower() == search_basename:
-                                    image_item = i
-                                    break
-                    
-                    if image_item:
-                        # 🌟 FIX 1: Shield against "Ghost Files" (in manifest, but missing in archive)
+
+                img_content = None
+                actual_item_name = None
+
+                # Engine 1 Extraction Attempt
+                if image_item:
+                    try:
+                        img_content = image_item.get_content()
+                        actual_item_name = image_item.get_name()
+                    except Exception as e:
+                        print(f"[Warning] Manifested Ghost file skipped: {image_item.get_name()}")
+                        img_content = None
+
+                # ==========================================
+                # 🌟 ENGINE 2: THE RAW ZIP BYPASS SHIELD
+                # ==========================================
+                # If EbookLib couldn't find the file because the publisher forgot to list it 
+                # in the manifest, we crack open the raw ZIP archive and extract it by force.
+                if not img_content:
+                    search_basename = posixpath.basename(resolved_href)
+                    if search_basename:
                         try:
-                            img_content = image_item.get_content()
+                            import zipfile
+                            with zipfile.ZipFile(str(temp_epub), 'r') as z:
+                                match_path = None
+                                # Scan the raw directory tree of the zip file
+                                for zinfo in z.infolist():
+                                    if posixpath.basename(zinfo.filename) == search_basename:
+                                        match_path = zinfo.filename
+                                        break
+                                
+                                if match_path:
+                                    img_content = z.read(match_path)
+                                    actual_item_name = match_path
+                                    print(f"[Info] Rescued unmanifested image via Raw ZIP Engine: {match_path}")
                         except Exception as e:
-                            print(f"[Warning] Ghost file skipped (missing in archive): {image_item.get_name()}")
-                            img_content = None
+                            print(f"[Warning] Raw ZIP Engine failed for {search_basename}: {e}")
 
-                        if img_content:
-                            actual_item_name = image_item.get_name()
-                            
-                            # 1. Strip URL parameters
-                            clean_name = actual_item_name.split('?')[0].split('#')[0]
-                            
-                            # 2. Separate base name and extension
-                            base_name = posixpath.splitext(clean_name)[0]
-                            ext = posixpath.splitext(clean_name)[1].lower()
-                            
-                            # 3. Flatten slashes and strip illegal Windows OS characters
-                            import re
-                            safe_base = re.sub(r'[\\/*?:"<>|]', "", base_name.replace('/', '_').replace('\\', '_'))
-                            
-                            # 4. TRUNCATE long filenames to prevent MAX_PATH OS crashes
-                            if len(safe_base) > 50:
-                                import uuid
-                                safe_base = safe_base[:40] + "_" + uuid.uuid4().hex[:6]
-                            elif not safe_base:
-                                import uuid
-                                safe_base = f"img_{uuid.uuid4().hex[:8]}"
+                # ==========================================
+                # SAVE & SANITIZE PHASE
+                # ==========================================
+                if img_content and actual_item_name:
+                    clean_name = actual_item_name.split('?')[0].split('#')[0]
+                    base_name = posixpath.splitext(clean_name)[0]
+                    ext = posixpath.splitext(clean_name)[1].lower()
+                    
+                    import re
+                    safe_base = re.sub(r'[\\/*?:"<>|]', "", base_name.replace('/', '_').replace('\\', '_'))
+                    
+                    if len(safe_base) > 50:
+                        import uuid
+                        safe_base = safe_base[:40] + "_" + uuid.uuid4().hex[:6]
+                    elif not safe_base:
+                        import uuid
+                        safe_base = f"img_{uuid.uuid4().hex[:8]}"
 
-                            if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']: 
-                                ext = ".jpg"
-                                
-                            safe_filename = f"{safe_base}{ext}"
-                                
-                            # If image hasn't been extracted from ANY chapter yet, save it
-                            if actual_item_name not in extracted_images:
-                                image_path = book_dir / safe_filename
-                                try:
-                                    with open(image_path, "wb") as img_file:
-                                        img_file.write(img_content)
-                                    
-                                    image_map[safe_filename] = safe_filename
-                                    extracted_images.add(actual_item_name)
-                                except Exception as e:
-                                    print(f"[Warning] Failed to save image {safe_filename} to disk: {e}")
+                    if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']: 
+                        ext = ".jpg"
+                        
+                    safe_filename = f"{safe_base}{ext}"
+                        
+                    if actual_item_name not in extracted_images:
+                        image_path = book_dir / safe_filename
+                        try:
+                            with open(image_path, "wb") as img_file:
+                                img_file.write(img_content)
                             
-                            # Ensure URL safety for the src attribute
-                            assigned_id = urllib.parse.quote(safe_filename)
+                            image_map[safe_filename] = safe_filename
+                            extracted_images.add(actual_item_name)
+                        except Exception as e:
+                            print(f"[Warning] Failed to save image {safe_filename} to disk: {e}")
+                    
+                    assigned_id = urllib.parse.quote(safe_filename)
 
-                            new_img = soup.new_tag('img')
-                            new_img['src'] = f"/api/library/image/{doc_id}/{assigned_id}"
-                            new_img['class'] = "epub-image"
-                            new_img['loading'] = "lazy"
-                            
-                            svg_wrapper = img.find_parent('svg')
-                            if svg_wrapper:
-                                svg_wrapper.replace_with(new_img)
-                            else:
-                                img.replace_with(new_img)
-                        else:
-                            # 🌟 FIX 2: If Ghost File failed to load, gracefully delete the broken image tag
-                            svg_wrapper = img.find_parent('svg')
-                            if svg_wrapper:
-                                svg_wrapper.decompose()
-                            else:
-                                img.decompose()
+                    new_img = soup.new_tag('img')
+                    new_img['src'] = f"/api/library/image/{doc_id}/{assigned_id}"
+                    new_img['class'] = "epub-image"
+                    new_img['loading'] = "lazy"
+                    
+                    svg_wrapper = img.find_parent('svg')
+                    if svg_wrapper:
+                        svg_wrapper.replace_with(new_img)
                     else:
-                        svg_wrapper = img.find_parent('svg')
-                        if svg_wrapper:
-                            svg_wrapper.decompose()
-                        else:
-                            img.decompose()
+                        img.replace_with(new_img)
                 else:
+                    # Only delete the tag if BOTH engines completely failed to find the bytes
                     svg_wrapper = img.find_parent('svg')
                     if svg_wrapper:
                         svg_wrapper.decompose()
@@ -914,25 +930,7 @@ async def update_book_progress_checkpoint(doc_id: str, payload: ProgressUpdatePa
         temp_lib_path.replace(library_file)
         
     except Exception as io_error:
-        raise HTTPException(status_code=500, detail=f"Global database sync failure: {str(io_error)}")
+        print(f"[Error] Failed to auto-save progress to library.json: {io_error}")
+        raise HTTPException(status_code=500, detail=f"Database sync failure: {str(io_error)}")
 
-    try:
-        book_file_path = get_doc_json_path(doc_id)
-        if book_file_path.exists():
-            with open(book_file_path, "r", encoding="utf-8") as f:
-                book_data = json.load(f)
-            
-            book_data["currentPage"] = payload.currentPage
-            book_data["lastSentenceId"] = payload.lastSentenceId
-            book_data["lastSentenceIndex"] = payload.lastSentenceIndex
-            book_data["lastAccessed"] = payload.lastAccessed
-
-            temp_book_path = book_file_path.with_suffix(".tmp")
-            with open(temp_book_path, "w", encoding="utf-8") as write_handle:
-                json.dump(book_data, write_handle, indent=4, ensure_ascii=False)
-            temp_book_path.replace(book_file_path)
-            
-    except Exception as e:
-        print(f"[Warning] Failed to dual-save individual book {doc_id}.json: {str(e)}")
-
-    return {"status": "success", "message": f"Checkpoint dual-saved for {doc_id}"}
+    return {"status": "success", "message": f"Checkpoint saved for {doc_id}"}
