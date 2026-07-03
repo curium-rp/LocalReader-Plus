@@ -231,29 +231,32 @@ def auto_translate_numbers(text: str, lang: str = "en") -> str:
         # 1. Forward & Backward Scanner (Isolate the number context)
         left_char = ""
         for char in reversed(text[:start_idx]):
-            if char.strip() and not re.match(r'[.,!?"\'\(\)\[\]\{\}\-\_]', char):
+            # 🌟 Added Smart Quotes, Ellipses, and Em-dashes to the ignore list!
+            if char.strip() and not re.match(r'[.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–\s]', char):
                 left_char = char
                 break
                 
         right_char = ""
         for char in text[end_idx:]:
-            if char.strip() and not re.match(r'[.,!?"\'\(\)\[\]\{\}\-\_]', char):
+            if char.strip() and not re.match(r'[.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–\s]', char):
                 right_char = char
                 break
         
-        # 2. Deactivation Check (Detect CJK context)
-        is_left_cjk = bool(re.match(r'[^\x00-\x7F]', left_char)) if left_char else False
-        is_right_cjk = bool(re.match(r'[^\x00-\x7F]', right_char)) if right_char else False
+        # 2. Deactivation Check (STRICTLY Japanese Only)
+        # We deleted the broken [^\x00-\x7F] and strictly target Japanese characters.
+        ja_regex = r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]'
+        is_left_ja = bool(re.match(ja_regex, left_char)) if left_char else False
+        is_right_ja = bool(re.match(ja_regex, right_char)) if right_char else False
         
         try:
             clean_number = int(raw_string.replace(',', ''))
             
             # 3. Dynamic Native Translation via num2words
-            # Protects CJK overlap, then explicitly routes to new global languages.
-            if is_left_cjk or is_right_cjk or lang.startswith('ja'):
+            if lang.startswith('ja') or is_left_ja or is_right_ja:
                 return num2words(clean_number, lang='ja')
-            elif lang.startswith('cmn') or lang.startswith('zh'):
-                return num2words(clean_number, lang='zh')
+            # 🌟 ZH/CMN DELETED! Chinese fallbacks will now strictly read numbers in English!
+            elif lang.startswith('cmn') or lang.startswith('zh') or lang.startswith('en'):
+                return num2words(clean_number, lang='en')
             elif lang.startswith('es'):
                 return num2words(clean_number, lang='es')
             elif lang.startswith('fr'):
