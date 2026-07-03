@@ -51,23 +51,47 @@ function selectExportFormat() {
                 let isBetween = !isSingleMode && startIndex !== null && endIndex !== null && index > startIndex && index < endIndex;
                 let isSingle = isSingleMode && selectedSingleIndex === index && !item.isVirtual;
 
+                // Escape quotes for the HTML title attribute to prevent breakage
+                const safeTitle = item.title ? item.title.replace(/"/g, '&quot;') : '';
+
+                // We must wrap the content in a flex container with overflow-hidden
+                // to force Tailwind's truncate to work properly against the parent bounds.
                 if (isSingle) {
                     div.className += 'bg-purple-500/20 border-purple-500 text-purple-300 font-bold';
-                    div.innerHTML = `<span class="truncate pr-2">${item.title}</span><span class="text-[10px] bg-purple-500 text-white px-2 py-0.5 rounded-full font-bold">SELECTED</span>`;
+                    div.innerHTML = `
+                        <div class="flex items-center justify-between w-full overflow-hidden gap-2">
+                            <span class="truncate" title="${safeTitle}">${item.title}</span>
+                            <span class="shrink-0 text-[10px] bg-purple-500 text-white px-2 py-0.5 rounded-full font-bold">SELECTED</span>
+                        </div>`;
                 } else if (isStart) {
                     div.className += 'bg-green-500/20 border-green-500 text-green-300 font-bold';
-                    div.innerHTML = `<span class="truncate pr-2">${item.title}</span><span class="text-[10px] bg-green-500 text-black px-2 py-0.5 rounded-full font-bold">START</span>`;
+                    div.innerHTML = `
+                        <div class="flex items-center justify-between w-full overflow-hidden gap-2">
+                            <span class="truncate" title="${safeTitle}">${item.title}</span>
+                            <span class="shrink-0 text-[10px] bg-green-500 text-black px-2 py-0.5 rounded-full font-bold">START</span>
+                        </div>`;
                 } else if (isEnd) {
                     div.className += 'bg-red-500/20 border-red-500 text-red-300 font-bold';
-                    div.innerHTML = `<span class="truncate pr-2">${item.title}</span><span class="text-[10px] bg-red-500 text-white px-2 py-0.5 rounded-full font-bold">END</span>`;
+                    div.innerHTML = `
+                        <div class="flex items-center justify-between w-full overflow-hidden gap-2">
+                            <span class="truncate" title="${safeTitle}">${item.title}</span>
+                            <span class="shrink-0 text-[10px] bg-red-500 text-white px-2 py-0.5 rounded-full font-bold">END</span>
+                        </div>`;
                 } else if (isBetween) {
                     div.className += 'bg-blue-500/10 border-blue-500/30 text-zinc-300';
-                    div.innerHTML = `<span class="truncate pr-2">${item.title}</span>`;
+                    div.innerHTML = `
+                        <div class="flex items-center justify-between w-full overflow-hidden gap-2">
+                            <span class="truncate" title="${safeTitle}">${item.title}</span>
+                        </div>`;
                 } else {
                     const paddingLeft = item.level === 1 ? '0.5rem' : item.level === 2 ? '1.5rem' : '2.5rem';
                     div.style.paddingLeft = paddingLeft;
                     div.className += 'border-transparent text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200';
-                    div.innerHTML = `<span class="truncate pr-2 ${item.level === 1 ? 'font-bold' : ''}">${item.title}</span>${item.isVirtual ? '' : `<span class="text-[10px] text-zinc-600">Pg ${item.page_index + 1}</span>`}`;
+                    div.innerHTML = `
+                        <div class="flex items-center justify-between w-full overflow-hidden gap-2">
+                            <span class="truncate ${item.level === 1 ? 'font-bold' : ''}" title="${safeTitle}">${item.title}</span>
+                            ${item.isVirtual ? '' : `<span class="shrink-0 text-[10px] text-zinc-600">Pg ${item.page_index + 1}</span>`}
+                        </div>`;
                 }
 
                 div.onclick = () => {
