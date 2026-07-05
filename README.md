@@ -74,7 +74,9 @@ Run these commands to create the environment, activate it, install dependencies,
 
 ```powershell
 uv venv --python 3.14
-.\.venv\Scripts\activate
+
+.venv\Scripts\activate
+
 uv pip install -r requirements.txt
 
 python main.py
@@ -113,6 +115,7 @@ brew install uv
 
 Open your Terminal inside the `LocalReader-Plus/dist/` folder and run the following commands to set everything up:
 
+bash
 ```bash
 
 uv venv --python 3.14
@@ -182,10 +185,11 @@ pip install onnxruntime-gpu
 
 **Uninstalling:**
 
-
 **Remove .venv and folder of LocalReader_plus**: 
 
-**Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
+for uninstall uv go [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/)  and scroll down to buttom of web it will have Uninstallation.
+
+
 
 </br>
 
@@ -388,6 +392,7 @@ This project is made possible thanks to the following open-source libraries and 
       - Python version (`python --version`)
       - OS
       - Error message or screenshot
+
   _New feature? ticket or help me and pull request_
       
 
