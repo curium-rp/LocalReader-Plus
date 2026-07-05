@@ -4,18 +4,30 @@
 
 System Requirements:
 - Python 3.12+ (Tested on 3.12, 3.13, and 3.14)
-- (it should for 3.10 and 3.11)
+- (it should run in 3.10 and 3.11)]
+========================================================================
+========================================================================
+
+##################  WINDOWS INSTALLATION  #########################
+
+Install python>> https://www.python.org/downloads/  <<python 3.14.xx
+ 
+Use >Windows installer (64-bit)< Recommended 
+
 ------------------------------------------------------------------------
-METHOD 1: GLOBAL WINDOWS INSTALLATION (NO VENV)
+METHOD 1: GLOBAL WINDOWS INSTALLATION (NO VENV/VIRTUAL ENVIRONMENTS) 
 ------------------------------------------------------------------------
 Only use this if you intentionally want to install dependencies globally.
+
 
 [ Option A: Download via Git Clone ]
 Open your terminal in the folder where you want to install it:
 
 
 git clone https://github.com/curium-rp/LocalReader-Plus
+
 cd LocalReader-Plus\dist
+
 pip install -r requirements.txt
 
 python main.py
@@ -42,22 +54,24 @@ Step 4: Run the following commands (you can copy/paste this whole block):
 
 
 python -m venv .venv
-.\.venv\Scripts\activate
+
+.venv\Scripts\activate
+
 pip install -r requirements.txt
 
 python main.py
 
 
-
+########################################################################
 ------------------------------------------------------------------------
-[ Standard Mac / Linux ]
+#############    [ Standard Mac / Linux ]   ############################
 ------------------------------------------------------------------------
 Step 1: Extract the downloaded ZIP file.
 Step 2: Open the folder and locate the "dist" folder.
 Step 3: Right-click the "dist" folder and select "New Terminal at Folder" (Mac) or "Open in Terminal" (Linux).
 Step 4: Run the following commands:
 ------------------------------------------------------------------------
-
+#bash/zsh
 
 python3 -m venv .venv
 
@@ -75,18 +89,22 @@ python3 main.py
 ------------------------------------------------------------------------
 * Note for Mac/Linux: If you encounter an error related to Kokoro or onnxruntime on the first run, simply uninstall onnxruntime and install it again.
 
+deactivate a virtual environment by typing "deactivate" in your shell. 
 
 ------------------------------------------------------------------------
-CLEANUP & UNINSTALLATION
+ ############    CLEANUP & UNINSTALLATION        #############
 ------------------------------------------------------------------------
 
 [ If you used a Virtual Environment (.venv) ]
 Simply delete the ".venv" folder inside the "dist" directory. That's it!
 
+
+
+========================================================================
 [ If you installed Globally on Windows ]
 Run these commands in PowerShell to remove the dependencies and clear the cache:
-
-# 1. Uninstall the active dependencies
+========================================================================
+# 1. Uninstall the active dependencies in PowerShell
 
 pip freeze > pip.txt
 pip uninstall -r pip.txt -y
@@ -98,5 +116,7 @@ Remove-Item pip.txt
 # 3. Purge the pip cache to free up hard drive space
 
 pip cache purge
+
+#go to setting > install apps and uninstall Python
 
 ========================================================================
