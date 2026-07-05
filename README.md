@@ -51,7 +51,7 @@
 ### Step 1: Install Uv
 If you don't have `uv` installed yet, check the [Official Getting Started Guide](https://docs.astral.sh/uv/getting-started/installation/), or watch this [Installation Video](https://www.youtube.com/watch?v=zMhRLr7FmdY), or simply run this command in PowerShell:
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm [https://astral.sh/uv/install.ps1](https://astral.sh/uv/install.ps1) | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 ```
 
@@ -99,8 +99,7 @@ If you don't have `uv` installed, use one of the following commands:
 **Using Curl (Linux & macOS):**
 
 ```bash
-curl -LsSf [https://astral.sh/uv/install.sh](https://astral.sh/uv/install.sh) | sh
-
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 **Using Homebrew (macOS Alternative):**
