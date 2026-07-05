@@ -1,8 +1,10 @@
-# LocalReader Plus
+<div align="center">
+  <h1>LocalReader Plus</h1>
+</div>
 
-**A modern, that I fix and improve and fix many things.**
+**A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-##🚨Update June 30, 2026 ##
+## 🚨Update June 3, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -13,70 +15,123 @@
 ---
 # What difference from LocalReader Pro(main)
    **Wave I**
-   -  Have feature that handle reading number 
-   -  Have more smart chunk (cut sentence before reach limit), is use IPA for count if reach limit of 510 phoneme if it nearly limit will cut it, smoothly.
    -  Have support with GPU NVDIA _NEED more setup_
-   -  Delay audio startup or buffer startup, set to 1000ms - 1 seconde
-   -  No .exe options for Windows.
+   - Many bug has been fix 
+     - Fix pause setting not respond.
+     - Fix preload next sentences when apply pause settings.  _Trade-off, is may or may not happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, I means it need to wait -old buffer setting end._
+     - Fix cache system cause repreat or skip sentences, randomly, and improve preload next sentences
+   -  Delete .exe options for Windows (No plan to add back, cause ONNX Runtime requires specific versions for each Python version)
    -  Have themes (auto save and default is dark mode open on LOGO "LocalReader")
 
-   **Wave II**
-   -  Add ToC/Table of Content support. (redeign convertor of EPUB and PDF)
-   -  Add Images supprt.
-   -  Add Match Case and Match Whole Word for search functions and imporve jump to selects result.
-   -  Support auto switch languages, it currently Only support when use models voice English it will fallback support with Japanese and China(Mandarin).
+  **Wave II**
+   -  Add ToC/Table of Content support.
+   -  Improve library (Import system) it will reserve paragraph, Haeder, images. (header will not mix with other sentence/paragraph again)
+   -  Add Match Case and Match Whole Word for search functions and imporve jump result.
+   -  Support auto switch languages, it currently Only support when use models voice English it will fallback support with Japanese and Mandarin.
    -  Improve reliability of apps.
    -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
    -  Improve Export audio system it will use Pause/Behavior/voice settings.
    
    _Have detects 'ExecutionProvider' in Windows, Mac, and Linux for Kokoro_gpu models it should works in Gpu if it can will fallback to Cpu_
-   (_default will run on Cpu, cuz Kokoro-onnx will install 'onnxruntime' **Cpu version** it will run on **Cpu** regradless of models 'Gpu'_)
+   (_default will run on Cpu, cuz Kokoro-onnx will install 'onnxruntime' **Cpu version** it will run on **Cpu** regardless of whether the model is 'GPU'_)
 
-# Many bug has been fix  #
-   
-   **-Fix pause setting not respond.**
-   
-   **-Fix preload system when apply pause setthing.**  _Trade-off, is may happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, i mean it need to wait -old buffer setting end._
-   
-   **-Fix cache system cause repreat and skip reading, randomly.**
-   
-   **-Fix buffer not works as expect**
-   
+
+</br>
+
 ---
-# Windows installation
 
-   _Install **Python 3.12** if not install yet, _support Python 3.10-3.14_
-   (Python 3.12, 3.13 and 3.14 has been test, it can run no problem if it has I'll fix it)
-   
-  
-  ## **First method for download** 
-   Choose folders that needed to install and open teminal - _can delete .git in folder_
-   
+**Python versions support**:
+- Python 3.12+ (Tested on 3.12, 3.13, and 3.14)
+- (For 3.10 and 3.11 I didn't tested yet but it should run)
+
+## Windows Installation (Virtual Environment with Uv)
+
+> **Note:** If you want to run this without a virtual environment or prefer the standard `.venv` method, please see the full instructions in [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
+
+### Step 1: Install Uv
+If you don't have `uv` installed yet, check the [Official Getting Started Guide](https://docs.astral.sh/uv/getting-started/installation/), or watch this [Installation Video](https://www.youtube.com/watch?v=zMhRLr7FmdY), or simply run this command in PowerShell:
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm [https://astral.sh/uv/install.ps1](https://astral.sh/uv/install.ps1) | iex"
+
 ```
+
+### Step 2: Download the Project
+
+**Option A: Git Clone** 
+
+```powershell
 git clone https://github.com/curium-rp/LocalReader-Plus
-```
-
-```
 cd LocalReader-Plus\dist
-pip install -r requirements.txt
-```
-**And run**
 
 ```
+
+**Option B: Download ZIP** 
+Download and extract the ZIP from the repository, then open PowerShell inside the `LocalReader-Plus\dist` folder.
+
+### Step 3: Setup and Run
+
+Run these commands to create the environment, activate it, install dependencies, and start the app. *(Note: `uv` will automatically download Python 3.14 for you if you don't have it!)* 
+
+```powershell
+uv venv --python 3.14
+.\.venv\Scripts\activate
+uv pip install -r requirements.txt
+
 python main.py
-```
- ---
-   ## **Second method** download zip and unzip it.
 
-   Go to **LocalReader-Plus\ "dist"**  open teminal inside folder dist and run 
 ```
-pip install -r requirements.txt
+
+*To deactivate the virtual environment later, just run `deactivate`.*
+
+---
+
+## 🍎🐧 Mac & Linux Installation (Virtual Environment with Uv)
+
+> 
+> **Note:** If you prefer the standard `.venv` method, please visit [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
+> 
+> 
+
+### Step 1: Install Uv
+
+If you don't have `uv` installed, use one of the following commands:
+
+**Using Curl (Linux & macOS):**
+
+```bash
+curl -LsSf [https://astral.sh/uv/install.sh](https://astral.sh/uv/install.sh) | sh
+
 ```
+
+**Using Homebrew (macOS Alternative):**
+
+```bash
+brew install uv
+
 ```
+
+### Step 2: Setup and Run Environment
+
+Open your Terminal inside the `LocalReader-Plus/dist/` folder and run the following commands to set everything up:
+
+```bash
+
+uv venv --python 3.14
+
+source .venv/bin/activate
+
+uv pip install -r requirements.txt
+
 python main.py
+
 ```
 
-   **If has some error when run python main.py say something like "kokoro" run uninstall onnxruntime and install back**
+*To deactivate the virtual environment later, just type `deactivate`.*
+
+</br>
+---
+
+   **If has some error when run python main.py say something relate with "kokoro" run uninstall onnxruntime and install back**
 ```
 pip uninstall onnxruntime 
 ```
@@ -84,10 +139,10 @@ pip uninstall onnxruntime
 pip install onnxruntime
 ```
 
-**(Run or skip to next step for NVIDIA GPU setup)**
-
 ---
-## This is what needed to do for KOKORO model for run on NVIDIA GPU on WINDOWS
+</br>
+
+## This is what needed to do for KOKORO model for run on NVIDIA GPU (WINDOWS)
 
    install **cuda v12 [https://developer.nvidia.com/cuda-12-8-0-download-archive](https://developer.nvidia.com/cuda-12-8-0-download-archive)**
   
@@ -128,61 +183,16 @@ pip install onnxruntime-gpu
 
 **Uninstalling:**
 
-To completely remove the supporting software (Python and Libraries):
 
-**Remove Libraries**: If you haven't deleted the folder yet, open a terminal in the "dist" folder and run: `pip uninstall -r requirements.txt`
+**Remove .venv and folder of LocalReader_plus**: 
 
 **Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
 
-**Clear Model Cache**: Many voices and AI models are stored in your user profile. You can delete the `.cache` folder in your user directory (usually `C:\Users\<YourName>\.cache\kokoro`) to free up additional space.
+</br>
 
----
-
-### Linux / Manual Installation
-
-**Prerequisites:** Python 3.10 - 3.13 (Recommended: Python 3.12 )
-
-> ⚠️ **Important:** Python 3.14 I didn't test yet, for 3.13 it can run and no problem has been found
-
-**Step 1: Install Python**
-
-```bash
-# Ubuntu/Debian
-sudo apt update
-sudo apt install python3.12 python3.12-pip python3.12-venv
-
-# Verify installation
-python3.12 --version
-```
-
-**Step 2: Extract and Navigate**
-
-```bash
-unzip LocalReader-Plus-main.zip
-cd LocalReader-Plus-main/dist
-```
-
-**Step 3: Install Dependencies**
-
-```bash
-# Option A: Using pip
-pip install -r requirements.txt
-
-# Option B: Using python -m pip (if pip not in PATH)
-python3.12 -m pip install -r requirements.txt
-```
-
-
-**Step 4: Launch the App**
-
-```bash
-python3.12 main.py
-```
-_(IF Mac or Linux has problem with error in Termimal when first run >main.py Do uninstall onnxruntime and install back)_
----
 ## 🔘for Original visit [Original LocalReader-Pro](https://github.com/revisionhiep-create/LocalReader-Pro)
 
-
+</br>
 
 ### Custom Pause Settings
 
@@ -196,7 +206,7 @@ _(IF Mac or Linux has problem with error in Termimal when first run >main.py Do 
    - **Colon (:)** - Default: 500ms
    - **Semicolon (;)** - Default: 500ms
 
- **!(New) Behavior settings:**
+ **!Behavior settings:**
    - `Header Pause (H)` Gives the user breathing room between a Chapter Title and the story text (0ms to 10s). default 2 second
          -It will apply in front of header 100% and close H 30% 
          -It will apply less settings ms by H2/2, H3/1.5 - apply H2 half of H1 tag
@@ -208,7 +218,7 @@ _(IF Mac or Linux has problem with error in Termimal when first run >main.py Do 
    
 3. Settings save automatically
 
-  
+  </br>
 ---
 
 ## 🔳 Keyboard Shortcuts
@@ -222,6 +232,7 @@ _(IF Mac or Linux has problem with error in Termimal when first run >main.py Do 
 | `ESC`              | Close Search      |
 
 ---
+</br>
 
 ## ⚙️ Technical Details
 
@@ -369,28 +380,28 @@ This project is made possible thanks to the following open-source libraries and 
 - **Audio Processing:** [FFMPEG](https://ffmpeg.org/)
   
 ---
-
+</br>
 ### Found a Bug? Support
 
-  1. Check what missing and try to use pip instal it 
+  0. Check what is missing and try to use pip install it
   or check error massage in terminal
-  3. Open ticket with:
+  1. Open ticket with:
       - Python version (`python --version`)
       - OS
       - Error message or screenshot
   _New feature? ticket or help me and pull request_
       
-   
+
  
-
+</br>
 ---
-
+</br>
 
 **Engine:** Kokoro onnx-82M (Dual-Mode: CPU/GPU)
 
 **Last Original LocalReader Pro updated:**January 6, 2026
 ---
-
+</br>
 ---
 ***Epub or Pdf files should not be DRM (Digital Rights Management)***
 
