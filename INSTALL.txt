@@ -1,0 +1,102 @@
+========================================================================
+                  LocalReader-Plus Installation Guide
+========================================================================
+
+System Requirements:
+- Python 3.12+ (Tested on 3.12, 3.13, and 3.14)
+- (it should for 3.10 and 3.11)
+------------------------------------------------------------------------
+METHOD 1: GLOBAL WINDOWS INSTALLATION (NO VENV)
+------------------------------------------------------------------------
+Only use this if you intentionally want to install dependencies globally.
+
+[ Option A: Download via Git Clone ]
+Open your terminal in the folder where you want to install it:
+
+
+git clone https://github.com/curium-rp/LocalReader-Plus
+cd LocalReader-Plus\dist
+pip install -r requirements.txt
+
+python main.py
+
+
+[ Option B: Download via ZIP ]
+Extract the files, open the "dist" folder, right-click to open the terminal, and run:
+
+pip install -r requirements.txt
+python main.py
+
+
+
+------------------------------------------------------------------------
+METHOD 2: USING VIRTUAL ENVIRONMENTS (RECOMMENDED)
+------------------------------------------------------------------------
+This is the safest method as it keeps dependencies isolated from your system.
+
+[ Standard Windows ]
+Step 1: Extract the downloaded ZIP file.
+Step 2: Open the folder and locate the "dist" folder.
+Step 3: Right-click inside the "dist" folder and select "Open in Terminal".
+Step 4: Run the following commands (you can copy/paste this whole block):
+
+
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+
+python main.py
+
+
+
+------------------------------------------------------------------------
+[ Standard Mac / Linux ]
+------------------------------------------------------------------------
+Step 1: Extract the downloaded ZIP file.
+Step 2: Open the folder and locate the "dist" folder.
+Step 3: Right-click the "dist" folder and select "New Terminal at Folder" (Mac) or "Open in Terminal" (Linux).
+Step 4: Run the following commands:
+------------------------------------------------------------------------
+
+
+python3 -m venv .venv
+
+
+source .venv/bin/activate
+
+
+pip install -r requirements.txt
+
+
+python3 main.py
+
+
+
+------------------------------------------------------------------------
+* Note for Mac/Linux: If you encounter an error related to Kokoro or onnxruntime on the first run, simply uninstall onnxruntime and install it again.
+
+
+------------------------------------------------------------------------
+CLEANUP & UNINSTALLATION
+------------------------------------------------------------------------
+
+[ If you used a Virtual Environment (.venv) ]
+Simply delete the ".venv" folder inside the "dist" directory. That's it!
+
+[ If you installed Globally on Windows ]
+Run these commands in PowerShell to remove the dependencies and clear the cache:
+
+# 1. Uninstall the active dependencies
+
+pip freeze > pip.txt
+pip uninstall -r pip.txt -y
+
+# 2. Delete the text file you just made
+
+Remove-Item pip.txt
+
+# 3. Purge the pip cache to free up hard drive space
+
+pip cache purge
+
+========================================================================
