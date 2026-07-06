@@ -17,7 +17,6 @@ pydantic
 beautifulsoup4
 lxml
 num2words
-eng_to_ipa
 
 ## --- Document Parsing ---##
 ebooklib
