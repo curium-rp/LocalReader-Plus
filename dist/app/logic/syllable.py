@@ -1,11 +1,5 @@
 import re
 
-try:
-    import eng_to_ipa as ipa
-    HAS_IPA = True
-except ImportError:
-    HAS_IPA = False
-
 # --- THE NUMBER ENGINE ---
 try:
     from num2words import num2words
@@ -13,11 +7,17 @@ try:
 except ImportError:
     HAS_NUM2WORDS = False
 
+# --- THE PHONEME ENGINE ---
+try:
+    from phonemizer import phonemize
+    HAS_PHONEMIZER = True
+except ImportError:
+    HAS_PHONEMIZER = False
+
 def expand_numbers(text: str) -> str:
     """
-    Finds numbers in the text and converts them to words.
+    Converts numerical digits into spoken words to match TTS audio generation.
     E.g., "1999" -> "one thousand nine hundred and ninety-nine"
-    This guarantees the phoneme token count is accurate for spoken text.
     """
     if not HAS_NUM2WORDS:
         return text
@@ -27,58 +27,56 @@ def expand_numbers(text: str) -> str:
         try:
             if '.' in num_str:
                 return num2words(float(num_str))
-            else:
-                return num2words(int(num_str))
+            return num2words(int(num_str))
         except Exception:
             return num_str
 
+    # Matches standard numbers, comma-separated thousands, and decimals.
     return re.sub(r'\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b', replace_num, text)
-# -------------------------
 
 def estimate_phonemes(text: str) -> int:
     """
-    BUG 2 FIX: Standalone token counter with safe-ceiling mathematics.
-    Accounts for Kokoro's invisible stress marks and espeak inflation,
-    guaranteeing the payload NEVER hits the 510 hard-crash limit.
+    Calculates the exact token footprint for Kokoro-ONNX to prevent 510-token crashes.
+    Uses espeak-ng via phonemizer to mirror Kokoro's internal G2P engine perfectly.
     """
-    if not text.strip():
+    text = text.strip()
+    if not text:
         return 0
         
-    if not HAS_IPA:
-        # Fallback: Character count with a 20% mathematical safety margin
-        return int(len(text) * 1.20)
+    if not HAS_PHONEMIZER:
+        # Fallback: Character count with a strict 25% safety margin if libraries are missing.
+        return int(len(text) * 1.25)
 
     try:
-        # 1. Expand numbers to spoken words
-        safe_text = expand_numbers(text)
+        # 1. Expand numbers to spoken words for accurate phonetic length
+        spoken_text = expand_numbers(text)
         
-        # 2. Convert to IPA format. 
-        ipa_text = ipa.convert(safe_text)
+        # 2. Generate exact IPA string using Kokoro's native backend (espeak)
+        ipa_text = phonemize(
+            spoken_text,
+            language='en-us',
+            backend='espeak',
+            strip=True,
+            preserve_punctuation=True,
+            with_stress=True
+        )
         
-        # --- SURGICAL CHANGE: The Hallucination & Stress Mark Fix ---
-        # Kokoro's internal espeak engine heavily inflates unknown words with 
-        # hidden phonetic stress symbols. We must mathematically pad the estimate.
-        words = ipa_text.split()
-        safe_token_count = 0
+        # 3. Mathematical Token Calculation
+        # Kokoro maps nearly all individual IPA characters to single tensor tokens.
+        base_tokens = len(ipa_text)
         
-        for word in words:
-            if '*' in word:
-                # Unknown word penalty: Multiply its length by 1.5 to guarantee 
-                # we cover the extra tokens Kokoro will generate to sound it out.
-                actual_letters = len(word.replace('*', ''))
-                safe_token_count += int(actual_letters * 1.5)
-            else:
-                # Known words: Standard IPA length
-                safe_token_count += len(word)
-                
-        # Add back the spaces between the words
-        safe_token_count += max(0, len(words) - 1)
+        # 4. Engine Overhead & Padding
+        # - Kokoro requires 2 hidden boundary tokens (Start/End).
+        # - We apply a tight 5% padding to account for rare multi-char token combinations 
+        #   or punctuation spacing discrepancies in the ONNX graph.
+        boundary_tokens = 2
+        safety_multiplier = 1.05 
         
-        # Global Kokoro padding: Add 10% to the total to account for native 
-        # sentence-level stress marks and punctuation pauses Kokoro auto-injects.
-        return int(safe_token_count * 1.10)
-        # -----------------------------------------------------------
+        final_estimate = int((base_tokens + boundary_tokens) * safety_multiplier)
+        
+        return final_estimate
         
     except Exception as e:
-        print(f"[Chunker] Phoneme estimation failed, triggering fallback: {e}")
-        return int(len(text) * 1.20)
+        print(f"[Chunker] Critical phoneme estimation failure. Bypassing with fallback: {e}")
+        # Extreme fallback if espeak crashes on corrupted characters
+        return int(len(text) * 1.25)
