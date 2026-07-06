@@ -79,7 +79,7 @@ def generate_locked_audio(kokoro_inst, text, voice, speed, lang, target_len):
         print(f"[Engine] Audio generation failed on CPU thread: {e}. Bypassing with silence.")
         return create_anti_skip_silence(500, 24000), 24000
 
-def graceful_chunk_for_tts(text, soft_limit=450, hard_limit=490):
+def graceful_chunk_for_tts(text, soft_limit=490, hard_limit=510):
     ph_cache = {}
     def get_ph(t):
         t_strip = t.strip()
