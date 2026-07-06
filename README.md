@@ -91,9 +91,22 @@ python main.py
 
 > 
 > **Note:** If you prefer the standard `.venv` method, please visit [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
-> 
-> 
+>
 
+**Extra setup for `pydub` and (`libsndfile` only Linux) if didn't have it.**
+>
+Mac (using homebrew):
+```
+# ffmpeg
+brew install ffmpeg
+```
+Linux (using aptitude):
+```
+# ffmpeg
+apt-get install ffmpeg libavcodec-extra
+
+sudo apt install libsndfile1
+```
 ### Step 1: Install Uv
 
 If you don't have `uv` installed, use one of the following commands:
