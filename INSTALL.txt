@@ -66,6 +66,19 @@ python main.py
 ------------------------------------------------------------------------
 #############    [ Standard Mac / Linux ]   ############################
 ------------------------------------------------------------------------
+>>>Extra setup for pydub and (libsndfile-only Linux) if didn't have it
+>>Mac (using homebrew):
+``````````````````````````````
+# ffmpeg
+brew install ffmpeg
+``````````````````````````````
+>>Linux (using aptitude):
+``````````````````````````````````````````
+# ffmpeg
+apt-get install ffmpeg libavcodec-extra
+
+sudo apt install libsndfile1
+``````````````````````````````````````````
 Step 1: Extract the downloaded ZIP file.
 Step 2: Open the folder and locate the "dist" folder.
 Step 3: Right-click the "dist" folder and select "New Terminal at Folder" (Mac) or "Open in Terminal" (Linux).
