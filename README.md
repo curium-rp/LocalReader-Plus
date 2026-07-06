@@ -75,15 +75,13 @@ Run these commands to create the environment, activate it, install dependencies,
 ```powershell
 uv venv --python 3.14
 
-.venv\Scripts\activate
-
 uv pip install -r requirements.txt
 
-python main.py
+uv run main.py
 
 ```
 
-*To deactivate the virtual environment later, just run `deactivate`.*
+>*UV did not require for `.venv\Scripts\activate` and `uv run` will automatically executes virtual environments.
 
 ---
 
@@ -93,14 +91,14 @@ python main.py
 > **Note:** If you prefer the standard `.venv` method, please visit [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
 >
 
-**Extra setup for `pydub` and (`libsndfile` only Linux) if didn't have it.**
+**Extra setup `ffmpeg` for pydub if didn't have it.**
 >
 Mac (using homebrew):
 ```
 # ffmpeg
 brew install ffmpeg
 ```
-Linux (using aptitude):
+Linux it will need `ffmpeg` for pydub and `libsndfile` for soundfile  (using aptitude):
 ```
 # ffmpeg
 apt-get install ffmpeg libavcodec-extra
@@ -133,15 +131,13 @@ bash
 
 uv venv --python 3.14
 
-source .venv/bin/activate
-
 uv pip install -r requirements.txt
 
-python main.py
+uv run main.py
 
 ```
 
-*To deactivate the virtual environment later, just type `deactivate`.*
+>*`uv pip` and `uv run` will automatically find and use virtual environment during subsequent invocations.*
 
 </br>
 ---
@@ -187,7 +183,7 @@ pip install onnxruntime-gpu
 
    _Open powershell in **"dist"** folder_
 
-> python main.py 
+> uv run main.py
 
   Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need models TTS to make it work)
    
