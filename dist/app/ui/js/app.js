@@ -175,34 +175,34 @@ async function init() {
 
 document.addEventListener("DOMContentLoaded", init);
 
-document.getElementById("playBtn").onclick = togglePlayback;
 let mouseHideTimeout = null;
+window.isJumpingCamera = false; // 🌟 Master lock for the UI state
 
 function resetAutoHideTimer() {
+    if (window.isJumpingCamera) return; // Shield against phantom mouse movements when scrolling
+
     const controls = document.getElementById("controls");
     const restoreBtn = document.getElementById("playbarRestoreBtn");
     
     // The "Peek" Condition: Manual hide is ON, but the player has been temporarily un-minimized by the user
     const isPeeking = state.manualHidePlayer && !controls.classList.contains("minimized");
 
-    // If auto is off AND we are not currently peeking, ignore mouse movement
+    // Strict Manual Lock: Block ALL mouse tracking if manually hidden
+    if (state.manualHidePlayer && !isPeeking) return;
+
+    // Strict Auto Lock: Ignore mouse tracking if auto is turned off
     if (!state.autoHidePlayer && !isPeeking) return;
     
-    // Show player
+    // Wake up the player
     controls.classList.remove("minimized");
-    
-    // Ensure manual indicator is hidden while the player is visible
     if (restoreBtn) {
         restoreBtn.classList.replace("opacity-100", "opacity-0"); 
         restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
     }
     
     clearTimeout(mouseHideTimeout);
-    // 3000ms strict delay
     mouseHideTimeout = setTimeout(() => {
         controls.classList.add("minimized");
-        
-        // If we were peeking (Manual Hide is ON), bring the ^ indicator back when the player hides
         if (state.manualHidePlayer && restoreBtn) {
             restoreBtn.classList.replace("opacity-0", "opacity-100"); 
             restoreBtn.classList.replace("pointer-events-none", "pointer-events-auto");
@@ -216,6 +216,10 @@ if (contentArea) contentArea.addEventListener("mousemove", resetAutoHideTimer);
 const controlsArea = document.getElementById("controls");
 if (controlsArea) controlsArea.addEventListener("mousemove", resetAutoHideTimer);
 
+// --- THE PLAY BUTTON ---
+document.getElementById("playBtn").onclick = togglePlayback;
+
+// --- THE HIDE BUTTONS ---
 document.getElementById("hidePlaybarBtn").onclick = () => {
     const controls = document.getElementById("controls");
     const restoreBtn = document.getElementById("playbarRestoreBtn");
@@ -226,28 +230,26 @@ document.getElementById("hidePlaybarBtn").onclick = () => {
     } else {
         state.manualHidePlayer = true;
         saveSettings();
-        
         controls.classList.add("minimized");
         restoreBtn.classList.replace("opacity-0", "opacity-100");
         restoreBtn.classList.replace("pointer-events-none", "pointer-events-auto");
-        
-        // Swap which back button is showing if already scrolled away
-        if (!state.autoScrollEnabled) {
-            const backBtn = document.getElementById("backToReadingBtn");
-            if (backBtn) {
-                backBtn.classList.add("hidden");
-                backBtn.classList.remove("flex");
-            }
-            const hiddenBtn = document.getElementById("hiddenModeBackBtn");
-            if (hiddenBtn) {
-                hiddenBtn.classList.replace("opacity-0", "opacity-100");
-                hiddenBtn.classList.replace("pointer-events-none", "pointer-events-auto");
-            }
+    }
+    
+    //  ONLY swap to the Center Pill if we are in Manual Hide!
+    if (!state.autoScrollEnabled && state.manualHidePlayer) {
+        const backBtn = document.getElementById("backToReadingBtn");
+        if (backBtn) {
+            backBtn.classList.add("hidden");
+            backBtn.classList.remove("flex");
+        }
+        const hiddenBtn = document.getElementById("hiddenModeBackBtn");
+        if (hiddenBtn) {
+            hiddenBtn.classList.replace("opacity-0", "opacity-100");
+            hiddenBtn.classList.replace("pointer-events-none", "pointer-events-auto");
         }
     }
 };
 
-// The ^ Button: ONLY cancels manual hide. Strictly separated.
 document.getElementById("playbarRestoreBtn").onclick = () => {
     state.manualHidePlayer = false;
     saveSettings();
@@ -259,69 +261,71 @@ document.getElementById("playbarRestoreBtn").onclick = () => {
     restoreBtn.classList.replace("opacity-100", "opacity-0");
     restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
     
+    // ALWAYS restore the normal top button when leaving Manual Hide!
+    if (!state.autoScrollEnabled) {
+        const backBtn = document.getElementById("backToReadingBtn");
+        if (backBtn) {
+            backBtn.classList.remove("hidden");
+            backBtn.classList.add("flex");
+        }
+        const hiddenBtn = document.getElementById("hiddenModeBackBtn");
+        if (hiddenBtn) {
+            hiddenBtn.classList.replace("opacity-100", "opacity-0");
+            hiddenBtn.classList.replace("pointer-events-auto", "pointer-events-none");
+        }
+    }
+    
     if (state.autoHidePlayer) resetAutoHideTimer();
 };
 
-// The Hidden Mode "Peek & Center" Button
-const hiddenModeBtn = document.getElementById("hiddenModeBackBtn");
-if (hiddenModeBtn) {
-    hiddenModeBtn.onclick = async () => {
-        const controls = document.getElementById("controls");
-        
-        // 1. Physically show the player to activate the "Peek" condition
-        controls.classList.remove("minimized");
-        
-        // 2. Start the timer logic (Because of the peek condition, mouse movements will keep it alive for 3s!)
-        resetAutoHideTimer();
-        
-        // 3. Hide this center pill button
-        hiddenModeBtn.classList.replace("opacity-100", "opacity-0");
-        hiddenModeBtn.classList.replace("pointer-events-auto", "pointer-events-none");
-        
-        // 4. Force state to sync with the reading pointer
-        state.viewPageIndex = state.readingPageIndex;
-        state.autoScrollEnabled = true;
-        
-        // 5. Add a tiny 300ms delay before rendering. This gives the CSS animations 
-        // time to clear out so the math camera calculates the center perfectly!
-        setTimeout(async () => {
-            await renderPage();
-        }, 300);
-    };
-}
+// --- THE UNIFIED BACK TO READING ENGINE ---
+const performSafeJump = async () => {
+    window.isJumpingCamera = true; // Lock the mouse tracker globally
 
-// The Normal Button: ONLY Jumps to text
-document.getElementById("backToReadingBtn").onclick = async () => {
     state.viewPageIndex = state.readingPageIndex;
     state.autoScrollEnabled = true;
 
-    const btn = document.getElementById("backToReadingBtn");
-    if (btn) {
-        btn.classList.add("hidden");
-        btn.classList.remove("flex");
+    // Hide BOTH button variants, unifying the UI layout
+    const btnNormal = document.getElementById("backToReadingBtn");
+    if (btnNormal) {
+        btnNormal.classList.add("hidden");
+        btnNormal.classList.remove("flex");
     }
+    const btnHidden = document.getElementById("hiddenModeBackBtn");
+    if (btnHidden) {
+        btnHidden.classList.replace("opacity-100", "opacity-0");
+        btnHidden.classList.replace("pointer-events-auto", "pointer-events-none");
+    }
+
+    // Notice we do NOT touch state.manualHidePlayer. If it is hidden, it stays hidden!
     await renderPage();
+
+    // Release the mouse tracker lock 500ms after the jump finishes
+    setTimeout(() => { window.isJumpingCamera = false; }, 500);
 };
 
+// Wire both buttons to the exact same safe jump logic
+document.getElementById("backToReadingBtn").onclick = performSafeJump;
+const hiddenModeBtn = document.getElementById("hiddenModeBackBtn");
+if (hiddenModeBtn) hiddenModeBtn.onclick = performSafeJump;
+
+
+// --- NAVIGATION & KEYBOARD LOGIC ---
 document.getElementById("skipBack").onclick = async () => {
   if (state.currentSentenceIndex > 0) {
     safeJumpToSentence(state.currentSentenceIndex - 1);
   } else {
-    // We are at the start of the page. Scan backwards for the closest non-empty page.
     let targetPage = state.readingPageIndex - 1;
     let foundSentences = [];
-    
     while (targetPage >= 0) {
         foundSentences = await getSentencesForPage(targetPage);
         if (foundSentences && foundSentences.length > 0) break;
-        targetPage--; // Skip empty pages (like full-page images)
+        targetPage--; 
     }
-
     if (targetPage >= 0 && foundSentences.length > 0) {
         state.readingPageIndex = targetPage;
-        state.viewPageIndex = targetPage; // 🌟 CAMERA FIX: Sync the UI screen to the new page!
+        state.viewPageIndex = targetPage; 
         state.readingSentences = foundSentences;
-        // Jump to the LAST sentence of the found previous page
         safeJumpToSentence(foundSentences.length - 1);
     }
   }
@@ -331,33 +335,25 @@ document.getElementById("skipForward").onclick = async () => {
   if (state.currentSentenceIndex < state.readingSentences.length - 1) {
     safeJumpToSentence(state.currentSentenceIndex + 1);
   } else {
-    // We are at the end of the page. Scan forwards for the closest non-empty page.
     let targetPage = state.readingPageIndex + 1;
     let foundSentences = [];
-
     while (targetPage < state.currentPages.length) {
         foundSentences = await getSentencesForPage(targetPage);
         if (foundSentences && foundSentences.length > 0) break;
-        targetPage++; // Skip empty pages
+        targetPage++; 
     }
-
     if (targetPage < state.currentPages.length && foundSentences.length > 0) {
         state.readingPageIndex = targetPage;
-        state.viewPageIndex = targetPage; // 🌟 CAMERA FIX: Sync the UI screen to the new page!
+        state.viewPageIndex = targetPage; 
         state.readingSentences = foundSentences;
-        // Jump to the FIRST sentence of the found next page
         safeJumpToSentence(0);
     }
   }
 };
 
 window.addEventListener("keydown", (e) => {
-  if (
-    e.target.tagName === "INPUT" ||
-    e.target.tagName === "TEXTAREA" ||
-    e.target.isContentEditable
-  )
-    return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
+  
   if (e.code === "Space") {
     e.preventDefault();
     togglePlayback();
@@ -372,12 +368,9 @@ window.addEventListener("keydown", (e) => {
     document.getElementById("searchBtn").click();
   } else if (e.key === "Escape") {
     e.preventDefault();
-    // 🌟 UNIFIED DISMISSAL: Close search, TOC, drawers and overlays instantly//
     document.getElementById("searchModal").classList.add("hidden");
-    
     const tocModal = document.getElementById("tocModal");
     if (tocModal) tocModal.classList.add("hidden");
-    
     document.querySelectorAll(".voice-settings-drawer").forEach(d => d.classList.remove("open"));
     document.getElementById("drawerOverlay").classList.remove("active");
   }
@@ -406,32 +399,7 @@ document.getElementById("pageInput").onchange = async (e) => {
   }
 };
 
-document.getElementById("backToReadingBtn").onclick = async () => {
-    state.viewPageIndex = state.readingPageIndex;
-    state.autoScrollEnabled = true;
-
-    const btn = document.getElementById("backToReadingBtn");
-    if (btn) {
-        btn.classList.add("hidden");
-        btn.classList.remove("flex");
-    }
-
-    // SYNERGY 2: Scrolled away + Manually Hidden + Click Back to Track -> Unhide player
-    if (state.manualHidePlayer) {
-        state.manualHidePlayer = false;
-        saveSettings();
-        
-        const controls = document.getElementById("controls");
-        const restoreBtn = document.getElementById("playbarRestoreBtn");
-        controls.classList.remove("minimized");
-        
-        restoreBtn.classList.replace("opacity-100", "opacity-0");
-        restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
-    }
-
-    await renderPage();
-};
-
+// --- THE SMART SCROLL TRACKER ---
 let isAutoFlipping = false;
 const scrollContainer = document.querySelector(".content-area");
 if (scrollContainer) {
@@ -439,15 +407,15 @@ if (scrollContainer) {
     "wheel",
     async (e) => {
       if (isAutoFlipping) return;
-      const bottom =
-        scrollContainer.scrollTop + scrollContainer.clientHeight >=
-        scrollContainer.scrollHeight - 10;
+      const bottom = scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
       const top = scrollContainer.scrollTop <= 10;
 
-      // MONITOR MODE BREAK: If user scrolls manually, disable auto-follow and show the "Back to track" button
+      // When the user breaks auto-scroll, spawn the correct button
       if (state.autoScrollEnabled) {
         state.autoScrollEnabled = false;
         
+        //  If the player is hidden, the normal button is dragged off-screen.
+        // We MUST use the floating center pill instead!
         if (state.manualHidePlayer) {
             const hiddenBtn = document.getElementById("hiddenModeBackBtn");
             if (hiddenBtn) {
@@ -463,26 +431,18 @@ if (scrollContainer) {
         }
       }
 
-      if (
-        e.deltaY > 0 &&
-        bottom &&
-        state.viewPageIndex < state.currentPages.length - 1
-      ) {
+      if (e.deltaY > 0 && bottom && state.viewPageIndex < state.currentPages.length - 1) {
         isAutoFlipping = true;
         state.viewPageIndex++;
         await renderPage();
         scrollContainer.scrollTop = 0;
-        setTimeout(() => {
-          isAutoFlipping = false;
-        }, 700);
+        setTimeout(() => { isAutoFlipping = false; }, 700);
       } else if (e.deltaY < 0 && top && state.viewPageIndex > 0) {
         isAutoFlipping = true;
         state.viewPageIndex--;
         await renderPage();
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        setTimeout(() => {
-          isAutoFlipping = false;
-        }, 700);
+        setTimeout(() => { isAutoFlipping = false; }, 700);
       }
     },
     { passive: true },
@@ -1046,7 +1006,7 @@ if (tocModalElement) {
     };
 }
 
-// Current Sentence Brightness Toggle
+// --- Current Sentence Brightness Toggle ---
 const brightnessBtn = document.getElementById("toggleBrightnessBtn");
 if (brightnessBtn) {
     brightnessBtn.onclick = () => {
@@ -1058,20 +1018,37 @@ if (brightnessBtn) {
 
 function updateSentenceBrightness() {
     const preview = document.getElementById("currentSentencePreview");
-    const icon = document.getElementById("brightnessIcon");
-    if (!preview) return;
+    const btn = document.getElementById("toggleBrightnessBtn");
+    
+    if (!preview || !btn) return;
 
+    // Restore original colors + 40% fade for dim state
     if (state.sentenceIndicatorOn) {
-        // ON - Bright
-        preview.classList.remove("text-zinc-600");
+        preview.classList.remove("text-zinc-600", "opacity-40");
         preview.classList.add("text-zinc-200");
-        if (icon) icon.setAttribute("data-lucide", "sun");
     } else {
-        // OFF - Dim (Hard to notice)
         preview.classList.remove("text-zinc-200");
-        preview.classList.add("text-zinc-600");
-        if (icon) icon.setAttribute("data-lucide", "moon");
+        preview.classList.add("text-zinc-600", "opacity-40");
     }
     
-    if (window.lucide) window.lucide.createIcons();
+    // Safe Memory Management (prevents the Lucide SVG crash)
+    while (btn.firstChild) {
+        btn.removeChild(btn.firstChild);
+    }
+    
+    const newIcon = document.createElement("i");
+    
+    if (state.sentenceIndicatorOn) {
+        newIcon.setAttribute("data-lucide", "sun");
+        newIcon.className = "w-4 h-4 text-zinc-400"; 
+    } else {
+        newIcon.setAttribute("data-lucide", "moon");
+        newIcon.className = "w-4 h-4 text-zinc-500"; 
+    }
+    
+    btn.appendChild(newIcon);
+    
+    if (typeof renderIcons === "function") {
+        renderIcons();
+    }
 }
