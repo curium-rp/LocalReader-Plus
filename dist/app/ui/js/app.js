@@ -915,7 +915,10 @@ window.selectDocById = async (id) => {
         const valEl = document.getElementById(`pause${k}Val`);
         if (valEl) valEl.textContent = e.target.value;
       };
-      el.onchange = saveSettings;
+      el.onchange = () => {
+          state.audioBufferCache.clear();
+          saveSettings();
+      };
     }
   },
 );
@@ -929,7 +932,11 @@ window.selectDocById = async (id) => {
             const valEl = document.getElementById(`behavior${k}Val`);
             if (valEl) valEl.textContent = e.target.value;
         };
-        el.onchange = saveSettings; 
+        el.onchange = () => {
+            // 🌟 SETTING SYNC FIX: Instantly clear frontend cache so new structural pauses apply
+            state.audioBufferCache.clear();
+            saveSettings();
+        }; 
     }
 });
 
@@ -951,7 +958,24 @@ function safeJumpToSentence(index) {
     jumpToSentence(index);
 }
 
-window.addEventListener("jump-to-sentence", (e) => safeJumpToSentence(e.detail));
+let isJumpingLock = false;
+
+window.addEventListener("jump-to-sentence", (e) => {
+    // 1. Block duplicate ghost clicks instantly
+    if (isJumpingLock) return;
+    // 2. Prevent jumping if the user is just highlighting text to copy
+    const selection = window.getSelection();
+    if (selection && selection.toString().trim().length > 0) {
+        return; 
+    }
+    // 3. Engage the lock and perform the jump
+    isJumpingLock = true;
+    safeJumpToSentence(e.detail);
+    // 4. Release the lock after 300ms (enough time to eat browser event bubbling)
+    setTimeout(() => {
+        isJumpingLock = false;
+    }, 300);
+});
 
 let lastSysState = null;
 async function startStatusPolling() {

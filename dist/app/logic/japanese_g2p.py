@@ -30,7 +30,7 @@ class UltimateJapaneseG2P:
     """
 
     def __init__(self, custom_user_dict: Dict[str, str] = None):
-        print("[System] Initializing Ultimate Data-Driven Japanese G2P Engine...")
+        #print("[System] Initializing Ultimate Data-Driven Japanese G2P Engine...")#
         
         try:
             self.tagger = fugashi.Tagger()

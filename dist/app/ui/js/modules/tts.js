@@ -227,7 +227,25 @@ export async function playNext() {
   // which previously caused `stopPlayback()` to trigger and permanently stick the player!
   if (bType === "Img" || (bType === "S" && cleanText.trim() === "•••")) {
       initAudioContext();
-      const durationSeconds = bType === "Img" ? 1.5 : 1.0; // 1.5s pause for images, 1s for breaks
+      
+      // Dynamically fetch duration from UI settings (convert ms to seconds)
+      let durationSeconds = 1.0;
+      
+      if (bType === "Img") {
+          durationSeconds = (state.behaviorSettings && state.behaviorSettings.Img !== undefined) 
+                              ? (state.behaviorSettings.Img / 1000.0) 
+                              : 3.0; 
+      } else if (bType === "S") {
+          durationSeconds = (state.behaviorSettings && state.behaviorSettings.S !== undefined) 
+                              ? (state.behaviorSettings.S / 1000.0) 
+                              : 1.0;
+      }
+      
+      // Engine Protection: Ensure minimum WebAudio buffer length (0ms crashes the context)
+      if (durationSeconds <= 0) {
+          durationSeconds = 0.1;
+      }
+      
       const sampleRate = state.audioContext.sampleRate || 44100;
       const silentBuffer = state.audioContext.createBuffer(1, Math.floor(sampleRate * durationSeconds), sampleRate);
       

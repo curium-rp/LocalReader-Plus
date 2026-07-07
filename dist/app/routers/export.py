@@ -169,13 +169,20 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                 soup = BeautifulSoup(page, 'html.parser')
                 
                 # Handle new structured HTML format
-                structured_elements = soup.find_all(['n', 's', 'img'])
+                # Handle new structured HTML format
+                structured_elements = soup.find_all(['n', 's', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
                 if structured_elements:
                     for el in structured_elements:
                         b_type = "N"
                         clean_text = ""
                         
-                        if el.name == 'img':
+                        # 🌟 FIX: Safely route H tags without double-processing <n> children
+                        if el.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                            if el.find('n'):
+                                continue # Skip, let the child <n> tag handle it
+                            b_type = el.name.upper()
+                            clean_text = el.get_text(strip=True)
+                        elif el.name == 'img':
                             if 'epub-image' in el.get('class', []):
                                 b_type = "Img"
                                 clean_text = "Image."
@@ -258,15 +265,16 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             generated_any = False
 
             # 5. Pipeline Execution Loop
-            for i, el_data in enumerate(elements_to_process):
-                if not export_status["is_exporting"]:
-                    export_status["error"] = "Export cancelled"
-                    if wav_file: wav_file.close()
-                    temp_wav_path.unlink(missing_ok=True)
-                    return
+            from .tts import _safe_cores
+            import concurrent.futures
 
+            def process_export_element(el_data):
+                if not export_status["is_exporting"]:
+                    return np.array([], dtype=np.float32), 24000
+                    
                 b_type = el_data["b_type"]
                 raw_text = el_data["text"]
+                sample_rate = 24000
                 
                 try:
                     # Apply pronunciation fixes
@@ -297,8 +305,11 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                     behavior_front_pause_ms = 0
                     behavior_end_pause_ms = 0
                     
+                    # 🌟 FIX: Local copy to prevent dictionary poisoning in the loop
+                    local_b_settings = behavior_settings.copy()
+                    
                     if b_type.startswith("H"):
-                        h_base = behavior_settings.get("H", 2000)
+                        h_base = local_b_settings.get("H", 2000)
                         if h_base > 0:
                             if b_type == "H1": base_calc = h_base
                             elif b_type == "H2": base_calc = h_base / 2.0
@@ -307,17 +318,23 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                             
                             behavior_front_pause_ms = min(int(base_calc), 10000) 
                             behavior_end_pause_ms = min(int(base_calc * 0.30), 10000)
+                        local_b_settings["N"] = 0
+                        
                     elif b_type in ["Img", "S"]:
-                        behavior_end_pause_ms = int(behavior_settings.get(b_type, 1000))
+                        behavior_end_pause_ms = int(local_b_settings.get(b_type, 1000))
+                        local_b_settings["N"] = 0
+                        
                     else:
-                        behavior_end_pause_ms = int(behavior_settings.get("N", 500))
+                        behavior_end_pause_ms = int(local_b_settings.get("N", 500))
 
-                    has_pause_settings = any(val > 0 for val in pause_settings.values())
+                    # 'newline' in pause_settings since it moved to behavior_settings['N']
+                    has_pause_settings = any(val > 0 for k, val in pause_settings.items() if k != "newline")
                     punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
-                    has_punctuation = any(p in text_norm for p in punctuation_chars)
+                    
+                    # 🌟 FIX: Guarantee micro-pauses trigger the formatting block
+                    has_punctuation = any(p in text_norm for p in punctuation_chars) or "<CAP_COM>" in text_norm
 
                     chunk_audios = []
-                    sample_rate = 24000
                     
                     # Shield against non-narrative components
                     if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text_norm):
@@ -356,12 +373,14 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                             if has_pause_settings and has_punctuation:
                                 seg_samples, sr = synthesize_with_pauses(
                                     text=final_text, voice=seg_voice, speed=float(request.speed), 
-                                    lang=final_engine_lang, pause_settings=pause_settings, behavior_settings=behavior_settings
+                                    lang=final_engine_lang, pause_settings=pause_settings, behavior_settings=local_b_settings
                                 )
                                 if seg_samples is not None and len(seg_samples.flatten()) > 0: 
                                     chunk_audios.append(seg_samples.flatten())
                                 sample_rate = sr
                             else:
+                                # 🌟 FIX: UNSHIELD EVERYTHING for lines without structural pauses!
+                                final_text = final_text.replace('<NUM_COM>', ',').replace('<NUM_DOT>', '.').replace('<NUM_COL>', ':').replace('<BYP_COM>', ',').replace('<CAP_COM>', ',')
                                 sub_chunks = graceful_chunk_for_tts(final_text)
                                 full_len = estimate_phonemes(final_text)
                                 for chunk_dict in sub_chunks:
@@ -379,12 +398,13 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                         if b_type == "N":
                             stripped_text = text_norm.strip()
                             has_hard_punc_at_end = False
+                            
                             if stripped_text:
-                                last_char = stripped_text[-1]
-                                if last_char in [".", "!", "?", "。", "！", "？", "…"]:
-                                    has_hard_punc_at_end = True
-                                elif len(stripped_text) > 1 and last_char in ['"', "'", '”', '’', '」', '』']:
-                                    if stripped_text[-2] in [".", "!", "?", "。", "！", "？", "…"]:
+                                # 🌟 FIX: The Quote Penetrator
+                                stripped_tail = re.sub(r'[\'"”’」』\s]+$', '', stripped_text).strip()
+                                if stripped_tail:
+                                    last_c = stripped_tail[-1]
+                                    if last_c in ["!", "?", "！", "？"]:
                                         has_hard_punc_at_end = True
                             
                             if has_hard_punc_at_end or (has_pause_settings and has_punctuation and text_norm.endswith("\n")):
@@ -408,20 +428,84 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                         if len(samples) == 0:
                             samples = create_anti_skip_silence(100, sample_rate)
 
-                    if wav_file is None:
+                    return samples, sample_rate
+
+                except Exception as e:
+                    print(f"[Export] Warning: Failed to process chunk: {e}")
+                    return np.array([], dtype=np.float32), 24000
+
+    
+            # ==========================================
+            # 🌟 DYNAMIC HARDWARE-AWARE BATCH PROCESSOR 🌟
+            # ==========================================
+            import gc
+            import multiprocessing
+            from ..config import settings_file
+            
+            # 1. Detect Hardware Mode
+            engine_mode = "gpu"
+            try:
+                if settings_file.exists():
+                    with open(settings_file, "r", encoding="utf-8") as sf_f:
+                        user_settings = json.load(sf_f)
+                        engine_mode = user_settings.get("engine_mode", "gpu")
+            except Exception:
+                pass
+            
+            total_cores = multiprocessing.cpu_count()
+            
+            if engine_mode == "cpu":
+                # CPU MODE: Maximize thread usage but reserve system cores
+                # Formula: 6 cores -> reserve 2; 12 cores -> reserve 3
+                reserved_cores = max(2, total_cores // 4)
+                safe_workers = max(1, total_cores - reserved_cores)
+                batch_size = safe_workers * 2
+                print(f"[Export] CPU Mode: {total_cores} Cores | Reserved: {reserved_cores} | Workers: {safe_workers}")
+            else:
+                # 🌟 GPU MODE: THE DATA STARVATION FIX 🌟
+                # A single Python thread starves the GPU (12% usage) because Python's GIL and regex 
+                # processing takes longer than the actual GPU math. 
+                # By scaling to 4-8 concurrent workers, Python prepares sentences in parallel and 
+                # feeds the GPU instantly, driving usage to maximum without overflowing typical VRAM pools.
+                safe_workers = total_cores * 2
+                batch_size = safe_workers * 4
+                print(f"[Export] GPU Mode: MAXIMUM OVERDRIVE. Workers: {safe_workers} | Batch Size: {batch_size}")
+            
+            for batch_start in range(0, len(elements_to_process), batch_size):
+                if not export_status["is_exporting"]:
+                    export_status["error"] = "Export cancelled"
+                    if wav_file: wav_file.close()
+                    temp_wav_path.unlink(missing_ok=True)
+                    return
+                    
+                batch = elements_to_process[batch_start:batch_start + batch_size]
+                
+                # Execute batch concurrently. .map() guarantees the array returns in perfect sequential order!
+                with concurrent.futures.ThreadPoolExecutor(max_workers=safe_workers) as executor:
+                    results = list(executor.map(process_export_element, batch))
+                    
+                # Write results sequentially to disk to preserve the audiobook timeline
+                for i, (samples, sample_rate) in enumerate(results):
+                    if not export_status["is_exporting"]:
+                        break
+                        
+                    if wav_file is None and sample_rate > 0:
                         wav_file = sf.SoundFile(
                             str(temp_wav_path), mode='w', samplerate=sample_rate, 
                             channels=1, subtype='PCM_16'
                         )
 
-                    wav_file.write(samples.flatten())
-                    generated_any = True
-
-                except Exception as e:
-                    print(f"[Export] Warning: Failed to process chunk {i}: {e}")
-
-                export_status["progress"] = i + 1
-
+                    if wav_file and len(samples) > 0:
+                        wav_file.write(samples.flatten())
+                        generated_any = True
+                        
+                    export_status["progress"] = batch_start + i + 1
+                    
+                # 🌟 AGGRESSIVE GARBAGE COLLECTION
+                # Forcefully wipe the massive float32 audio arrays from RAM and VRAM after every batch
+                del results
+                del batch
+                gc.collect()
             if wav_file:
                 wav_file.close()
 

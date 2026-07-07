@@ -90,30 +90,25 @@ def load_engine_logic(requested_mode=None):
         print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
 
         if actual_mode == "gpu":
-            print("[ENGINE] Detecting cross-platform hardware providers...")
-            
-            # 1. Dynamically Detect Available GPU Providers
-            available_providers = ort.get_available_providers()
+            # 1. Filter OS-requested providers against the currently installed ONNX package
+            available_ort_providers = ort.get_available_providers()
             custom_providers = []
             
-            if "CUDAExecutionProvider" in available_providers:
-                print(" -> NVIDIA CUDA GPU detected.")
-                cuda_options = {"device_id": 0, "cudnn_conv_algo_search": "HEURISTIC"}
-                custom_providers.append(("CUDAExecutionProvider", cuda_options))
-            elif "CoreMLExecutionProvider" in available_providers:
-                print(" -> Apple Silicon (CoreML) detected.")
-                custom_providers.append("CoreMLExecutionProvider")
-            elif "DirectMLExecutionProvider" in available_providers:
-                print(" -> AMD/Intel GPU (DirectML) detected.")
-                custom_providers.append("DirectMLExecutionProvider")
-            elif "ROCMExecutionProvider" in available_providers:
-                print(" -> AMD Linux (ROCm) detected.")
-                custom_providers.append("ROCMExecutionProvider")
-            else:
-                print(" -> [WARNING] No compatible GPU hardware found. Falling back to CPU processing.")
+            for p in getattr(state_module, "providers", []):
+                if p in available_ort_providers:
+                    if p == "CUDAExecutionProvider":
+                        # Attach specific heuristic settings for CUDA efficiency
+                        custom_providers.append(("CUDAExecutionProvider", {"device_id": 0, "cudnn_conv_algo_search": "HEURISTIC"}))
+                    else:
+                        custom_providers.append(p)
             
-            # Always append CPU as the final fallback mechanism for unsupported ONNX nodes
-            custom_providers.append("CPUExecutionProvider")
+            # Failsafe fallback to CPU to prevent session crash and silence warnings
+            if not custom_providers or "CPUExecutionProvider" not in custom_providers:
+                custom_providers.append("CPUExecutionProvider")
+                
+            # Clean logging to see exactly what survived the filter
+            active_names = [p[0].replace("ExecutionProvider", "") if isinstance(p, tuple) else p.replace("ExecutionProvider", "") for p in custom_providers]
+            print(f" -> [ENGINE] Active Hardware Linked: {' | '.join(active_names)}")
             
             # --- THE MONKEY PATCH ---
             original_session = ort.InferenceSession
