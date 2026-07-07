@@ -126,9 +126,6 @@ class AudioCache:
         target_size_mb = self.max_size_mb * 0.75
         target_size_bytes = int(target_size_mb * 1024 * 1024)
 
-        print(f"\n[CACHE CLEANUP] High Watermark reached: {total_size_mb:.2f}MB.")
-        print(f"[CACHE CLEANUP] Purging down to {target_size_mb:.2f}MB to restore breathing room...")
-
         with self.lock:
             try:
                 conn = sqlite3.connect(str(self.db_path), timeout=15.0)
@@ -139,7 +136,6 @@ class AudioCache:
                 entries = cursor.fetchall()
 
                 current_size_bytes = sum(entry[1] for entry in entries)
-                deleted_count = 0
 
                 for cache_key, size_bytes in entries:
                     if current_size_bytes <= target_size_bytes:
@@ -147,7 +143,6 @@ class AudioCache:
 
                     cursor.execute("DELETE FROM audio_cache WHERE cache_key = ?", (cache_key,))
                     current_size_bytes -= size_bytes
-                    deleted_count += 1
 
                 conn.commit()
 
@@ -156,9 +151,7 @@ class AudioCache:
                 conn.commit()
                 conn.close()
 
-                final_size_mb = current_size_bytes / (1024 * 1024)
-                print(f"[CACHE CLEANUP] Deleted {deleted_count} old entries.")
-                print(f"[CACHE CLEANUP] New disk size: {final_size_mb:.2f}MB. VACUUM complete.\n")
+                print(f"[CACHE LIMIT] Auto clean {target_size_mb:.2f}MB")
                 
             except Exception as e:
                 print(f"[CACHE CLEANUP ERROR] Cleanup failed: {e}")

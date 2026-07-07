@@ -20,6 +20,11 @@ from .config import (
 )
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
+
+# Extract dynamic ONNX providers configured in main.py, filtering out empty strings
+ort_env = os.environ.get("ORT_AUTO_PROVIDERS", "")
+state_module.providers = [p for p in ort_env.split(",") if p]
+
 from .models import AppSettings
 
 from .routers import settings, library, tts, system, export, timer, theme

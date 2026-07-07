@@ -10,7 +10,7 @@ class UltimateChineseProcessor:
     preserves math/system symbols, and patches Web Novel polyphony (多音字) natively.
     """
     def __init__(self, custom_user_dict: Dict[str, str] = None):
-        print("[System] Initializing Acoustic Shield for Mandarin...")
+       #print("[System] Initializing Acoustic Shield for Mandarin...")#
         
         # 🌟 1. THE POLYPHONY HOMOPHONE HACK (Xianxia & Web Novels) 🌟
         # pypinyin often misreads polyphonic characters (多音字) in slang.

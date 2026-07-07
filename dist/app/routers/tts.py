@@ -64,20 +64,36 @@ def generate_locked_audio(kokoro_inst, text, voice, speed, lang, target_len):
         if cache_key in _robust_link_cache:
             return _robust_link_cache[cache_key]
             
-    try:
-        with cpu_semaphore:
-            audio_data = kokoro_inst.create(text, voice, speed, lang)
-            
-        if audio_data is not None and len(audio_data[0].flatten()) > 0:
-            with _cache_lock:
-                if len(_robust_link_cache) > 500:
-                    _robust_link_cache.clear()
-                _robust_link_cache[cache_key] = audio_data
+    import time
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            with cpu_semaphore:
+                audio_data = kokoro_inst.create(text, voice, speed, lang)
                 
-        return audio_data
-    except Exception as e:
-        print(f"[Engine] Audio generation failed on CPU thread: {e}. Bypassing with silence.")
-        return create_anti_skip_silence(500, 24000), 24000
+            if audio_data is not None and len(audio_data[0].flatten()) > 0:
+                with _cache_lock:
+                    if len(_robust_link_cache) > 500:
+                        _robust_link_cache.clear()
+                    _robust_link_cache[cache_key] = audio_data
+                    
+            return audio_data
+            
+        except Exception as e:
+            # Detect transient CUDA/ONNX runtime glitches caused by GPU clock jumps
+            err_str = str(e).lower()
+            if "cuda" in err_str or "status code" in err_str or "kernel" in err_str:
+                if attempt < max_retries - 1:
+                    # Allow a brief progressive backoff window for the GPU clock/voltage to settle
+                    sleep_time = 0.15 * (attempt + 1)
+                    print(f"[Hardware Shield] GPU transient clock desync detected ({e}). Settling power state... Retrying attempt {attempt + 2}/{max_retries} in {sleep_time}s")
+                    time.sleep(sleep_time)
+                    continue
+            
+            # Absolute fallback if all retry tracks fail to save the book pipeline
+            print(f"[Engine] Audio generation failed permanently on thread execution: {e}. Bypassing with silence.")
+            return create_anti_skip_silence(500, 24000), 24000
 
 def graceful_chunk_for_tts(text, soft_limit=490, hard_limit=510):
     ph_cache = {}
@@ -208,8 +224,8 @@ def sanitize_typography_for_engine(text: str) -> str:
     # 11. Drop the Number shield (So normalizers can read the numbers correctly)
     text = text.replace('<NUM_COM>', ',').replace('<NUM_DOT>', '.').replace('<NUM_COL>', ':')
     
-    # 12. Final cleanup of multiple spaces created by replacements
-    text = re.sub(r'\s+', ' ', text)
+    # 12. Final cleanup of multiple spaces created by replacements 
+    text = re.sub(r'[^\S\r\n]+', ' ', text)
     
     return text.strip()
 
@@ -223,17 +239,13 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
     # 🌟 SHIELD: Strip trailing newlines to prevent the internal loop from 
     # double-stacking 500ms on top of your H1/Img behavioral pauses!
     text = text.strip()
-    
-    
     # Number shield (Phase 2)
     text = re.sub(r'(?<=\d),(?=\d)', '<NUM_COM>', text)
     text = re.sub(r'(?<=\d)\.(?=\d)', '<NUM_DOT>', text)
     text = re.sub(r'(?<=\d):(?=\d)', '<NUM_COL>', text)
     
-    # 🌟 ADDED <CAP_COM> TO THE SPLITTER 🌟
-    # Notice <BYP_COM> is missing. This intentionally traps Group 1 commas 
-    # in the buffer so they are bypassed completely!
-    split_regex = r"([,，、\.。\?？!！:：;；]+|<CAP_COM>|\n)"
+    #  OVERLAP UPGRADE: Group punctuation, quotes, and newlines together to prevent double-stacking
+    split_regex = r"([,，、\.。\?？!！:：;；]+[ \t]*['\"”’」』]*[ \t]*(?:\n)?|<CAP_COM>|\n+)"
     raw_pieces = re.split(split_regex, text)
     
     sample_rate = SAMPLE_RATE
@@ -247,33 +259,46 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
         punc_chunk = raw_pieces[i+1] if i + 1 < len(raw_pieces) else ""
         
         current_text_buffer += text_chunk + punc_chunk
-        punc_str = punc_chunk.strip()
+        
+        has_newline = '\n' in punc_chunk
+        punc_str = punc_chunk.replace('\n', '').strip()
         
         pause_ms = 0
         
-        if punc_chunk == "\n":
-            pause_ms = behavior_settings.get("N", 500)
-        elif punc_str == "<CAP_COM>":
+        if punc_str == "<CAP_COM>":
             # ==========================================
             # 🌟 ROUTE C: DYNAMIC MICRO-PAUSE CAP 🌟
             # ==========================================
             base_pause = int(pause_settings.get("comma", 0))
             dynamic_cap = int(150 / speed) # Math: 1.0x = 150ms | 1.35x = 111ms
-            
-            # Use the user's comma setting, UNLESS it exceeds the dynamic cap.
             pause_ms = min(base_pause, dynamic_cap) if base_pause > 0 else 0
             
-        elif punc_str:
-            spam_count = len(re.findall(r'[\.。\?？!！]', punc_str))
+        elif punc_str or has_newline:
+            base_punc_pause = 0
             
-            if spam_count >= 2:
-                spam_multiplier = int(pause_settings.get("period", 0))
-                pause_ms = spam_multiplier * (spam_count - 1)
+            # Strip quotes/spaces to safely expose the core punctuation mark for UI mapping
+            clean_punc = re.sub(r'[\'"”’」』\s]', '', punc_str)
+            
+            if clean_punc:
+                spam_count = len(re.findall(r'[\.。\?？!！]', clean_punc))
+                if spam_count >= 2:
+                    spam_multiplier = int(pause_settings.get("period", 0))
+                    base_punc_pause = spam_multiplier * (spam_count - 1)
+                else:
+                    last_char = clean_punc[-1]
+                    mapped_key = char_map.get(last_char)
+                    if mapped_key:
+                        base_punc_pause = int(pause_settings.get(mapped_key, 0))
+            
+            if has_newline:
+                # 🌟 THE INTERNAL OVERLAP RESOLVER 🌟
+                # Heavy punctuation (?!) blocks N entirely. Period (.) yields to N.
+                if bool(re.search(r'[\?？!！]', clean_punc)):
+                    pause_ms = base_punc_pause 
+                else:
+                    pause_ms = int(behavior_settings.get("N", 500)) 
             else:
-                last_char = punc_str[-1]
-                mapped_key = char_map.get(last_char)
-                if mapped_key:
-                    pause_ms = int(pause_settings.get(mapped_key, 0))
+                pause_ms = base_punc_pause
                     
         if pause_ms > 0:
             has_words = bool(re.search(r'[a-zA-Z0-9\u3040-\u30ff\u4e00-\u9faf]', current_text_buffer))
@@ -287,6 +312,8 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
                 current_text_buffer = "" 
             else:
                 plan.append({"type": "silence", "ms": pause_ms})
+                # 🌟 FIX: Prevent buffer leaks from bleeding into the next text block
+                current_text_buffer = ""
 
     if current_text_buffer.strip():
         has_words = bool(re.search(r'[a-zA-Z0-9\u3040-\u30ff\u4e00-\u9faf]', current_text_buffer))
@@ -403,16 +430,16 @@ async def synthesize(request: SynthesisRequest):
 
     original_text = request.text
     
-    # 🌟 CAPTURE TRAILING NEWLINE BEFORE SANITIZER EATS IT
-    had_trailing_newline = original_text.endswith('\n')
-    
     structural_pause_ms = 0
     pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", original_text)
     if pause_match:
         structural_pause_ms = int(pause_match.group(1))
         original_text = original_text.replace(pause_match.group(0), "")
 
-    safe_text = re.sub(r'<img[^>]*>', '', original_text, flags=re.IGNORECASE)
+    #  Convert structural HTML closures to real newlines BEFORE stripping
+    safe_text = re.sub(r'<(br|/p|/div|/h[1-6])[^>]*>', '\n', original_text, flags=re.IGNORECASE)
+    
+    safe_text = re.sub(r'<img[^>]*>', '', safe_text, flags=re.IGNORECASE)
     safe_text = re.sub(r'<[^>]+>', '', safe_text) 
     safe_text = re.sub(r'\[(?:IMAGE|IMG|VIDEO).*?\]', '', safe_text, flags=re.IGNORECASE)
     
@@ -462,49 +489,36 @@ async def synthesize(request: SynthesisRequest):
                 behavior_front_pause_ms = min(int(base_calc), 10000) 
                 behavior_end_pause_ms = min(int(base_calc * 0.30), 10000)
                 
+            b_settings["N"] = 0
+           
+
         elif b_type == "Img":
             behavior_end_pause_ms = int(b_settings.get("Img", 3000))
+            b_settings["N"] = 0
+             
             
         elif b_type == "S":
             behavior_end_pause_ms = int(b_settings.get("S", 1000))
-            
+            b_settings["N"] = 0
+             
         elif b_type == "N":
-            if had_trailing_newline:
-                stripped_text = original_text.strip()
-                has_hard_punc_at_end = False
-                
-                if stripped_text:
-                    last_char = stripped_text[-1]
-                    if last_char in [".", "!", "?", "。", "！", "？", "…"]:
-                        has_hard_punc_at_end = True
-                    elif len(stripped_text) > 1 and last_char in ['"', "'", '”', '’', '」', '』']:
-                        if stripped_text[-2] in [".", "!", "?", "。", "！", "？", "…"]:
-                            has_hard_punc_at_end = True
-                
-                # THE NULLIFIER
-                if has_hard_punc_at_end:
-                    behavior_end_pause_ms = 0
-                else:
-                    behavior_end_pause_ms = int(b_settings.get("N", 500))
-            if had_trailing_newline:
-                stripped_text = original_text.strip()
-                has_hard_punc_at_end = False
-                
-                if stripped_text:
-                    last_char = stripped_text[-1]
-                    # Check 1: Does it end exactly on a punctuation mark?
-                    if last_char in [".", "!", "?", "。", "！", "？", "…"]:
-                        has_hard_punc_at_end = True
-                    # Check 2: The Quote Penetrator (e.g. "Are you crazy?!")
-                    elif len(stripped_text) > 1 and last_char in ['"', "'", '”', '’', '」', '』']:
-                        if stripped_text[-2] in [".", "!", "?", "。", "！", "？", "…"]:
-                            has_hard_punc_at_end = True
-                
-                # 🌟 THE NULLIFIER: If punctuation handled the pause, N becomes 0!
-                if has_hard_punc_at_end:
-                    behavior_pause_ms = 0
-                else:
-                    behavior_pause_ms = int(b_settings.get("N", 500))
+            # Strip tags temporarily to find the true last character, bypassing HTML wrappers like </div>
+            clean_tail = re.sub(r'<[^>]+>', '', original_text).strip()
+            has_heavy_overlap = False
+            
+            
+            if clean_tail:
+                # The Quote Penetrator: Strip all trailing quotes and spaces to accurately expose the true punctuation
+                stripped_tail = re.sub(r'[\'"”’」』\s]+$', '', clean_tail).strip()
+                if stripped_tail:
+                    last_c = stripped_tail[-1]
+                    if last_c in ["!", "?", "！", "？"]:
+                        has_heavy_overlap = True
+            
+            if has_heavy_overlap:
+                behavior_end_pause_ms = 0
+            else:
+                behavior_end_pause_ms = int(b_settings.get("N", 500))
 
         cache_key = generate_cache_key(original_text, selected_voice, float(request.speed or 1.0), pause_settings, request.rules, request.ignore_list, b_settings, b_type)
         
@@ -513,7 +527,7 @@ async def synthesize(request: SynthesisRequest):
             return StreamingResponse(io.BytesIO(cached_audio), media_type="audio/wav", headers={"Content-Length": str(len(cached_audio))})
 
         punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
-        has_punctuation = any(p in text for p in punctuation_chars)
+        has_punctuation = any(p in text for p in punctuation_chars) or "<CAP_COM>" in text
 
         if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text):
             total_pause = structural_pause_ms + behavior_end_pause_ms + behavior_front_pause_ms
@@ -526,8 +540,16 @@ async def synthesize(request: SynthesisRequest):
             
             main_voice_lang = get_language_from_voice(selected_voice)
             
+            # 🌟 DEDUPLICATOR: Ensure polyglot switcher never double-feeds short H strings
+            seen_texts = set()
+            
             for seg in polyglot_segments:
                 raw_text = seg['text']
+                
+                if raw_text.strip() in seen_texts:
+                    continue
+                seen_texts.add(raw_text.strip())
+                
                 seg_voice = seg['voice']
                 detected_lang = seg['lang']
                 native_voice_lang = get_language_from_voice(seg_voice)
@@ -570,6 +592,7 @@ async def synthesize(request: SynthesisRequest):
                             chunk_audios.append(seg_samples.flatten())
                         sample_rate = sr
                     else:
+                        final_text = final_text.replace('<NUM_COM>', ',').replace('<NUM_DOT>', '.').replace('<NUM_COL>', ':').replace('<BYP_COM>', ',').replace('<CAP_COM>', ',')
                         sub_chunks = graceful_chunk_for_tts(final_text)
                         full_paragraph_len = estimate_phonemes(final_text)
                         for chunk_dict in sub_chunks:
