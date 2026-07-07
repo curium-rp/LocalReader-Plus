@@ -4,7 +4,7 @@
 
 **A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-## 🚨Update June 3, 2026 ##
+## 🚨Update June 6, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -81,7 +81,7 @@ uv run main.py
 
 ```
 
->*UV did not require for `.venv\Scripts\activate` and `uv run` will automatically executes virtual environments.
+>`UV` did not require for `.venv\Scripts\activate` and `uv run` will automatically executes virtual environments.
 
 ---
 
@@ -144,10 +144,10 @@ uv run main.py
 
    **If has some error when run python main.py say something relate with "kokoro" run uninstall onnxruntime and install back**
 ```
-pip uninstall onnxruntime 
+uv pip uninstall onnxruntime 
 ```
 ```
-pip install onnxruntime
+uv pip install onnxruntime
 ```
 
 ---
@@ -169,21 +169,18 @@ pip install onnxruntime
 
    Install onnxruntime-gpu  _Make sure you don't have onnxruntime cpu, it will cause conflicts_
    
-   **-First uninstall both**
+   **-First uninstall onnxruntime CPU**
+   >Open Power Shell inside dist folder
    
-```
-pip uninstall onnxruntime onnxruntime-gpu -y
+```powershell
+uv pip uninstall onnxruntime 
 
-```
-   **-Second install onnxruntime-gpu**
+##Second install onnxruntime-gpu
 
-```
-pip install onnxruntime-gpu
+uv pip install onnxruntime-gpu
 ```
 
-   _Open powershell in **"dist"** folder_
-
-> uv run main.py
+>`uv run main.py`
 
   Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need models TTS to make it work)
    
@@ -317,8 +314,8 @@ LocalReader-Plus
 *Calculated using the Base App + Python Environment + Models. Excludes optional CUDA/cuDNN installations, user document caches, and exported audio files.*
 
 * **Total (CPU Mode):** ~450 MB *(Lightweight & Low RAM)*
-* **Total (GPU Mode):** ~650 MB *(Standard Quality)*
-* **Total (Both Engines):** ~750 MB *(Maximum Flexibility)*
+* **Total (GPU Mode):** ~1000 MB *(Standard Quality)*
+* **Total (Both Engines):** ~1100 MB *(Maximum Flexibility)*
 
 ### System Requirements
 
