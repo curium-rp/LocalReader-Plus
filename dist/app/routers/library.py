@@ -415,16 +415,14 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 if not text:
                     continue
 
-                if not text:
-                    continue
-
                 safe_text = html.escape(text)
-
 
                 if block.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                     block.clear()
                     block['id'] = f"s_{global_sentence_idx}"
-                    block.append(BeautifulSoup(safe_text, "html.parser"))
+                    # Restore <br/> tags natively into the header without an <n> wrapper
+                    header_html = safe_text.replace(" XBRX ", "<br/>").replace("XBRX", "<br/>")
+                    block.append(BeautifulSoup(header_html, "html.parser"))
                     global_sentence_idx += 1
                     continue
 
@@ -444,6 +442,9 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
 
             body = soup.find('body')
             page_html = str(body) if body else str(soup)
+            
+            # Minify: Eliminate all linebreaks and whitespace exactly between closing and opening tags
+            page_html = re.sub(r'>\s*\n+\s*<', '><', page_html)
             
             if "<n id=" in page_html or "<img" in page_html or "<s>" in page_html:
                 href_to_page[actual_href] = len(pages)
@@ -644,7 +645,7 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                     if (is_header or is_scene_break) and held_text:
                         # 🌟 UNIFIED SPLIT FIX 🌟
                         sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
-                        page_html += f"<p>{sentences_html}</p>\n"
+                        page_html += f"<p>{sentences_html}</p>"
                         held_text = ""
 
                     if not is_header and not is_scene_break and held_text:
@@ -659,20 +660,21 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                         continue
 
                     if is_scene_break:
-                        page_html += f"<s>{block_text}</s>\n"
+                        page_html += f"<s>{block_text}</s>"
                     elif is_header:
                         import html
                         safe_header = html.escape(block_text)
-                        page_html += f'<h2 id="s_{global_sentence_idx}">{safe_header}</h2>\n'
+                        # Added id directly to header, removed trailing newlines
+                        page_html += f'<h2 id="s_{global_sentence_idx}">{safe_header}</h2>'
                         global_sentence_idx += 1
                     else:
                         sentences_html, global_sentence_idx = master_sentence_splitter(block_text, global_sentence_idx)
-                        page_html += f"<p>{sentences_html}</p>\n"
+                        page_html += f"<p>{sentences_html}</p>"
 
                 elif element["type"] == "image":
                     if held_text:
                         sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
-                        page_html += f"<p>{sentences_html}</p>\n"
+                        page_html += f"<p>{sentences_html}</p>"
                         held_text = ""
                         
                     block = element["block"]
@@ -694,16 +696,16 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                         image_map[str(image_counter)] = image_filename
                         assigned_id = str(image_counter)
                         image_counter += 1
-                        page_html += f'<img src="/api/library/image/{doc_id}/{assigned_id}" class="epub-image" loading="lazy" style="max-width:100%; height:auto;" />\n'
-                    except Exception: pass 
+                        page_html += f'<img src="/api/library/image/{doc_id}/{assigned_id}" class="epub-image" loading="lazy" style="max-width:100%; height:auto;" />'
+                    except Exception: pass
 
                 elif element["type"] == "table":
                     if held_text:
                         sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
-                        page_html += f"<p>{sentences_html}</p>\n"
+                        page_html += f"<p>{sentences_html}</p>"
                         held_text = ""
                         
-                    table_html = "<table class='pdf-table' border='1' style='border-collapse: collapse; width: 100%; margin: 10px 0;'>\n"
+                    table_html = "<table class='pdf-table' border='1' style='border-collapse: collapse; width: 100%; margin: 10px 0;'>"
                     for row in element["data"]:
                         table_html += "<tr>"
                         for cell in row:
@@ -713,22 +715,22 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                                 table_html += f"<td style='padding: 6px;'>{chunk}</td>"
                             else:
                                 table_html += "<td></td>"
-                        table_html += "</tr>\n"
-                    table_html += "</table>\n"
+                        table_html += "</tr>"
+                    table_html += "</table>"
                     page_html += table_html
 
             if page_html.strip():
-                pages.append(f'<div class="pdf-page">\n{page_html}</div>')
+                pages.append(f'<div class="pdf-page">{page_html}</div>')
             else:
-                pages.append(f'<div class="pdf-page">\n<p><n id="s_{global_sentence_idx}">[Blank Page]</n></p>\n</div>')
+                pages.append(f'<div class="pdf-page"><p><n id="s_{global_sentence_idx}">[Blank Page]</n></p></div>')
                 global_sentence_idx += 1
 
         if held_text:
             sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
             if pages:
-                pages[-1] = pages[-1].replace('</div>', f'<p>{sentences_html}</p>\n</div>')
+                pages[-1] = pages[-1].replace('</div>', f'<p>{sentences_html}</p></div>')
             else:
-                pages.append(f'<div class="pdf-page">\n<p>{sentences_html}</p>\n</div>')
+                pages.append(f'<div class="pdf-page"><p>{sentences_html}</p></div>')
 
         doc.close()
         temp_pdf.unlink(missing_ok=True)
