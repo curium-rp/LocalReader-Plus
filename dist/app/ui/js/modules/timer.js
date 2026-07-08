@@ -1,166 +1,198 @@
 import { state } from './state.js';
 
 export function initTimer() {
-  console.log("[TIMER] Initializing sleep timer...");
+    console.log("[TIMER] Initializing sleep timer...");
 
-  const btn = document.getElementById("timerSettingsBtn");
-  const drawer = document.getElementById("timerSettingsDrawer");
-  // ... (rest of vars)
-  const closeBtn = document.getElementById("closeTimerDrawerBtn");
-  const overlay = document.getElementById("drawerOverlay"); 
+    // Helper function to safely grab elements
+    const getEl = (id) => document.getElementById(id);
 
-  // Controls
-  const hoursInput = document.getElementById("timerHours");
-  const minutesInput = document.getElementById("timerMinutes");
-  const startBtn = document.getElementById("startTimerBtn");
-  const stopBtn = document.getElementById("stopTimerBtn");
-  const statusText = document.getElementById("timerStatusText");
-  const countdownDisplay = document.getElementById("timerCountdown");
+    // Core Elements
+    const btn = getEl("timerSettingsBtn");
+    const drawer = getEl("timerSettingsDrawer");
+    const closeBtn = getEl("closeTimerDrawerBtn");
+    const overlay = getEl("drawerOverlay");
 
-  // Button Display
-  const btnIcon = btn.querySelector("i");
-  const btnText = document.getElementById("timerBtnText");
+    // Controls
+    const hoursInput = getEl("timerHours");
+    const minutesInput = getEl("timerMinutes");
+    const startBtn = getEl("startTimerBtn");
+    const stopBtn = getEl("stopTimerBtn");
+    const statusText = getEl("timerStatusText");
+    const countdownDisplay = getEl("timerCountdown");
 
-  let statusInterval = null;
-  
-  // ... (toggleDrawer, event listeners) ...
-  function toggleDrawer(show) {
-      if (show) {
-          drawer.classList.add("open");
-          overlay.classList.add("active");
-      } else {
-          drawer.classList.remove("open");
-          overlay.classList.remove("active");
-      }
-  }
+    // Button Display
+    const btnIcon = btn?.querySelector("i");
+    const btnText = getEl("timerBtnText");
 
-  btn.addEventListener("click", () => {
-      toggleDrawer(true);
-      fetchStatus();
-  });
+    let statusInterval = null;
 
-  closeBtn.addEventListener("click", () => toggleDrawer(false));
-  overlay.addEventListener("click", () => toggleDrawer(false));
-
-
-  // API Calls
-  async function startTimer() {
-      const hours = parseInt(hoursInput.value) || 0;
-      const minutes = parseInt(minutesInput.value) || 0;
-      const totalMinutes = hours * 60 + minutes;
-
-      if (totalMinutes <= 0) {
-          alert("Please set a time greater than 1 minute.");
-          return;
-      }
-
-      try {
-          const res = await fetch("/api/timer/set", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ minutes: totalMinutes }),
-          });
-          const data = await res.json();
-          updateUI(data);
-      } catch (e) {
-          console.error("[TIMER] Failed to set timer", e);
-      }
-  }
-
-  async function stopTimer() {
-      try {
-          const res = await fetch("/api/timer/stop", { method: "POST" });
-          const data = await res.json();
-          updateUI(data);
-      } catch (e) {
-          console.error("[TIMER] Failed to stop timer", e);
-      }
-  }
-
-  async function fetchStatus() {
-      try {
-          const res = await fetch("/api/timer/status");
-          const data = await res.json();
-          updateUI(data);
-      } catch (e) {
-          console.error("[TIMER] Failed to fetch status", e);
-      }
-  }
-
-  function formatTime(seconds) {
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      return h > 0 ? `${h}h ${m}m` : `${m}m`;
-  }
-
-  function formatTimeFull(seconds) {
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = Math.floor(seconds % 60);
-      return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  }
-
-  function updateUI(data) {
-    if (data.active) {
-      // Drawer UI
-      stopBtn.classList.remove("hidden");
-      startBtn.classList.add("hidden");
-      statusText.textContent = state.translations?.timer?.running || "Timer Running";
-      statusText.className = "text-green-400 font-bold text-sm mb-2";
-      countdownDisplay.textContent = formatTimeFull(data.remaining_seconds);
-
-      // Button UI 
-      btn.classList.add("active"); 
-      btn.style.background = "#27272a"; 
-      btn.style.width = "auto";
-      btn.style.padding = "0 12px";
-      btn.style.borderRadius = "24px";
-      btn.style.borderColor = "#3f3f46";
-      
-      btnIcon.style.display = "none";
-      btnText.style.display = "block";
-      btnText.textContent = formatTime(data.remaining_seconds);
-      btnText.className = "text-xs font-bold font-mono text-zinc-300";
-
-      // Inputs disabled
-      hoursInput.disabled = true;
-      minutesInput.disabled = true;
-    } else {
-      // Drawer UI
-      stopBtn.classList.add("hidden");
-      startBtn.classList.remove("hidden");
-      statusText.textContent = state.translations?.timer?.inactive || "Timer Inactive";
-      statusText.className = "text-zinc-500 font-bold text-sm mb-2";
-      countdownDisplay.textContent = "--:--:--";
-
-      // Button UI
-      btn.classList.remove("active");
-      btn.style.background = ""; // Reset
-      btn.style.width = "";
-      btn.style.padding = "";
-      btn.style.borderRadius = "";
-      btn.style.borderColor = "";
-
-      btnIcon.style.display = "block";
-      btnText.style.display = "none";
-
-      // Inputs enabled
-      hoursInput.disabled = false;
-      minutesInput.disabled = false;
+    function toggleDrawer(show) {
+        if (show) {
+            drawer?.classList.add("open");
+            overlay?.classList.add("active");
+        } else {
+            drawer?.classList.remove("open");
+            overlay?.classList.remove("active");
+        }
     }
-  }
 
-  // Bind Actions
-  startBtn.addEventListener("click", startTimer);
-  stopBtn.addEventListener("click", stopTimer);
+    btn?.addEventListener("click", () => {
+        toggleDrawer(true);
+        fetchStatus();
+    });
 
-  // Initial check
-  fetchStatus();
+    closeBtn?.addEventListener("click", () => toggleDrawer(false));
+    overlay?.addEventListener("click", () => toggleDrawer(false));
 
-  // Poll status every 30 seconds to sync (and rely on local countdown for smoothness if needed, but simple polling is safer for now)
-  // Actually, for a countdown, we want to update every second if drawer is open.
-  // If drawer is closed, update button every minute?
+    async function startTimer() {
+        const hours = parseInt(hoursInput?.value) || 0;
+        const minutes = parseInt(minutesInput?.value) || 0;
+        const totalMinutes = (hours * 60) + minutes;
 
-  // Let's toggle polling based on visibility or just poll every 1s (local is cheap)
-  statusInterval = setInterval(fetchStatus, 1000);
+        if (totalMinutes <= 0) {
+            alert("Please set a time greater than 1 minute.");
+            return;
+        }
+
+        try {
+            const res = await fetch("/api/timer/set", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ minutes: totalMinutes }),
+            });
+            const data = await res.json();
+            updateUI(data);
+        } catch (e) {
+            console.error("[TIMER] Failed to set timer", e);
+        }
+    }
+
+    async function stopTimer() {
+        try {
+            const res = await fetch("/api/timer/stop", { method: "POST" });
+            const data = await res.json();
+            updateUI(data);
+        } catch (e) {
+            console.error("[TIMER] Failed to stop timer", e);
+        }
+    }
+
+    async function fetchStatus() {
+        try {
+            const res = await fetch("/api/timer/status");
+            if (!res.ok) {
+                throw new Error(`HTTP error! status: ${res.status}`);
+            }
+            const data = await res.json();
+            updateUI(data);
+        } catch (e) {
+            console.error("[TIMER] Failed to fetch status", e);
+        }
+    }
+
+    function formatTime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+
+    function formatTimeFull(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    }
+
+    function updateUI(data) {
+        if (!data) return;
+
+        if (data.active) {
+            // Drawer UI Updates
+            stopBtn?.classList.remove("hidden");
+            startBtn?.classList.add("hidden");
+            
+            if (statusText) {
+                statusText.textContent = state.translations?.timer?.running || "Timer Running";
+                statusText.className = "text-green-400 font-bold text-sm mb-2";
+            }
+            
+            if (countdownDisplay) {
+                countdownDisplay.textContent = formatTimeFull(data.remaining_seconds);
+            }
+
+            // Button UI Updates
+            if (btn) {
+                btn.classList.add("active"); 
+                btn.style.background = "#27272a"; 
+                btn.style.width = "auto";
+                btn.style.padding = "0 12px";
+                btn.style.borderRadius = "24px";
+                btn.style.borderColor = "#3f3f46";
+            }
+            
+            if (btnIcon) {
+                btnIcon.style.display = "none";
+            }
+            
+            if (btnText) {
+                btnText.style.display = "block";
+                btnText.textContent = formatTime(data.remaining_seconds);
+                btnText.className = "text-xs font-bold font-mono text-zinc-300";
+            }
+
+            // Lock Inputs
+            if (hoursInput) hoursInput.disabled = true;
+            if (minutesInput) minutesInput.disabled = true;
+            
+        } else {
+            // Drawer UI Updates
+            stopBtn?.classList.add("hidden");
+            startBtn?.classList.remove("hidden");
+            
+            if (statusText) {
+                statusText.textContent = state.translations?.timer?.inactive || "Timer Inactive";
+                statusText.className = "text-zinc-500 font-bold text-sm mb-2";
+            }
+            
+            if (countdownDisplay) {
+                countdownDisplay.textContent = "--:--:--";
+            }
+
+            // Button UI Updates
+            if (btn) {
+                btn.classList.remove("active");
+                btn.style.background = ""; 
+                btn.style.width = "";
+                btn.style.padding = "";
+                btn.style.borderRadius = "";
+                btn.style.borderColor = "";
+            }
+
+            if (btnIcon) {
+                btnIcon.style.display = "block";
+            }
+            
+            if (btnText) {
+                btnText.style.display = "none";
+            }
+
+            // Unlock Inputs
+            if (hoursInput) hoursInput.disabled = false;
+            if (minutesInput) minutesInput.disabled = false;
+        }
+    }
+
+    // Bind Actions safely
+    startBtn?.addEventListener("click", startTimer);
+    stopBtn?.addEventListener("click", stopTimer);
+
+    // Initial check
+    fetchStatus();
+
+    // Prevent duplicate intervals if initTimer is called multiple times
+    if (statusInterval) {
+        clearInterval(statusInterval);
+    }
+    
+    statusInterval = setInterval(fetchStatus, 1000);
 }
