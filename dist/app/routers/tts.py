@@ -195,9 +195,10 @@ def sanitize_typography_for_engine(text: str) -> str:
     # 5. Asian punctuation to Standard ASCII
     text = text.replace('。', '.').replace('、', ',').replace('！', '!').replace('？', '?')
     text = text.replace('…', '...').replace('．', '.').replace('，', ',')
-    
-    # 6. Normalize mutant ellipses (e.g., ".....", "....") into a standard 3 dots
-    text = re.sub(r'\.{4,}', '...', text)
+    # Convert Tildes to Full Stops for not make engine read "Tildes"
+    text = text.replace('~', '.').replace('〜', '.').replace('〰', '.')
+    # Remove Decorative Symbols, for not make Kokoro read it 
+    text = re.sub(r'[・※◎〇●△▲▽▼◇◆□■☆★♥♡❤♪♫♬♀♂†‡∞×]', ' ', text)
 
     # ==========================================
     # 🛡️ PHASE 3: THE COMMA & NUMBER SHIELDS
