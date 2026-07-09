@@ -97,8 +97,8 @@ def load_engine_logic(requested_mode=None):
             for p in getattr(state_module, "providers", []):
                 if p in available_ort_providers:
                     if p == "CUDAExecutionProvider":
-                        # Attach specific heuristic settings for CUDA efficiency
-                        custom_providers.append(("CUDAExecutionProvider", {"device_id": 0, "cudnn_conv_algo_search": "HEURISTIC"}))
+                        # Attach specific EXHAUSTIVE and HEURISTIC settings for CUDA efficiency
+                        custom_providers.append(("CUDAExecutionProvider", {"device_id": 0, "cudnn_conv_algo_search": "EXHAUSTIVE"}))
                     else:
                         custom_providers.append(p)
             
