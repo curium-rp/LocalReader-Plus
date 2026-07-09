@@ -4,7 +4,7 @@
 
 **A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-## 🚨Update June 6, 2026 ##
+### 🚨Update June 9, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -41,8 +41,8 @@
 ---
 
 **Python versions support**:
-- Python 3.12+ (Tested on 3.12, 3.13, and 3.14)
-- (For 3.10 and 3.11 I didn't tested yet but it should run)
+- Python 3.12 - 3.14 (Tested on windows: 3.10 to 3.14 run without any issue)
+
 
 ## Windows Installation (Virtual Environment with Uv)
 
@@ -85,9 +85,12 @@ uv run main.py
 
 ---
 
+</br>
+
 ## 🍎🐧 Mac & Linux Installation (Virtual Environment with Uv)
 
-> 
+> **Note:** I tested on VMware Linux can't do test as a full install, it may has some problem or error please understand, and Mac os no hardware tested yet, it may not work.
+
 > **Note:** If you prefer the standard `.venv` method, please visit [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
 >
 
@@ -95,16 +98,13 @@ uv run main.py
 >
 Mac (using homebrew):
 ```
-# ffmpeg
 brew install ffmpeg
 ```
-Linux it will need `ffmpeg` for pydub and `libsndfile` for soundfile  (using aptitude):
+Linux it will need `ffmpeg` for pydub and `libsndfile` for soundfile and some of pywebview support (using aptitude):
 ```
-# ffmpeg
-apt-get install ffmpeg libavcodec-extra
+sudo apt update && sudo apt install -y build-essential gcc pkg-config libgirepository1.0-dev libcairo2-dev python3-dev gir1.2-gtk-3.0 gir1.2-webkit2-4.1 ffmpeg libavcodec-extra libsndfile1
+```
 
-sudo apt install libsndfile1
-```
 ### Step 1: Install Uv
 
 If you don't have `uv` installed, use one of the following commands:
@@ -136,24 +136,34 @@ uv pip install -r requirements.txt
 uv run main.py
 
 ```
+>⚠️ Note for Python 3.14 (Linux) if has error fail to build 'pygobject' run this command, then go back to run `uv pip install` again
+```
+uv pip install --no-cache pycairo PyGObject pywebview[gtk]
+```
+</br>
 
 >*`uv pip` and `uv run` will automatically find and use virtual environment during subsequent invocations.*
 
 </br>
 ---
 
-   **If has some error when run python main.py say something relate with "kokoro" run uninstall onnxruntime and install back**
-```
-uv pip uninstall onnxruntime 
-```
-```
-uv pip install onnxruntime
-```
-
 ---
 </br>
 
-## This is what needed to do for KOKORO model for run on NVIDIA GPU (WINDOWS)
+## This is what needed to do for KOKORO model for run on NVIDIA GPU (WINDOWS) more info of about ONNXRUNTIME Execution Providers visit [onnxruntime.ai/docs](https://onnxruntime.ai/docs/execution-providers/)
+
+</br>
+
+### First method install the necessary CUDA and cuDNN runtime DLLs alongside the onnxruntime-gpu package
+```
+uv pip install onnxruntime-gpu[cuda,cudnn]
+```
+That all and run `uv run main.py`
+
+</br>
+---
+
+### Second method install full version
 
    install **cuda v12 [https://developer.nvidia.com/cuda-12-8-0-download-archive](https://developer.nvidia.com/cuda-12-8-0-download-archive)**
   
@@ -165,24 +175,16 @@ uv pip install onnxruntime
 
 
 **IF change files paths install location, you need to go for change paths inside main.py to make apps know it**
-    
-
-   Install onnxruntime-gpu  _Make sure you don't have onnxruntime cpu, it will cause conflicts_
-   
-   **-First uninstall onnxruntime CPU**
-   >Open Power Shell inside dist folder
    
 ```powershell
-uv pip uninstall onnxruntime 
-
-##Second install onnxruntime-gpu
 
 uv pip install onnxruntime-gpu
 ```
-
 >`uv run main.py`
 
-  Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated"  (don't forgot to download GPU models is need models TTS to make it work)
+
+  Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated" 
+
    
    It mean is run on GPU enjoy.
 
@@ -302,6 +304,9 @@ LocalReader-Plus
 | **Exported Audio**          | Varies             | ~1 MB (MP3) / ~2.7 MB (WAV) per minute of audio   |
 | **CUDA (12.xx)**            | 3.0 - 4.5 GB       | *Optional* - System-level GPU acceleration        |
 | **cuDNN (9.xx)**            | ~3.0 GB            | *Optional* - Deep learning GPU primitives         |
+>
+>Preloading DLLs from NVIDIA Site Packages with onnxruntime [cuda and cudnn] : Estimated Size 2.37 GB
+
 
 > **🎙️ Export ** > Support export with Toc point to point and single point _
    - Point to point mean can select start point and end point with Header tag (default)
