@@ -3,59 +3,50 @@
 ========================================================================
 
 System Requirements:
-- Python 3.12+ (Tested on 3.12, 3.13, and 3.14)
-- (it should run in 3.10 and 3.11)]
-========================================================================
+- Python 3.12+ (Fully Tested on 3.12, 3.13, and 3.14)
+- Backward compatible with Python 3.10 and 3.11
 ========================================================================
 
 ##################  WINDOWS INSTALLATION  #########################
 
-Install python>> https://www.python.org/downloads/  <<python 3.14.xx
+Install Python: https://www.python.org/downloads/ 
  
-Use >Windows installer (64-bit)< Recommended 
+select 3.14 and find >>Windows installer (64-bit)<< download it
+
+* Make sure to check "Add Python.exe to PATH" during installation.
 
 ------------------------------------------------------------------------
-METHOD 1: GLOBAL WINDOWS INSTALLATION (NO VENV/VIRTUAL ENVIRONMENTS) 
+METHOD 1: USING VIRTUAL ENVIRONMENTS (RECOMMENDED)
+------------------------------------------------------------------------
+This keeps dependencies isolated from your core operating system.
+
+Step 1: Extract the downloaded project ZIP file.
+Step 2: Open the folder and navigate into the "dist" directory.
+Step 3: Right-click inside the "dist" folder and select "Open in Terminal".
+Step 4: Run the following commands:
+
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+python main.py
+
+------------------------------------------------------------------------
+METHOD 2: GLOBAL WINDOWS INSTALLATION (NO VENV)
 ------------------------------------------------------------------------
 Only use this if you intentionally want to install dependencies globally.
 
-
 [ Option A: Download via Git Clone ]
-Open your terminal in the folder where you want to install it:
-
 
 git clone https://github.com/curium-rp/LocalReader-Plus
-
 cd LocalReader-Plus\dist
-
 pip install -r requirements.txt
 
 python main.py
 
 
 [ Option B: Download via ZIP ]
-Extract the files, open the "dist" folder, right-click to open the terminal, and run:
-
-pip install -r requirements.txt
-python main.py
-
-
-
-------------------------------------------------------------------------
-METHOD 2: USING VIRTUAL ENVIRONMENTS (RECOMMENDED)
-------------------------------------------------------------------------
-This is the safest method as it keeps dependencies isolated from your system.
-
-[ Standard Windows ]
-Step 1: Extract the downloaded ZIP file.
-Step 2: Open the folder and locate the "dist" folder.
-Step 3: Right-click inside the "dist" folder and select "Open in Terminal".
-Step 4: Run the following commands (you can copy/paste this whole block):
-
-
-python -m venv .venv
-
-.venv\Scripts\activate
+Extract files, open the "dist" folder, open a terminal there, and run:
 
 pip install -r requirements.txt
 
@@ -66,70 +57,56 @@ python main.py
 ------------------------------------------------------------------------
 #############    [ Standard Mac / Linux ]   ############################
 ------------------------------------------------------------------------
->>>Extra setup for pydub and (libsndfile-only Linux) if didn't have it
->>Mac (using homebrew):
-``````````````````````````````
-# ffmpeg
-brew install ffmpeg
-``````````````````````````````
->>Linux (using aptitude):
-``````````````````````````````````````````
-# ffmpeg
-apt-get install ffmpeg libavcodec-extra
 
-sudo apt install libsndfile1
-``````````````````````````````````````````
-Step 1: Extract the downloaded ZIP file.
-Step 2: Open the folder and locate the "dist" folder.
-Step 3: Right-click the "dist" folder and select "New Terminal at Folder" (Mac) or "Open in Terminal" (Linux).
-Step 4: Run the following commands:
-------------------------------------------------------------------------
-#bash/zsh
+>> macOS Extra Media Setup (using Homebrew):
+-------------------------------------------
+brew install ffmpeg
+
+>> Linux Extra Media & GUI Engine Setup (using Aptitude):
+--------------------------------------------------------
+
+sudo apt update && sudo apt install -y build-essential gcc pkg-config libgirepository1.0-dev libcairo2-dev python3-dev gir1.2-gtk-3.0 gir1.2-webkit2-4.1 ffmpeg libavcodec-extra libsndfile1
+
+Step 1: Extract the downloaded project ZIP file.
+Step 2: Navigate into the "dist" folder.
+Step 3: Right-click the folder and select "Open in Terminal".
+Step 4: Execute the following core environment commands:
 
 python3 -m venv .venv
 
-
 source .venv/bin/activate
-
 
 pip install -r requirements.txt
 
-
 python3 main.py
 
+------------------------------------------------------------------------
+⚠️ Note for Python 3.14 (Linux):
+Because Python 3.14 compiles PyGObject directly from source, if your pip 
+installation encounters a wheel build error or re-uses a broken cached 
+attempt, force a clean compilation with:
 
+pip install --no-cache pycairo PyGObject pywebview[gtk]
 
 ------------------------------------------------------------------------
-* Note for Mac/Linux: If you encounter an error related to Kokoro or onnxruntime on the first run, simply uninstall onnxruntime and install it again.
 
-deactivate a virtual environment by typing "deactivate" in your shell. 
+To turn off your virtual environment at any time, simply type:
+
+deactivate
 
 ------------------------------------------------------------------------
  ############    CLEANUP & UNINSTALLATION        #############
 ------------------------------------------------------------------------
 
-[ If you used a Virtual Environment (.venv) ]
-Simply delete the ".venv" folder inside the "dist" directory. That's it!
+[ Virtual Environment Clean ]
+Simply delete the ".venv" folder inside your "dist" directory.
 
-
-
-========================================================================
-[ If you installed Globally on Windows ]
-Run these commands in PowerShell to remove the dependencies and clear the cache:
-========================================================================
-# 1. Uninstall the active dependencies in PowerShell
+[ Global Windows Clean ]
+Run these commands in PowerShell to wipe dependencies and clear pip cache:
 
 pip freeze > pip.txt
 pip uninstall -r pip.txt -y
-
-# 2. Delete the text file you just made
-
 Remove-Item pip.txt
-
-# 3. Purge the pip cache to free up hard drive space
-
 pip cache purge
-
-#go to setting > install apps and uninstall Python
 
 ========================================================================

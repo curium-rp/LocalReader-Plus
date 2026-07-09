@@ -452,6 +452,28 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             except Exception:
                 pass
             
+            # --- 🛡️ HARDWARE VALIDATION LAYER ---
+            # Prevents CPU choking if the system silently fell back to CPU mode
+            if engine_mode == "gpu":
+                try:
+                    import onnxruntime as ort
+                    available_providers = ort.get_available_providers()
+                    gpu_providers = [
+                        "CUDAExecutionProvider", 
+                        "CoreMLExecutionProvider", 
+                        "DmlExecutionProvider", 
+                        "ROCMExecutionProvider",
+                        "OpenVINOExecutionProvider"
+                    ]
+                    
+                    # If no valid hardware provider is active in the engine, force CPU scaling
+                    if not any(p in available_providers for p in gpu_providers):
+                        print("[Export] Warning: GPU mode requested but no hardware provider found. Falling back to CPU scaling.")
+                        engine_mode = "cpu"
+                except Exception:
+                    # Failsafe if ONNX isn't initialized yet
+                    engine_mode = "cpu"
+
             total_cores = multiprocessing.cpu_count()
             
             if engine_mode == "cpu":

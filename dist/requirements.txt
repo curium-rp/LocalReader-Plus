@@ -2,7 +2,11 @@
 fastapi
 uvicorn
 python-multipart
-pywebview
+pycairo; sys_platform == 'linux'
+PyGObject; sys_platform == 'linux'
+pywebview[gtk]; sys_platform == 'linux'
+pywebview; sys_platform == 'win32'
+pywebview[cocoa]; sys_platform == 'darwin'
 
 ## --- Audio Processing ---##
 kokoro-onnx
