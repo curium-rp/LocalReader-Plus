@@ -10,6 +10,12 @@ except ImportError:
 # --- THE PHONEME ENGINE ---
 try:
     from phonemizer import phonemize
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+    import espeakng_loader
+    
+    EspeakWrapper.set_library(espeakng_loader.get_library_path())
+    EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
+    
     HAS_PHONEMIZER = True
 except ImportError:
     HAS_PHONEMIZER = False
