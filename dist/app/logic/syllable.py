@@ -45,7 +45,18 @@ def estimate_phonemes(text: str) -> int:
     Calculates the exact token footprint for Kokoro-ONNX to prevent 510-token crashes.
     Uses espeak-ng via phonemizer to mirror Kokoro's internal G2P engine perfectly.
     """
-    text = text.strip()
+    if '<' in text:
+        # 1. Skip/Destroy <img> and <s> (scene break) tags completely
+        text = re.sub(r'<img[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<s\b[^>]*>.*?</s>', '', text, flags=re.IGNORECASE|re.DOTALL)
+        text = re.sub(r'<s[^>]*>', '', text, flags=re.IGNORECASE)
+        
+        text = re.sub(r'<[^>]+>', ' ', text)
+        
+    # 3. The Line Mismatch Shield (Fixes input/output crashes by replacing newlines)
+    text = text.replace('\n', ' ')
+    text = re.sub(r'\s+', ' ', text).strip()
+    
     if not text:
         return 0
         
@@ -82,7 +93,7 @@ def estimate_phonemes(text: str) -> int:
         
         return final_estimate
         
-    except Exception as e:
-        print(f"[Chunker] Critical phoneme estimation failure. Bypassing with fallback: {e}")
-        # Extreme fallback if espeak crashes on corrupted characters
+    except Exception:
+        # Silent extreme fallback if espeak crashes on corrupted characters
         return int(len(text) * 1.25)
+        
