@@ -26,28 +26,21 @@ if platform.system() == "Windows":
     print("[Check OS] Windows detected. Scanning NVIDIA  CUDA | CUDNN ")
     
     preload_successful = False
-    
-    # --- 1. PYTHON NATIVE DLL PRELOAD (onnxruntime-gpu[cuda,cudnn]) ---
+    # --- 1. PYTHON NATIVE DLL PRELOAD (nvidia pip package) ---
     try:
-        import onnxruntime
-        onnxruntime.preload_dlls(directory="")
-        print("[NVIDIA] Successfully preloaded CUDA/cuDNN directly from Python environment.")
-        optimized_providers.append("CUDAExecutionProvider")
-        preload_successful = True
-        
-        # Tell python look inside nvidia folder and read all of em
-        try:
-            site_packages_dir = os.path.dirname(os.path.dirname(onnxruntime.__file__))
-            nvidia_dir = os.path.join(site_packages_dir, "nvidia")
-            if os.path.exists(nvidia_dir):
+        for p in sys.path:
+            nvidia_dir = os.path.join(p, "nvidia")
+            if os.path.isdir(nvidia_dir):
                 for bin_path in glob.glob(os.path.join(nvidia_dir, "*", "bin")):
-                    os.add_dll_directory(bin_path)
-                    os.environ["PATH"] = bin_path + os.pathsep + os.environ.get("PATH", "")
-        except Exception as e:
-            print(f"[NVIDIA] Sub-library link warning: {e}")
-
-    except AttributeError:
-        print("[NVIDIA] onnxruntime version is too old for preload_dlls. Skipping...")
+                    if os.path.isdir(bin_path):
+                        os.add_dll_directory(bin_path)
+                        os.environ["PATH"] = bin_path + os.pathsep + os.environ.get("PATH", "")
+                
+                print("[NVIDIA] Successfully linked CUDA/cuDNN from Python 'nvidia' package.")
+                optimized_providers.append("CUDAExecutionProvider")
+                preload_successful = True
+                break
+                
     except Exception as e:
         print(f"[NVIDIA] Python environment DLLs not found ({e}). Falling back to System Scan...")
 

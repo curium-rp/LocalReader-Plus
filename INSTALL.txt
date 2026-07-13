@@ -3,15 +3,19 @@
 ========================================================================
 
 System Requirements:
-- Python 3.12+ (Fully Tested on 3.12, 3.13, and 3.14)
+- Python 3.12+ (Fully Tested on 3.12, 3.13) 
+- Python 3.14 it has memory leak when fallback to CPU load (Kokoro_onnx FP32)
+   it use in GPU it will not have problem
 - Backward compatible with Python 3.10 and 3.11
 ========================================================================
 
 ##################  WINDOWS INSTALLATION  #########################
-
-Install Python: https://www.python.org/downloads/ 
+IF didn't install yet
+Install Python: 3.12 or 3.13  (https://www.python.org/downloads/) link only have .exe for newest version
  
-select 3.14 and find >>Windows installer (64-bit)<< download it
+ Use PowerShell run
+
+winget install -e --id Python.Python.3.13
 
 * Make sure to check "Add Python.exe to PATH" during installation.
 
@@ -57,7 +61,7 @@ python main.py
 ------------------------------------------------------------------------
 #############    [ Standard Mac / Linux ]   ############################
 ------------------------------------------------------------------------
-
+>>RECOMMENDED Python version 3.12
 >> macOS Extra Media Setup (using Homebrew):
 -------------------------------------------
 brew install ffmpeg
@@ -81,8 +85,11 @@ pip install -r requirements.txt
 python3 main.py
 
 ------------------------------------------------------------------------
-⚠️ Note for Python 3.14 (Linux):
-Because Python 3.14 compiles PyGObject directly from source, if your pip 
+⚠️ Note for Python 3.13-3.14 (Linux): 
+
+! If use 3.14 will have potential memory leak when use with CPU
+
+Because Python 3.13-3.14 compiles PyGObject directly from source, if your pip 
 installation encounters a wheel build error or re-uses a broken cached 
 attempt, force a clean compilation with:
 

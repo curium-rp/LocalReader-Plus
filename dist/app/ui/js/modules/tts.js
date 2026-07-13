@@ -23,6 +23,10 @@ export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
       state.currentAudioSource.disconnect();
     } catch (e) {}
   }
+  // Clear the orphaned gain node from the previous sentence
+  if (state.currentGainNode) {
+    try { state.currentGainNode.disconnect(); } catch (e) {}
+  }
 
   const source = state.audioContext.createBufferSource();
   source.buffer = audioBuffer;
@@ -37,11 +41,17 @@ export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
       gainNode.gain.value = 1.0;
   }
 
+  state.currentGainNode = gainNode;
   source.connect(gainNode);
   gainNode.connect(state.audioContext.destination);
 
   source.onended = async () => {
     state.currentAudioSource = null;
+    if (state.currentGainNode) {
+      try { state.currentGainNode.disconnect(); } catch (e) {}
+      state.currentGainNode = null;
+    }
+    
     if (state.jumpTimer) {
         clearInterval(state.jumpTimer);
         state.jumpTimer = null;
@@ -123,6 +133,11 @@ export function stopPlayback() {
       state.currentAudioSource.disconnect();
     } catch (e) {}
     state.currentAudioSource = null;
+  }
+  
+  if (state.currentGainNode) {
+    try { state.currentGainNode.disconnect(); } catch (e) {}
+    state.currentGainNode = null;
   }
 }
 
@@ -435,9 +450,25 @@ export async function preCacheNextSentences() {
     const voiceSelect = document.getElementById("voiceSelect");
     const speedRange = document.getElementById("speedRange");
 
-    while (state.audioBufferCache.size > MAX_CACHE_SIZE) {
-      const oldestKey = state.audioBufferCache.keys().next().value;
-      state.audioBufferCache.delete(oldestKey);
+    const currentPage = state.readingPageIndex;
+    const currentIndex = state.currentSentenceIndex;
+    
+    // Dynamic sliding window: Keep exactly 3 behind and 5 ahead relative to current reading index
+    for (const key of state.audioBufferCache.keys()) {
+        const [kPageStr, kIndexStr, kVoice, kSpeed] = key.split('_');
+        const kPage = parseInt(kPageStr);
+        const kIndex = parseInt(kIndexStr);
+        
+        if (kVoice !== voiceSelect.value || kSpeed !== speedRange.value || Math.abs(kPage - currentPage) > 1) {
+            state.audioBufferCache.delete(key);
+            continue;
+        }
+        
+        if (kPage === currentPage) {
+            if (kIndex < currentIndex - 3 || kIndex > currentIndex + 5) {
+                state.audioBufferCache.delete(key);
+            }
+        }
     }
 
     let targetPageIndex = state.readingPageIndex;
@@ -497,7 +528,7 @@ export async function preCacheNextSentences() {
       const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${voiceSelect.value}_${speedRange.value}`;
       if (state.audioBufferCache.has(cacheKey)) continue;
 
-      const res = await fetch(`/api/synthesize`, {
+      const res = await fetch(`${API_URL}/api/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

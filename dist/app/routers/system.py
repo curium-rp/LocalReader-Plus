@@ -81,71 +81,88 @@ def load_engine_logic(requested_mode=None):
 
     try:
         import app.state as state_module
+        import os
+        
+        # Hardware Choke: Prevent C-level math libraries from spawning hidden threads
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+        os.environ["NUMEXPR_NUM_THREADS"] = "1"
+        
         import onnxruntime as ort
-
+        try:
+            ort.set_default_logger_severity(3)
+        except AttributeError:
+            pass
         if state_module.kokoro is not None:
             print("[ENGINE] Unloading previous model...")
             state_module.kokoro = None  # GC old model
 
+        # Clean fallback check: Route to pure CPU branch if no valid GPU providers exist
+        if actual_mode == "gpu":
+            available_ort_providers = ort.get_available_providers()
+            valid_gpus = [p for p in getattr(state_module, "providers", []) if p in available_ort_providers and p != "CPUExecutionProvider"]
+            if not valid_gpus:
+                print(" -> [WARNING] No active GPU execution provider available. Fallback to CPU path.")
+                actual_mode = "cpu"
+
         print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
 
         if actual_mode == "gpu":
-            # 1. Filter OS-requested providers against the currently installed ONNX package
             available_ort_providers = ort.get_available_providers()
             custom_providers = []
             
             for p in getattr(state_module, "providers", []):
                 if p in available_ort_providers:
                     if p == "CUDAExecutionProvider":
-                        # Attach specific EXHAUSTIVE and HEURISTIC settings for CUDA efficiency
-                        custom_providers.append(("CUDAExecutionProvider", {"device_id": 0, "cudnn_conv_algo_search": "EXHAUSTIVE"}))
+                        # Set HEURISTIC for minimal VRAM overhead and fast initialization
+                        custom_providers.append(("CUDAExecutionProvider", {
+                            "device_id": 0, 
+                            "cudnn_conv_algo_search": "HEURISTIC",
+                            "arena_extend_strategy": "kSameAsRequested"
+                        }))
                     else:
                         custom_providers.append(p)
             
-            # Failsafe fallback to CPU to prevent session crash and silence warnings
-            if not custom_providers or "CPUExecutionProvider" not in custom_providers:
-                custom_providers.append("CPUExecutionProvider")
-                
-            # Clean logging to see exactly what survived the filter
             active_names = [p[0].replace("ExecutionProvider", "") if isinstance(p, tuple) else p.replace("ExecutionProvider", "") for p in custom_providers]
-            print(f" -> [ENGINE] Active Hardware Linked: {' | '.join(active_names)}")
+            print(f" -> [ENGINE] Active Hardware Linked: \033[92m{' | '.join(active_names)}\033[0m")
             
-            # --- THE MONKEY PATCH ---
             original_session = ort.InferenceSession
             
             def forced_gpu_session(*args, **kwargs):
-                kwargs['providers'] = custom_providers
+                    kwargs['providers'] = custom_providers
+                    
+                    if 'sess_options' not in kwargs or kwargs['sess_options'] is None:
+                        sess_options = ort.SessionOptions()
+                        kwargs['sess_options'] = sess_options
+                    
+                    # Prevent MEMORY LEAK 
+                    kwargs['sess_options'].enable_cpu_mem_arena = False
+                    kwargs['sess_options'].enable_mem_pattern = False 
+                    
+                    kwargs['sess_options'].graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+                    
+                    return original_session(*args, **kwargs)
                 
-                if 'sess_options' not in kwargs or kwargs['sess_options'] is None:
-                    sess_options = ort.SessionOptions()
-                    kwargs['sess_options'] = sess_options
-                
-                # 2. THE DYNAMIC SHAPE FIX (CRITICAL) - Safe for all OS platforms
-                kwargs['sess_options'].enable_mem_pattern = False 
-                
-                # 3. Protect delicate STFT audio wave nodes
-                kwargs['sess_options'].graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-                
-                return original_session(*args, **kwargs)
-                
-            # Hijack the engine
             ort.InferenceSession = forced_gpu_session
-            # ------------------------
             
             try:
                 state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
             except Exception as e:
                 print(f"[ENGINE WARNING] PatchedKokoro failed: {e}. Trying standard Kokoro fallback.")
+                ort.InferenceSession = original_session
                 from kokoro_onnx import Kokoro
                 state_module.kokoro = Kokoro(str(model_to_load), str(voices_path))
             finally:
-                # Always restore the original engine so we don't break other features (like Upscaler)
                 ort.InferenceSession = original_session
                 
         else:
-            print("[ENGINE] Using default Kokoro for CPU model...")
-            from kokoro_onnx import Kokoro
-            state_module.kokoro = Kokoro(str(model_to_load), str(voices_path))
+            print("[ENGINE] Loading Model in \033[92mRAM (CPU)\033[0m...")
+            
+            # Use PatchedKokoro to enforce strict float32/int64 tensor types and prevent ONNX mapping crashes
+            state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
+            state_module.kokoro_export = state_module.kokoro # Bind export to same instance for CPU
 
     except Exception as e:
         system_status["last_error"] = f"Failed to load TTS engine: {str(e)}"

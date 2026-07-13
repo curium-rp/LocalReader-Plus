@@ -104,6 +104,20 @@ export async function processPdfBlob(blob, fileName) {
 }
 
 export async function selectDocument(item) {
+    if (!window._hasSyncedSettingsOnOpen) {
+        try {
+            const savedSettings = await fetchJSON(`/api/settings?t=${Date.now()}`).catch(() => null);
+            if (savedSettings) {
+                const voiceSelect = document.getElementById("voiceSelect");
+                if (voiceSelect && savedSettings.voice && voiceSelect.value !== savedSettings.voice) {
+                    voiceSelect.value = savedSettings.voice;
+                    state.voice = savedSettings.voice;
+                }
+            }
+        } catch (err) {}
+        window._hasSyncedSettingsOnOpen = true;
+    }
+
     state.currentDoc = item;
     showToast(`Opening ${item.fileName}...`);
     const textContent = document.getElementById("textContent");

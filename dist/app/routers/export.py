@@ -169,7 +169,6 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                 soup = BeautifulSoup(page, 'html.parser')
                 
                 # Handle new structured HTML format
-                # Handle new structured HTML format
                 structured_elements = soup.find_all(['n', 's', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
                 if structured_elements:
                     for el in structured_elements:
@@ -265,18 +264,22 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             generated_any = False
 
             # 5. Pipeline Execution Loop
-            from .tts import _safe_cores
             import concurrent.futures
 
             def process_export_element(el_data):
                 if not export_status["is_exporting"]:
                     return np.array([], dtype=np.float32), 24000
+                
+                # Import state locally so worker threads don't lose the memory reference
+                import app.state as state_module
                     
                 b_type = el_data["b_type"]
                 raw_text = el_data["text"]
                 sample_rate = 24000
                 
                 try:
+                    export_engine = getattr(state_module, "kokoro_export", state_module.kokoro)
+                    
                     # Apply pronunciation fixes
                     try:
                         text_norm = fix_special_formats(raw_text, main_voice_lang)
@@ -373,10 +376,13 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                             if has_pause_settings and has_punctuation:
                                 seg_samples, sr = synthesize_with_pauses(
                                     text=final_text, voice=seg_voice, speed=float(request.speed), 
-                                    lang=final_engine_lang, pause_settings=pause_settings, behavior_settings=local_b_settings
+                                    lang=final_engine_lang, pause_settings=pause_settings, behavior_settings=local_b_settings,
+                                    engine_override=export_engine, is_export=True
                                 )
                                 if seg_samples is not None and len(seg_samples.flatten()) > 0: 
-                                    chunk_audios.append(seg_samples.flatten())
+                                    # 🌟 POINTER LOCK BREAK: Clone array to system RAM and destroy ONNX C++ reference
+                                    chunk_audios.append(np.array(seg_samples.flatten(), copy=True))
+                                    del seg_samples
                                 sample_rate = sr
                             else:
                                 # 🌟 FIX: UNSHIELD EVERYTHING for lines without structural pauses!
@@ -385,11 +391,13 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                                 full_len = estimate_phonemes(final_text)
                                 for chunk_dict in sub_chunks:
                                     chunk_samples, sr = generate_locked_audio(
-                                        state_module.kokoro, chunk_dict["text"], seg_voice, 
-                                        float(request.speed), final_engine_lang, full_len
+                                        export_engine, chunk_dict["text"], seg_voice, 
+                                        float(request.speed), final_engine_lang, full_len, is_export=True
                                     )
                                     if chunk_samples is not None and len(chunk_samples.flatten()) > 0: 
-                                        chunk_audios.append(chunk_samples.flatten())
+                                        # 🌟 POINTER LOCK BREAK: Clone array to system RAM and destroy ONNX C++ reference
+                                        chunk_audios.append(np.array(chunk_samples.flatten(), copy=True))
+                                        del chunk_samples
                                     sample_rate = sr
                                     
                         samples = np.concatenate(chunk_audios) if chunk_audios else np.array([], dtype=np.float32)
@@ -428,16 +436,17 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                         if len(samples) == 0:
                             samples = create_anti_skip_silence(100, sample_rate)
 
-                    return samples, sample_rate
+                    # Final decoupling before returning to main thread
+                    final_output = np.array(samples, copy=True)
+                    del samples
+                    del chunk_audios
+                    return final_output, sample_rate
 
                 except Exception as e:
                     print(f"[Export] Warning: Failed to process chunk: {e}")
                     return np.array([], dtype=np.float32), 24000
 
-    
-            # ==========================================
             # 🌟 DYNAMIC HARDWARE-AWARE BATCH PROCESSOR 🌟
-            # ==========================================
             import gc
             import multiprocessing
             from ..config import settings_file
@@ -452,7 +461,7 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             except Exception:
                 pass
             
-            # --- 🛡️ HARDWARE VALIDATION LAYER ---
+            # ---  HARDWARE VALIDATION LAYER ---
             # Prevents CPU choking if the system silently fell back to CPU mode
             if engine_mode == "gpu":
                 try:
@@ -475,24 +484,23 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                     engine_mode = "cpu"
 
             total_cores = multiprocessing.cpu_count()
+            reserved_cores = max(1, total_cores // 6)
             
             if engine_mode == "cpu":
-                # CPU MODE: Maximize thread usage but reserve system cores
-                # Formula: 6 cores -> reserve 2; 12 cores -> reserve 3
-                reserved_cores = max(2, total_cores // 4)
-                safe_workers = max(1, total_cores - reserved_cores)
+                # 🌟 CPU MODE: BALANCE RAM & SPEED 🌟
+                # Capped at 3 workers maximum to prevent memory saturation during fallback
+                safe_workers = max(1, min(3, total_cores - reserved_cores))
                 batch_size = safe_workers * 2
-                print(f"[Export] CPU Mode: {total_cores} Cores | Reserved: {reserved_cores} | Workers: {safe_workers}")
+                print(f"[Export] CPU Mode:  Workers: {safe_workers} | Batch Size: {batch_size}")
+                print("[Export WARNING] For maximum speed, please use GPU acceleration.")
+
             else:
-                # 🌟 GPU MODE: THE DATA STARVATION FIX 🌟
-                # A single Python thread starves the GPU (12% usage) because Python's GIL and regex 
-                # processing takes longer than the actual GPU math. 
-                # By scaling to 4-8 concurrent workers, Python prepares sentences in parallel and 
-                # feeds the GPU instantly, driving usage to maximum without overflowing typical VRAM pools.
-                safe_workers = total_cores * 2
+                #  GPU MODE: THE VRAM it will eat ~1.2-2.5GB
+                safe_workers = min(6, total_cores)
                 batch_size = safe_workers * 4
-                print(f"[Export] GPU Mode: MAXIMUM OVERDRIVE. Workers: {safe_workers} | Batch Size: {batch_size}")
-            
+                print(f"[Export] GPU Mode:  Workers: {safe_workers} | Batch Size: {batch_size}")
+
+
             for batch_start in range(0, len(elements_to_process), batch_size):
                 if not export_status["is_exporting"]:
                     export_status["error"] = "Export cancelled"
@@ -502,9 +510,14 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                     
                 batch = elements_to_process[batch_start:batch_start + batch_size]
                 
-                # Execute batch concurrently. .map() guarantees the array returns in perfect sequential order!
-                with concurrent.futures.ThreadPoolExecutor(max_workers=safe_workers) as executor:
-                    results = list(executor.map(process_export_element, batch))
+                # 🌟 EXECUTION ROUTER: Prevent ThreadPool from duplicating memory in CPU mode
+                if safe_workers == 1:
+                    # Sequential map on the main thread
+                    results = list(map(process_export_element, batch))
+                else:
+                    # GPU Multi-threading
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=safe_workers) as executor:
+                        results = list(executor.map(process_export_element, batch))
                     
                 # Write results sequentially to disk to preserve the audiobook timeline
                 for i, (samples, sample_rate) in enumerate(results):
@@ -514,7 +527,7 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                     if wav_file is None and sample_rate > 0:
                         wav_file = sf.SoundFile(
                             str(temp_wav_path), mode='w', samplerate=sample_rate, 
-                            channels=1, subtype='PCM_16'
+                            channels=1, subtype='FLOAT'
                         )
 
                     if wav_file and len(samples) > 0:
@@ -556,18 +569,49 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             export_status["error"] = None
             # Store the relative path so the UI knows which folder to open
             export_status["output_file"] = f"{safe_book_name}/{output_filename}"
-            export_status["is_exporting"] = False
 
         except Exception as e:
             export_status["error"] = str(e)
-            export_status["is_exporting"] = False
             if 'wav_file' in locals() and wav_file and not wav_file.closed:
                 wav_file.close()
             if 'temp_wav_path' in locals() and temp_wav_path.exists():
                 temp_wav_path.unlink(missing_ok=True)
+                
+        finally:
+            export_status["is_exporting"] = False
+            # Premature VRAM flush removed to prevent breaking the queue.
 
     background_tasks.add_task(export_task)
     return {"status": "started"}
+
+@router.post("/api/export/flush-vram")
+async def flush_export_vram(background_tasks: BackgroundTasks):
+    def flush_task():
+        print("[Export] Queue complete. Flushing RAM/VRAM and restoring idle state...")
+        try:
+            import gc
+            import app.state as state_module
+            
+            # 🌟 DEEP C++ DESTRUCTION: Force OS to reclaim memory immediately
+            for engine_attr in ["kokoro", "kokoro_export"]:
+                engine = getattr(state_module, engine_attr, None)
+                if engine is not None:
+                    if hasattr(engine, "sess"):
+                        del engine.sess  # Nuke the ONNX C++ InferenceSession directly
+                    setattr(state_module, engine_attr, None)
+                
+            # Run GC multiple times to clear deep generational buffers
+            gc.collect()
+            gc.collect()
+            
+            # Reboot the engine smoothly in the background
+            from .system import load_engine_logic
+            load_engine_logic()
+        except Exception as e:
+            print(f"[Export] Memory Flush Warning: {e}")
+
+    background_tasks.add_task(flush_task)
+    return {"status": "flushing"}
 
 @router.get("/api/export/status")
 async def get_export_status():
