@@ -150,7 +150,7 @@ function selectExportFormat() {
 
         renderExportToc();
 
-        // 🌟 SURGICAL FIX: Task Generator (Converts logic into a queue)
+        // SURGICAL FIX: Task Generator (Converts logic into a queue)
         const getTasks = (format) => {
             let tasks = [];
             
@@ -159,7 +159,8 @@ function selectExportFormat() {
             } else if (!isSingleMode && startIndex !== null && endIndex !== null) {
                 if (isSeparateMode) {
                     // SEPARATE MODE: Auto-slice the range into multiple individual tasks
-                    for (let i = startIndex; i < endIndex; i++) {
+                    // 🌟 FIX: Changed < to <= to explicitly INCLUDE the final chapter in the loop
+                    for (let i = startIndex; i <= endIndex; i++) {
                         let sPage = tocItems[i].page_index;
                         let ePage = tocItems[i+1] ? tocItems[i+1].page_index : maxPage;
                         if (sPage >= ePage) ePage = sPage + 1;
@@ -167,7 +168,11 @@ function selectExportFormat() {
                     }
                 } else {
                     // COMBINED MODE: One massive file
-                    tasks.push({ format, startPage, endPage, fileLabel: `${tocItems[startIndex].title} - ${tocItems[endIndex].title}` });
+                    // 🌟 FIX: Calculate the true end page by looking at the start of the chapter AFTER the selection
+                    let trueEndPage = tocItems[endIndex + 1] ? tocItems[endIndex + 1].page_index : maxPage;
+                    if (startPage >= trueEndPage) trueEndPage = startPage + 1;
+                    
+                    tasks.push({ format, startPage, endPage: trueEndPage, fileLabel: `${tocItems[startIndex].title} - ${tocItems[endIndex].title}` });
                 }
             } else {
                 // FULL BOOK
@@ -322,7 +327,14 @@ export async function startExport() {
 
         // Entire Queue Complete
         if (lastOutputFile) {
-            document.getElementById('exportStatus').textContent = tasks.length > 1 ? 'All exports complete!' : 'Export complete!';
+            document.getElementById('exportStatus').textContent = tasks.length > 1 ? 'All exports complete! Freeing RAM...' : 'Export complete! Freeing RAM...';
+            
+            // 🌟 SURGICAL FIX: Safely flush VRAM only after the ENTIRE loop is done
+            try {
+                await fetchJSON(`/api/export/flush-vram`, { method: 'POST' });
+            } catch (e) {
+                console.warn("VRAM flush signal failed, but export is safe.", e);
+            }
             
             // Format to show just the folder name instead of individual file
             const folderName = lastOutputFile.split('/')[0];

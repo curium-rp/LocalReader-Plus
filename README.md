@@ -4,7 +4,7 @@
 
 **A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-### 🚨Update June 9, 2026 ##
+### 🚨Update June 12, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -19,7 +19,7 @@
    - Many bug has been fix 
      - Fix pause setting not respond.
      - Fix preload next sentences when apply pause settings.  _Trade-off, is may or may not happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, I means it need to wait -old buffer setting end._
-     - Fix cache system cause repreat or skip sentences, randomly, and improve preload next sentences
+     - Fix cache system cause repreat or skip sentences, randomly, and improve preload next sentences 
    -  Delete .exe options for Windows (No plan to add back, cause ONNX Runtime requires specific versions for each Python version)
    -  Have themes (auto save and default is dark mode open on LOGO "LocalReader")
 
@@ -41,7 +41,8 @@
 ---
 
 **Python versions support**:
-- Python 3.12 - 3.14 (Tested on windows: 3.10 to 3.14 run without any issue)
+- Python 3.12 - 3.13 (Tested on windows: 3.10 to 3.13 run without any issue)
+- For python 3.14 it can run but has memory leak when use cpu run models, no issue with GPU
 
 
 ## Windows Installation (Virtual Environment with Uv)
@@ -70,10 +71,10 @@ Download and extract the ZIP from the repository, then open PowerShell inside th
 
 ### Step 3: Setup and Run
 
-Run these commands to create the environment, activate it, install dependencies, and start the app. *(Note: `uv` will automatically download Python 3.14 for you if you don't have it!)* 
+Run these commands to create the environment, activate it, install dependencies, and start the app. *(Note: `uv` will automatically download Python 3.XX for you if you don't have it!)* 
 
 ```powershell
-uv venv --python 3.14
+uv venv --python 3.13
 
 uv pip install -r requirements.txt
 
@@ -129,14 +130,14 @@ Open your Terminal inside the `LocalReader-Plus/dist/` folder and run the follow
 bash
 ```bash
 
-uv venv --python 3.14
+uv venv --python 3.12
 
 uv pip install -r requirements.txt
 
 uv run main.py
 
 ```
->⚠️ Note for Python 3.14 (Linux) if has error fail to build 'pygobject' run this command, then go back to run `uv pip install` again
+>⚠️ Note for Python 3.13 ~and 3.14~ (Linux) if has error fail to build 'pygobject' run this command, then go back to run `uv pip install` again
 ```
 uv pip install --no-cache pycairo PyGObject pywebview[gtk]
 ```
@@ -174,7 +175,7 @@ That all and run `uv run main.py`
    _if this process break normal app NVDIA -stick with loading icon- just go download NVDIA app it and re-install_
 
 
-**IF change files paths install location, you need to go for change paths inside main.py to make apps know it**
+**IF change files paths install location, you need to go for change paths inside `main.py` to make apps know it**
    
 ```powershell
 
@@ -286,7 +287,7 @@ LocalReader-Plus
 
 - `dist/bin/` - FFMPEG binaries  ~~(auto-downloaded on first export)~~
 - `app/models/` - TTS engine models (auto-downloaded based on your choice)
-- `dist/userdata/audio_cache.db` - SQLite Audio Cache
+- `dist/userdata/audio_cache.db` - SQLite Audio Cache (audio cache has been disable, if you needed open back in tts.py> `ENABLE_AUDIO_CACHE = False` change to `True` )
 - `dist/audio files`- for files that Export will live inside this folder
 
 ### Storage & Installation Estimates

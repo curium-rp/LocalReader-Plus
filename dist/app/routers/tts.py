@@ -49,14 +49,13 @@ def create_anti_skip_silence(duration_ms, sample_rate=24000):
     return np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
 
 _total_cores = multiprocessing.cpu_count()
-_reserved_cores = max(1, _total_cores // 6)
-_safe_cores = max(1, _total_cores - _reserved_cores)
-cpu_semaphore = threading.Semaphore(_safe_cores)
+# Strict lock for real-time reading to enforce low GPU/CPU usage
+realtime_lock = threading.Lock()
 
 _robust_link_cache = {}
 _cache_lock = threading.Lock()
 
-def generate_locked_audio(kokoro_inst, text, voice, speed, lang, target_len):
+def generate_locked_audio(kokoro_inst, text, voice, speed, lang, target_len, is_export=False):
     cache_string = f"{text}|{voice}|{speed}|{lang}".encode('utf-8')
     cache_key = hashlib.md5(cache_string).hexdigest()
     
@@ -69,15 +68,28 @@ def generate_locked_audio(kokoro_inst, text, voice, speed, lang, target_len):
     
     for attempt in range(max_retries):
         try:
-            with cpu_semaphore:
+            # Export bypasses the lock to hit the 6-worker limit. 
+            # Real-time uses the lock to drip-feed the engine.
+            if is_export:
                 audio_data = kokoro_inst.create(text, voice, speed, lang)
+            else:
+                with realtime_lock:
+                    audio_data = kokoro_inst.create(text, voice, speed, lang)
                 
             if audio_data is not None and len(audio_data[0].flatten()) > 0:
-                with _cache_lock:
-                    if len(_robust_link_cache) > 500:
-                        _robust_link_cache.clear()
-                    _robust_link_cache[cache_key] = audio_data
-                    
+                # Bypass cache entirely during massive exports to prevent RAM bloat
+                if not is_export:
+                    with _cache_lock:
+                        # Shift from "Nuke" to a strictly tracked FIFO queue of 20
+                        if len(_robust_link_cache) >= 20:
+                            oldest_key = next(iter(_robust_link_cache))
+                            del _robust_link_cache[oldest_key]
+                        _robust_link_cache[cache_key] = audio_data
+                        
+            # Force Python GC to sweep floating PyBind11 C++ pointers left by ORT
+            import gc
+            gc.collect()
+            
             return audio_data
             
         except Exception as e:
@@ -230,7 +242,7 @@ def sanitize_typography_for_engine(text: str) -> str:
     
     return text.strip()
 
-def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause_settings: Dict[str, int], behavior_settings: Dict[str, int] = None):
+def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause_settings: Dict[str, int], behavior_settings: Dict[str, int] = None, engine_override=None, is_export: bool = False):
     if behavior_settings is None:
         behavior_settings = {}
         
@@ -329,7 +341,9 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
     audio_map = {}
     tts_tasks = [p for p in plan if p["type"] == "tts"]
 
-    if tts_tasks and state_module.kokoro:
+    active_engine = engine_override if engine_override is not None else state_module.kokoro
+
+    if tts_tasks and active_engine:
         for idx, t in enumerate(tts_tasks):
             t["index"] = f"task_{idx}" 
             full_len = estimate_phonemes(t["text"])
@@ -339,7 +353,7 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
             
             for sc_dict in sub_chunks:
                 try:
-                    samples, _ = generate_locked_audio(state_module.kokoro, sc_dict["text"], voice, speed, lang, full_len)
+                    samples, _ = generate_locked_audio(active_engine, sc_dict["text"], voice, speed, lang, full_len, is_export=is_export)
                     if samples is not None and len(samples.flatten()) > 0:
                         chunk_audios.append(samples.flatten())
                 except Exception as e:
@@ -417,8 +431,27 @@ async def get_locale(lang: str):
         with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
     except Exception: return {}
 
+# Toggle this to True to debug memory leaks in the TTS pipeline
+ENABLE_TTS_DEBUG_LOG = False
+# Master toggle for SSD Audio Caching
+ENABLE_AUDIO_CACHE = False
+
+@router.post("/api/synthesize")
+
 @router.post("/api/synthesize")
 async def synthesize(request: SynthesisRequest):
+    if ENABLE_TTS_DEBUG_LOG:
+        import tracemalloc
+        from datetime import datetime
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+        
+        log_file = "tts_debug_log.txt"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().strftime('%H:%M:%S')}] STARTING TTS SYNTHESIS...\n")
+            
+        snapshot_before = tracemalloc.take_snapshot()
+
     import app.state as state_module
     from fastapi import HTTPException
     import re
@@ -463,6 +496,9 @@ async def synthesize(request: SynthesisRequest):
         text = apply_custom_pronunciations(text, rules_data, request.ignore_list, main_voice_lang)
     except Exception:
         text = fix_special_formats(request.text, main_voice_lang)
+
+    # Sanitize text tokens through typography shield to prevent ONNX int32 tensor data type crashes
+    text = sanitize_typography_for_engine(text)
 
     try:
         polyglot_segments = smart_polyglot_split(text, selected_voice, get_language_from_voice)
@@ -523,9 +559,10 @@ async def synthesize(request: SynthesisRequest):
 
         cache_key = generate_cache_key(original_text, selected_voice, float(request.speed or 1.0), pause_settings, request.rules, request.ignore_list, b_settings, b_type)
         
-        cached_audio = audio_cache.get(cache_key)
-        if cached_audio:
-            return StreamingResponse(io.BytesIO(cached_audio), media_type="audio/wav", headers={"Content-Length": str(len(cached_audio))})
+        if ENABLE_AUDIO_CACHE:
+            cached_audio = audio_cache.get(cache_key)
+            if cached_audio:
+                return StreamingResponse(io.BytesIO(cached_audio), media_type="audio/wav", headers={"Content-Length": str(len(cached_audio))})
 
         punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
         has_punctuation = any(p in text for p in punctuation_chars) or "<CAP_COM>" in text
@@ -640,11 +677,28 @@ async def synthesize(request: SynthesisRequest):
                 samples = create_anti_skip_silence(100, 24000)
 
         buffer = io.BytesIO()
+        
         sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="FLOAT")
         audio_bytes = buffer.getvalue()
         
-        audio_cache.put(cache_key, audio_bytes)
+        if ENABLE_AUDIO_CACHE:
+            audio_cache.put(cache_key, audio_bytes)
+
+        if ENABLE_TTS_DEBUG_LOG:
+            import tracemalloc
+            from datetime import datetime
+            snapshot_after = tracemalloc.take_snapshot()
+            top_stats = snapshot_after.compare_to(snapshot_before, 'lineno')
+            
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] TTS SYNTHESIS COMPLETE.\n")
+                f.write("--- Top Memory Retentions During This Synthesis ---\n")
+                for stat in top_stats[:3]:
+                    f.write(f"{stat}\n")
 
         return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav", headers={"Content-Length": str(len(audio_bytes))})
     except Exception as e:
+        if ENABLE_TTS_DEBUG_LOG:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"ERROR: {str(e)}\n")
         raise HTTPException(status_code=500, detail=str(e))
