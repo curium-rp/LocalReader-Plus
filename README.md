@@ -4,7 +4,7 @@
 
 **A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-### 🚨Update June 12, 2026 ##
+### 🚨Update June 14, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -20,7 +20,7 @@
      - Fix pause setting not respond.
      - Fix preload next sentences when apply pause settings.  _Trade-off, is may or may not happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, I means it need to wait -old buffer setting end._
      - Fix cache system cause repreat or skip sentences, randomly, and improve preload next sentences 
-   -  Delete .exe options for Windows (No plan to add back, cause ONNX Runtime requires specific versions for each Python version)
+   -  Delete .exe options for Windows (Plan to add back use Inno setup to create .exe)
    -  Have themes (auto save and default is dark mode open on LOGO "LocalReader")
 
   **Wave II**
@@ -28,7 +28,7 @@
    -  Improve library (Import system) it will reserve paragraph, Haeder, images. (header will not mix with other sentence/paragraph again)
    -  Add Match Case and Match Whole Word for search functions and imporve jump result.
    -  Support auto switch languages, it currently Only support when use models voice English it will fallback support with Japanese and Mandarin.
-   -  Improve reliability of apps.
+   -  Improve reliability of apps and add media key supports.
    -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
    -  Improve Export audio system it will use Pause/Behavior/voice settings.
    
@@ -41,8 +41,8 @@
 ---
 
 **Python versions support**:
-- Python 3.12 - 3.13 (Tested on windows: 3.10 to 3.13 run without any issue)
-- For python 3.14 it can run but has memory leak when use cpu run models, no issue with GPU
+- Python 3.10 - 3.13 (Tested on windows: 3.10 to 3.13 run without any issue)
+- For python 3.14 it can run but it has memory leak when run models on CPU be carefull, no issue with GPU
 
 
 ## Windows Installation (Virtual Environment with Uv)
@@ -137,7 +137,7 @@ uv pip install -r requirements.txt
 uv run main.py
 
 ```
->⚠️ Note for Python 3.13 ~and 3.14~ (Linux) if has error fail to build 'pygobject' run this command, then go back to run `uv pip install` again
+>⚠️ Note **Linux**, if has error fail to build 'pygobject' run this command, then go back to run `uv pip install` again
 ```
 uv pip install --no-cache pycairo PyGObject pywebview[gtk]
 ```
@@ -184,10 +184,7 @@ uv pip install onnxruntime-gpu
 >`uv run main.py`
 
 
-  Try to play it if didn't see red color text and  see yellow text say in last parts something like  "only guarantees to be correct if indices are not duplicated" 
-
-   
-   It mean is run on GPU enjoy.
+  if Active Hardware Linked = $${\color{green}CUDA}$$  it mean it run on NVIDIA GPU.
 
 
 ---
@@ -235,13 +232,13 @@ for uninstall uv go [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-starte
 
 ## 🔳 Keyboard Shortcuts
 
-| Key                | Action            |
-| ------------------ | ----------------- |
-| `Space`            | Play/Pause        |
-| `←`                | Previous Sentence |
-| `→`                | Next Sentence     |
-| `Ctrl+F` / `Cmd+F` | Open Search       |
-| `ESC`              | Close Search      |
+| Key                |  Media key          | Action             |
+| :---               | :---                | :---               |
+| `Space`            | Play/Pause Track    | Play/Pause         |
+| `←`                | Previous Track      | Previous Sentence  |
+| `→`                | Next Track          | Next Sentence      |
+| `Ctrl+F` / `Cmd+F` |          -          | Open Search        |
+| `ESC`              |          -          | Close Search       |
 
 ---
 </br>
