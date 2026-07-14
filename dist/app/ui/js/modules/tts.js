@@ -6,6 +6,10 @@ import { renderPage, getSentencesForPage } from "./library.js";
 let saveProgressTimeout = null;
 let currentSynthesisId = 0; // 🌟 ADDED: Bulletproof lock to prevent voice overlap
 
+// Create a silent audio element to force the OS to recognize the media session
+const osMediaAnchor = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+osMediaAnchor.loop = true;
+
 export function initAudioContext() {
   if (!state.audioContext) {
     state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -45,6 +49,31 @@ export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
   source.connect(gainNode);
   gainNode.connect(state.audioContext.destination);
 
+  // Trigger the silent audio and update the OS media controller
+  const playPromise = osMediaAnchor.play();
+  if (playPromise !== undefined) {
+    playPromise.catch((error) => {
+      console.log("OS Media Anchor waiting for user interaction:", error);
+    });
+  }
+  
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.playbackState = 'playing';
+    
+    // SVG Book Icon and name for notification
+    //Can't show name and image yet but it working  it will show apps notification
+    // for signal to OS and OS will auto prioritize Media keys.
+    const bookIconSvg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="512" height="512"><rect width="24" height="24" fill="%2318181b"/><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" fill="none" stroke="%233b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: displayChars ? displayChars : "Reading...",
+      artist: "Kokoro TTS",
+      album: "Audiobook Player",
+      artwork: [
+        { src: bookIconSvg, sizes: '512x512', type: 'image/svg+xml' }
+      ]
+    });
+  }
   source.onended = async () => {
     state.currentAudioSource = null;
     if (state.currentGainNode) {
@@ -114,6 +143,12 @@ export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
 export function stopPlayback() {
   state.isPlaying = false;
   currentSynthesisId++; // 🌟 Instantly invalidate any pending server downloads
+
+  // Pause the silent audio and tell the OS we stopped
+  osMediaAnchor.pause();
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.playbackState = 'paused';
+  }
 
   const playIcon = document.getElementById("playIcon");
   if (playIcon) {

@@ -376,6 +376,27 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// Bind hardware media keys directly to the OS Media Session
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.setActionHandler('play', () => {
+    togglePlayback();
+  });
+  
+  navigator.mediaSession.setActionHandler('pause', () => {
+    togglePlayback();
+  });
+  
+  navigator.mediaSession.setActionHandler('previoustrack', () => {
+    const skipBackBtn = document.getElementById("skipBack");
+    if (skipBackBtn) skipBackBtn.click();
+  });
+  
+  navigator.mediaSession.setActionHandler('nexttrack', () => {
+    const skipForwardBtn = document.getElementById("skipForward");
+    if (skipForwardBtn) skipForwardBtn.click();
+  });
+}
+
 document.getElementById("prevPage").onclick = async () => {
   if (state.viewPageIndex > 0) {
     state.viewPageIndex--;
