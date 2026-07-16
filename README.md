@@ -12,85 +12,42 @@
 </div>
 
 
----
-# What difference from LocalReader Pro(main)
-   **Wave I**
-   -  Have support with GPU NVDIA _NEED more setup_
-   - Many bug has been fix 
-     - Fix pause setting not respond.
-     - Fix preload next sentences when apply pause settings.  _Trade-off, is may or may not happens when play audio (change pause settings) and change in real-time, it need to wait a little for settings apply when change pause, I means it need to wait -old buffer setting end._
-     - Fix cache system cause repreat or skip sentences, randomly, and improve preload next sentences 
-   -  Delete .exe options for Windows (Plan to add back use Inno setup to create .exe)
-   -  Have themes (auto save and default is dark mode open on LOGO "LocalReader")
 
-  **Wave II**
-   -  Add ToC/Table of Content support.
-   -  Improve library (Import system) it will reserve paragraph, Haeder, images. (header will not mix with other sentence/paragraph again)
-   -  Add Match Case and Match Whole Word for search functions and imporve jump result.
-   -  Support auto switch languages, it currently Only support when use models voice English it will fallback support with Japanese and Mandarin.
-   -  Improve reliability of apps and add media key supports.
-   -  Improve toggle player it will has auto hide(detect mouse movement), and manual hide change to rightside button of apps with **^** unhide display.
-   -  Improve Export audio system it will use Pause/Behavior/voice settings.
-   
-   _Have detects 'ExecutionProvider' in Windows, Mac, and Linux for Kokoro_gpu models it should works in Gpu if it can will fallback to Cpu_
-   (_default will run on Cpu, cuz Kokoro-onnx will install 'onnxruntime' **Cpu version** it will run on **Cpu** regardless of whether the model is 'GPU'_)
-
-
-</br>
 
 ---
 
 **Python versions support**:
 - Python 3.10 - 3.13 (Tested on windows: 3.10 to 3.13 run without any issue)
-- For python 3.14 it can run but it has memory leak when run models on CPU be carefull, no issue with GPU
+- For python 3.14 it can run but it has memory leak when use run models on CPU be carefull, no issue with GPU
+
+>default will run on Cpu, cuz Kokoro-onnx will install 'onnxruntime' **Cpu version** it will run on **Cpu** regardless of whether the model is 'GPU'
+
+</br>
+
+## Windows Installation 
+
+### use executable files tool (.exe)
+
+&emsp;It will install UV if you don't have yet through PowerShell and you can select onnxruntime CPU/GPU version with .exe or select optional CMD GUI shortcut for change onnxruntime version later.
+  
+&emsp;&emsp;-It will install all dependencies, automatically.
+   
+&emsp;&emsp;-This Apps use UV to manage dependencies and virtual environment.
+    
 
 
-## Windows Installation (Virtual Environment with Uv)
 
-> **Note:** If you want to run this without a virtual environment or prefer the standard `.venv` method, please see the full instructions in [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
+</br>
 
-### Step 1: Install Uv
-If you don't have `uv` installed yet, check the [Official Getting Started Guide](https://docs.astral.sh/uv/getting-started/installation/), or watch this [Installation Video](https://www.youtube.com/watch?v=zMhRLr7FmdY), or simply run this command in PowerShell:
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+> **Note:** If you want manual install, need to run without a virtual environment or prefer the standard `.venv` method or need to manual install with uv, please see the full instructions in [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
 
-```
 
-### Step 2: Download the Project
-
-**Option A: Git Clone** 
-
-```powershell
-git clone https://github.com/curium-rp/LocalReader-Plus
-cd LocalReader-Plus\dist
-
-```
-
-**Option B: Download ZIP** 
-Download and extract the ZIP from the repository, then open PowerShell inside the `LocalReader-Plus\dist` folder.
-
-### Step 3: Setup and Run
-
-Run these commands to create the environment, activate it, install dependencies, and start the app. *(Note: `uv` will automatically download Python 3.XX for you if you don't have it!)* 
-
-```powershell
-uv venv --python 3.13
-
-uv pip install -r requirements.txt
-
-uv run main.py
-
-```
-
->`UV` did not require for `.venv\Scripts\activate` and `uv run` will automatically executes virtual environments.
-
----
 
 </br>
 
 ## 🍎🐧 Mac & Linux Installation (Virtual Environment with Uv)
 
-> **Note:** I tested on VMware Linux can't do test as a full install, it may has some problem or error please understand, and Mac os no hardware tested yet, it may not work.
+> **Note:** I tested on VMware/Wsl Linux can't do test as a full install, it may has some problem or error please understand, and Mac os no hardware tested yet, it may not work.
 
 > **Note:** If you prefer the standard `.venv` method, please visit [`INSTALL.txt`](https://github.com/curium-rp/LocalReader-Plus/blob/main/INSTALL.txt).
 >
@@ -151,11 +108,22 @@ uv pip install --no-cache pycairo PyGObject pywebview[gtk]
 ---
 </br>
 
-## This is what needed to do for KOKORO model for run on NVIDIA GPU (WINDOWS) more info of about ONNXRUNTIME Execution Providers visit [onnxruntime.ai/docs](https://onnxruntime.ai/docs/execution-providers/)
+## NVIDIA GPU (WINDOWS) manual setup onnxruntime-gpu
+ >more info of about ONNXRUNTIME Execution Providers visit [onnxruntime.ai/docs](https://onnxruntime.ai/docs/execution-providers/)
 
 </br>
 
 ### First method install the necessary CUDA and cuDNN runtime DLLs alongside the onnxruntime-gpu package
+
+</br>
+
+If use manual install, first navigate to folder `dist` and open Terminal
+If use .exe go to program or folder that you install and click folder `LocalReader plus` > open Powershell
+
+>Can use `engine_setup.CMD` use CMD to change onnxruntime versions.
+
+
+
 ```
 uv pip install onnxruntime-gpu[cuda,cudnn]
 ```
@@ -195,7 +163,7 @@ uv pip install onnxruntime-gpu
 
 for uninstall uv go [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/)  and scroll down to buttom of web it will have Uninstallation.
 
-
+For use .exe you can go to settings "installed apps" and uninstall LocalReader Plus
 
 </br>
 
@@ -361,7 +329,7 @@ LocalReader-Plus
 
 - **Application Logic:** Proprietary modification fork (Feel free to review, modify, and use personally).
 - **Redistribution:** Please contact the author for permission.
-- **Open Source Copyleft Note:** This project links to and utilizes dependencies licensed under open-source agreements (including MIT, AGPL, and GPL). In compliance with those underlying libraries, the raw source code of this fork is publicly accessible for review and personal modification here on GitHub.
+- **Open Source copyright Note:** This project links to and utilizes dependencies licensed under open-source agreements (including MIT, AGPL, and GPL). In compliance with those underlying libraries, the raw source code of this fork is publicly accessible for review and personal modification here on GitHub.
 
 
 ### 📜 Open Source Acknowledgements
@@ -393,10 +361,10 @@ This project is made possible thanks to the following open-source libraries and 
   
 ---
 </br>
-### Found a Bug? Support
 
-  0. Check what is missing and try to use pip install it
-  or check error massage in terminal
+### Found a Bug? Support ###
+
+  0.  check error massage in terminal (If use .exe it will have `crash.log` report )
   1. Open ticket with:
       - Python version (`python --version`)
       - OS
@@ -412,11 +380,12 @@ This project is made possible thanks to the following open-source libraries and 
 
 **Engine:** Kokoro onnx-82M (Dual-Mode: CPU/GPU)
 
-**Last Original LocalReader Pro updated:**January 6, 2026
+**Last Original LocalReader Pro updated**: January 6, 2026
 ---
 </br>
 ---
-***Epub or Pdf files should not be DRM (Digital Rights Management)***
+
+**Epub or Pdf files should not be DRM (Digital Rights Management)**
 
 **Enjoy listening ! 🔳⚪**
 

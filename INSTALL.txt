@@ -9,7 +9,58 @@ System Requirements:
 - Backward compatible with Python 3.10 and 3.11
 ========================================================================
 
-##################  WINDOWS INSTALLATION  #########################
+##################  WINDOWS MANUAL INSTALLATION  #########################
+
+
+------------------------------------------------------------------------
+METHOD 0: USING UV  (RECOMMENDED)
+------------------------------------------------------------------------
+### Step 1: Install Uv
+If you don't have `uv` installed yet, check the [Official Getting Started Guide](https://docs.astral.sh/uv/getting-started/installation/), or watch this [Installation Video](https://www.youtube.com/watch?v=zMhRLr7FmdY), or simply run this command in PowerShell:
+```powershell
+
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+```
+
+### Step 2: Download the Project
+
+**Option A: Git Clone** 
+
+```powershell
+
+git clone https://github.com/curium-rp/LocalReader-Plus
+
+cd LocalReader-Plus\dist
+
+```
+
+**Option B: Download ZIP** 
+Download and extract the ZIP from the repository, then open PowerShell inside the `LocalReader-Plus\dist` folder.
+
+### Step 3: Setup and Run
+
+Run these commands to create the environment, activate it, install dependencies, and start the app. *(Note: `uv` will automatically download Python 3.XX for you if you don't have it!)* 
+
+```powershell
+uv venv --python 3.13
+
+uv pip install -r requirements.txt
+
+uv run main.py
+
+
+Trip
+>`UV` did not require for `.venv\Scripts\activate` and `uv run` will automatically executes virtual environments.
+
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+METHOD 1: USING VIRTUAL ENVIRONMENTS (RECOMMENDED)
+------------------------------------------------------------------------
+
 IF didn't install yet
 Install Python: 3.12 or 3.13  (https://www.python.org/downloads/) link only have .exe for newest version
  
@@ -19,9 +70,6 @@ winget install -e --id Python.Python.3.13
 
 * Make sure to check "Add Python.exe to PATH" during installation.
 
-------------------------------------------------------------------------
-METHOD 1: USING VIRTUAL ENVIRONMENTS (RECOMMENDED)
-------------------------------------------------------------------------
 This keeps dependencies isolated from your core operating system.
 
 Step 1: Extract the downloaded project ZIP file.
@@ -39,6 +87,7 @@ python main.py
 METHOD 2: GLOBAL WINDOWS INSTALLATION (NO VENV)
 ------------------------------------------------------------------------
 Only use this if you intentionally want to install dependencies globally.
+Install python if didn't have yet
 
 [ Option A: Download via Git Clone ]
 
@@ -62,7 +111,7 @@ python main.py
 #############    [ Standard Mac / Linux ]   ############################
 ------------------------------------------------------------------------
 >>RECOMMENDED Python version 3.12
->> macOS Extra Media Setup (using Homebrew):
+>> MacOS Extra Media Setup (using Homebrew):
 -------------------------------------------
 brew install ffmpeg
 
