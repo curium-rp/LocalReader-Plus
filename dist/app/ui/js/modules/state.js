@@ -33,7 +33,7 @@ export const state = {
     currentSearchQuery: '',
     searchDebounceTimer: null,
     jumpTimer: null,
-    pauseSettings: { comma: 300, period: 0, question: 600, exclamation: 600, colon: 400, semicolon: 400, newline: 0 },
+    pauseSettings: { comma: 0, period: 0, question: 600, exclamation: 600, colon: 400, semicolon: 400, newline: 0 },
 
     // Voices & Language
     currentLangIndex: 0,

@@ -38,13 +38,13 @@ class AppSettings(BaseModel):
     engine_mode: Optional[str] = "gpu"
     ui_language: Optional[str] = "en"
     pause_settings: Optional[Dict[str, int]] = {
-        "comma": 300,
+        "comma": 0,
         "period": 0,
         "question": 600,
         "exclamation": 600,
         "colon": 400,
         "semicolon": 400,
-        "newline": 800,
+        "newline": 0,
     }
     behavior_settings: Optional[Dict[str, int]] = {
         "H": 2000,
@@ -80,7 +80,7 @@ class SynthesisRequest(BaseModel):
     rules: List[PronunciationRule]
     ignore_list: List[str] = []
     pause_settings: Optional[Dict[str, int]] = {
-        "comma": 300,
+        "comma": 0,
         "period": 0,
         "question": 600,
         "exclamation": 600,
