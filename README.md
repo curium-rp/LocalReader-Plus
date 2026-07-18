@@ -4,7 +4,7 @@
 
 **A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-### 🚨Update June 14, 2026 ##
+### 🚨Update June 18, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -175,9 +175,9 @@ For use .exe you can go to settings "installed apps" and uninstall LocalReader P
 
 1. Open **"Pause Settings"** section in sidebar
 2. Adjust sliders to set pause duration (0-2000ms):
-   - **Comma (,)** - Default: 250ms
-   - **spam symbols (...,?!?,???)** - Default: 0ms _it will start apply when have to full stop, (?) and (!), more then 2 
-      -it can mix together and it can stack when it has more spam it, more spam more pause default: 0ms or disable
+   - **Comma (,)** -it may has negative effects for output voice (audio glitches) when use this setting. Default: 0ms
+   - **spam symbols (...,?!?,???)** - _it will start apply when have to full stop, (?) and (!), more then 2 
+      -it can mix together and it can stack when it has more spam it, more spam more pause default: 0ms
    - **Question (?)** - Default: 600ms
    - **Exclamation (!)** - Default: 600ms
    - **Colon (:)** - Default: 500ms
