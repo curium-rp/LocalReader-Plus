@@ -3,11 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LocalReader Pro</title>
+    <title>LocalReader Plus</title>
     <!-- Local Dependencies -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="lib/tailwindcss-with-all-plugins.js"></script>
     <script src="lib/lucide.min.js"></script>
-    <script src="lib/pdf.min.js"></script>
 
     <script>
       tailwind.config = {
@@ -259,57 +258,60 @@
 
       <main class="content-area">
         <header
-          class="h-16 border-b border-border flex items-center px-4 lg:px-6 bg-card/80 backdrop-blur-md shrink-0 gap-2"
+          class="h-16 border-b border-border flex items-center justify-between px-4 lg:px-6 bg-card/80 backdrop-blur-md shrink-0 gap-4"
         >
-          <span
-            id="docTitle"
-            class="font-semibold text-xs lg:text-sm truncate text-zinc-300 italic flex-1 min-w-0 mr-2"
-            data-i18n="reader.no_document"
-            >No document selected</span
-          >
-          <button
-            id="searchBtn"
-            class="hidden p-2 hover:bg-zinc-800 rounded-lg transition-colors shrink-0"
-            title="Search in book (Ctrl+F)"
-          >
-            <i
-              data-lucide="search"
-              class="w-4 h-4 text-zinc-400 hover:text-blue-400"
-            ></i>
-          </button>
-          <div
-            id="pageNav"
-            class="flex items-center gap-1 lg:gap-2 px-2 lg:px-3 py-1 bg-zinc-900 rounded-full border border-zinc-800 text-xs shrink-0 opacity-50 pointer-events-none"
-            data-inactive="true"
-          >
-            <button
-              id="prevPage"
-              class="hover:text-blue-400 p-1 disabled:opacity-30 disabled:cursor-not-allowed"
-              disabled
-            >
-              <i data-lucide="chevron-left" class="w-3 h-3 lg:w-4 lg:h-4"></i>
+          <div class="flex items-center gap-3 flex-1 min-w-0"> 
+            <button id="tocBtn" class="p-2 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors shrink-0" title="Table of Contents">
+                <i data-lucide="list" class="w-5 h-5"></i>
             </button>
-            <div class="flex items-center gap-1 lg:gap-1.5 px-0.5 lg:px-1">
-              <span class="text-zinc-500 font-medium hidden sm:inline">Pg</span>
-              <input
-                type="number"
-                id="pageInput"
-                class="w-8 lg:w-10 bg-zinc-800 border-none rounded text-center text-zinc-200 outline-none focus:ring-1 focus:ring-blue-500 text-xs [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                min="1"
-                value="1"
+            <h1 id="docTitle" class="text-sm lg:text-base font-bold truncate text-zinc-200" data-i18n="reader.no_document">
+              No document selected
+            </h1>
+          </div>
+
+          <div class="flex items-center gap-2 shrink-0">
+            <button
+              id="searchBtn"
+              class="hidden p-2 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 hover:text-blue-400 rounded-lg transition-colors"
+              title="Search in book (Ctrl+F)"
+            >
+              <i data-lucide="search" class="w-4 h-4"></i>
+            </button>
+            
+            <div
+              id="pageNav"
+              class="flex items-center gap-1 lg:gap-2 px-2 py-1.5 bg-zinc-900 rounded-full border border-zinc-800 text-xs opacity-50 pointer-events-none transition-opacity"
+              data-inactive="true"
+            >
+              <button
+                id="prevPage"
+                class="hover:text-blue-400 p-1 text-zinc-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 disabled
-              />
-              <span class="text-zinc-500 text-xs"
-                >/ <span id="pageTotal">1</span></span
               >
+                <i data-lucide="chevron-left" class="w-4 h-4"></i>
+              </button>
+              
+              <div class="flex items-center gap-1.5 px-1 font-mono">
+                <span class="text-zinc-500 font-medium hidden sm:inline">Pg</span>
+                <input
+                  type="number"
+                  id="pageInput"
+                  class="w-10 bg-zinc-800 border-none rounded-md text-center text-zinc-200 outline-none focus:ring-1 focus:ring-blue-500 text-xs py-0.5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  min="1"
+                  value="1"
+                  disabled
+                />
+                <span class="text-zinc-500">/ <span id="pageTotal" class="text-zinc-400">1</span></span>
+              </div>
+              
+              <button
+                id="nextPage"
+                class="hover:text-blue-400 p-1 text-zinc-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                disabled
+              >
+                <i data-lucide="chevron-right" class="w-4 h-4"></i>
+              </button>
             </div>
-            <button
-              id="nextPage"
-              class="hover:text-blue-400 p-1 disabled:opacity-30 disabled:cursor-not-allowed"
-              disabled
-            >
-              <i data-lucide="chevron-right" class="w-3 h-3 lg:w-4 lg:h-4"></i>
-            </button>
           </div>
         </header>
 
@@ -371,12 +373,17 @@
             ></i>
           </button>
           <div class="flex flex-col flex-1 min-w-0">
-            <span
-              id="currentSentencePreview"
-              class="player-text"
-              data-i18n="status.ready"
-              >Ready</span
-            >
+            <div class="flex items-center justify-between group">
+              <span
+                id="currentSentencePreview"
+                class="player-text transition-colors duration-300 text-zinc-600"
+                data-i18n="status.ready"
+                >Ready</span
+              >
+              <button id="toggleBrightnessBtn" class="opacity-0 group-hover:opacity-100 transition-opacity p-1 text-zinc-500 hover:text-blue-400 shrink-0" title="brightness">
+                  <i data-lucide="moon" id="brightnessIcon" class="w-4 h-4"></i>
+              </button>
+            </div>
             <div class="flex items-center gap-4 mt-1.5">
               <button
                 id="skipBack"
@@ -400,9 +407,19 @@
                 <i data-lucide="chevron-down" class="w-5 h-5"></i>
               </button>
               <div class="h-4 w-px bg-zinc-800 mx-1"></div>
+              
+              <label class="flex items-center gap-1.5 cursor-pointer group" title="Toggle Auto-Hide on Mouse Movement">
+                <input type="checkbox" id="toggleAutoHide" class="w-3 h-3 accent-blue-600 rounded bg-zinc-800 border-zinc-700 cursor-pointer transition-colors">
+                <span class="text-[9px] font-bold text-zinc-500 group-hover:text-blue-400 uppercase tracking-widest flex items-center gap-1 transition-colors">
+                  <i data-lucide="mouse-pointer-2" class="w-3 h-3"></i> Auto-Hide
+                </span>
+              </label>
+              
+              <div class="h-4 w-px bg-zinc-800 mx-1 hidden sm:block"></div>
+              
               <span
                 id="bookmarkStatus"
-                class="text-[9px] font-bold text-blue-500 uppercase tracking-widest flex items-center gap-1.5"
+                class="text-[9px] font-bold text-blue-500 uppercase tracking-widest flex items-center gap-1.5 hidden sm:flex"
                 ><i data-lucide="bookmark" class="w-3 h-3"></i>
                 Auto-Saving</span
               >
@@ -417,32 +434,46 @@
       <i data-lucide="chevron-right" class="w-4 h-4"></i>
     </button>
 
-    <!-- Playbar Restore Pill (visible when playbar is hidden) -->
-    <button id="playbarRestoreBtn" class="playbar-restore-btn" title="Show Player">
-      <i data-lucide="chevron-up" class="w-3 h-3"></i>
-      <span>Show Player</span>
+
+    <!--size of manual hide current sentence display -->
+    <button id="playbarRestoreBtn" class="fixed bottom-6 right-6 w-6 h-6 bg-zinc-800/70 backdrop-blur-md text-zinc-300 border border-white/10 rounded-full flex items-center justify-center opacity-0 pointer-events-none transition-colors duration-300 z-50 shadow-xl hover:bg-zinc-700/90 hover:text-white" title="Show Player">
+      <i data-lucide="chevron-up" class="w-4 h-4"></i>
+    </button>
+
+    <button id="hiddenModeBackBtn" class="fixed bottom-6 left-[calc(var(--sidebar-width)+(100%-var(--sidebar-width))/2)] -translate-x-1/2 px-4 py-1.5 bg-zinc-800/80 backdrop-blur-md border border-zinc-600/50 rounded-full text-zinc-300 text-[11px] font-bold cursor-pointer opacity-0 pointer-events-none flex items-center gap-1.5 transition-all hover:bg-zinc-700/90 hover:text-white z-[99] shadow-lg shadow-black/40" title="Back to Reading">
+      <i data-lucide="target" class="w-3.5 h-3.5"></i>
+      <span class="uppercase tracking-widest">Back to Reading</span>
     </button>
 
     <!-- Voice Settings Button (Floating) -->
     <button
       id="voiceSettingsBtn"
-      class="voice-settings-button"
+      class="voice-settings-button w-9 h-9 flex items-center justify-center bg-zinc-800/70 backdrop-blur-md border border-white/10 shadow-xl transition-colors hover:bg-zinc-700/90 text-zinc-300 hover:text-white"
       title="Voice & Audio Settings"
     >
-      <i data-lucide="audio-lines" class="w-5 h-5"></i>
+      <i data-lucide="audio-lines" class="w-4 h-4"></i>
     </button>
 
     <!-- Sleep Timer Button -->
     <button
       id="timerSettingsBtn"
-      class="voice-settings-button"
+      class="voice-settings-button w-9 h-9 flex items-center justify-center bg-zinc-800/70 backdrop-blur-md border border-white/10 shadow-xl transition-colors hover:bg-zinc-700/90 text-zinc-300 hover:text-white"
       style="top: calc(50% + 60px)"
       title="Sleep Timer"
     >
-      <i data-lucide="timer" class="w-5 h-5"></i>
+      <i data-lucide="timer" class="w-4 h-4"></i>
       <span id="timerBtnText" style="display: none"></span>
     </button>
-
+    
+    <!-- Playback Behavior Button -->
+    <button
+      id="behaviorSettingsBtn"
+      class="voice-settings-button w-9 h-9 flex items-center justify-center bg-zinc-800/70 backdrop-blur-md border border-white/10 shadow-xl transition-colors hover:bg-zinc-700/90 text-zinc-300 hover:text-white"
+      style="top: calc(50% + 120px)"
+      title="Playback Behavior"
+    >
+      <i data-lucide="activity" class="w-4 h-4"></i>
+    </button>
     <!-- Drawer Overlay -->
     <div id="drawerOverlay" class="drawer-overlay"></div>
 
@@ -512,16 +543,17 @@
             value="1.00"
             class="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
           />
-          <div class="flex justify-between text-[9px] text-zinc-600 mt-1">
-            <span>0.5x</span>
-            <span>1.0x</span>
-            <span>2.0x</span>
-            <span>3.0x</span>
+          <!--  FIX: Mathematically align labels to 0%, 20%, 60%, and 100% of the slider track -->
+          <div class="relative w-full h-4 text-[9px] text-zinc-600 mt-1 select-none pointer-events-none">
+            <span class="absolute left-0">0.5x</span>
+            <span class="absolute left-[20%] -translate-x-1/2">1.0x</span>
+            <span class="absolute left-[60%] -translate-x-1/2">2.0x</span>
+            <span class="absolute right-0">3.0x</span>
           </div>
         </div>
 
-        <!-- Header/Footer Filter -->
-        <div>
+        <!-- Header/Footer Filter (Disabled for EPUB overhaul) -->
+        <div class="opacity-50 pointer-events-none">
           <label
             class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
           >
@@ -530,23 +562,14 @@
           </label>
           <select
             id="headerFooterMode"
-            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+            disabled
+            class="w-full bg-zinc-900 text-sm font-medium border border-zinc-800 rounded-lg px-3 py-2.5 outline-none text-zinc-500"
           >
-            <option value="off" data-i18n="settings.header_footer_off">
-              Off
-            </option>
-            <option value="clean" data-i18n="settings.header_footer_clean">
-              Clean (Remove)
-            </option>
-            <option value="dim" data-i18n="settings.header_footer_dim">
-              Dim (Show Faded)
-            </option>
+            <option value="off" data-i18n="settings.header_footer_off">Off</option>
           </select>
-          <p
-            class="text-[9px] text-zinc-600 mt-2"
-            data-i18n="settings.header_footer_desc"
-          >
-            Automatically hide repeated page headers & footers
+          <!-- 🌟 SURGICAL FIX: Removed data-i18n tag so the engine stops overwriting this text -->
+          <p class="text-[10px] text-orange-400/80 font-bold mt-2">
+            Currently disabled for EPUB overhaul
           </p>
         </div>
 
@@ -578,16 +601,16 @@
               >
                 <span data-i18n="settings.comma_pause">Comma Pause</span>
                 <span class="font-mono text-blue-400"
-                  ><span id="pauseCommaVal">300</span>ms</span
+                  ><span id="pauseCommaVal">0</span>ms</span
                 >
               </label>
               <input
                 type="range"
                 id="pauseComma"
                 min="0"
-                max="1000"
-                step="50"
-                value="300"
+                max="2000"
+                step="25"
+                value="0"
                 class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
               />
             </div>
@@ -595,18 +618,18 @@
               <label
                 class="text-[9px] text-zinc-500 mb-2 block flex items-center justify-between"
               >
-                <span data-i18n="settings.period_pause">Period Pause</span>
+                <span data-i18n="settings.spam_symbols_pause">Spam Symbols Pause</span>
                 <span class="font-mono text-blue-400"
-                  ><span id="pausePeriodVal">600</span>ms</span
+                  ><span id="pausePeriodVal">0</span>ms</span
                 >
               </label>
               <input
                 type="range"
                 id="pausePeriod"
                 min="0"
-                max="1500"
-                step="50"
-                value="600"
+                max="1000"
+                step="5"
+                value="0"
                 class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
               />
             </div>
@@ -623,8 +646,8 @@
                 type="range"
                 id="pauseQuestion"
                 min="0"
-                max="1500"
-                step="50"
+                max="2000"
+                step="25"
                 value="600"
                 class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
               />
@@ -644,8 +667,8 @@
                 type="range"
                 id="pauseExclamation"
                 min="0"
-                max="1500"
-                step="50"
+                max="2000"
+                step="25"
                 value="600"
                 class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
               />
@@ -663,8 +686,8 @@
                 type="range"
                 id="pauseColon"
                 min="0"
-                max="1500"
-                step="50"
+                max="2000"
+                step="25"
                 value="400"
                 class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
               />
@@ -684,8 +707,8 @@
                 type="range"
                 id="pauseSemicolon"
                 min="0"
-                max="1500"
-                step="50"
+                max="2000"
+                step="25"
                 value="400"
                 class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
               />
@@ -694,6 +717,7 @@
         </div>
       </div>
     </div>
+    
 
     <!-- Timer Settings Drawer -->
     <div id="timerSettingsDrawer" class="voice-settings-drawer">
@@ -800,6 +824,55 @@
       </div>
     </div>
 
+    <div id="behaviorSettingsDrawer" class="voice-settings-drawer">
+      <div class="p-6 border-b border-zinc-800">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              <i data-lucide="activity" class="w-5 h-5 text-blue-500"></i>
+              <span data-i18n="settings.behavior_title">Playback Behavior</span>
+            </h2>
+            <p class="text-xs text-zinc-500 mt-1" data-i18n="settings.behavior_subtitle">
+              Configure narrative pacing
+            </p>
+          </div>
+          <button id="closeBehaviorDrawerBtn" class="p-2 hover:bg-zinc-800 rounded-lg transition-colors">
+            <i data-lucide="x" class="w-5 h-5 text-zinc-400"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
+        <div>
+          <label class="text-[10px] text-zinc-500 mb-2 block flex items-center justify-between font-bold uppercase tracking-widest">
+            <span data-i18n="settings.behavior_h">Header Pause (H)</span>
+            <span class="font-mono text-blue-400"><span id="behaviorHVal">2000</span>ms</span>
+          </label>
+          <input type="range" id="behaviorH" min="0" max="10000" step="100" value="2000" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+        </div>
+        <div>
+          <label class="text-[10px] text-zinc-500 mb-2 block flex items-center justify-between font-bold uppercase tracking-widest">
+            <span data-i18n="settings.behavior_img">Image Pause (Img)</span>
+            <span class="font-mono text-blue-400"><span id="behaviorImgVal">3000</span>ms</span>
+          </label>
+          <input type="range" id="behaviorImg" min="0" max="20000" step="100" value="3000" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+        </div>
+        <div>
+          <label class="text-[10px] text-zinc-500 mb-2 block flex items-center justify-between font-bold uppercase tracking-widest">
+            <span data-i18n="settings.behavior_s">Scene Pause (S)</span>
+            <span class="font-mono text-blue-400"><span id="behaviorSVal">1000</span>ms</span>
+          </label>
+          <input type="range" id="behaviorS" min="0" max="5000" step="100" value="1000" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+        </div>
+        <div>
+          <label class="text-[10px] text-zinc-500 mb-2 block flex items-center justify-between font-bold uppercase tracking-widest">
+            <span data-i18n="settings.behavior_n">Segment Pause (N)</span>
+            <span class="font-mono text-blue-400"><span id="behaviorNVal">500</span>ms</span>
+          </label>
+          <input type="range" id="behaviorN" min="0" max="2000" step="50" value="500" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+        </div>
+
+
     <!-- Toast -->
     <div
       id="toast"
@@ -808,6 +881,83 @@
       <div class="flex items-center gap-3">
         <i data-lucide="alert-circle" class="w-5 h-5 text-red-300"></i>
         <span id="toastMsg" class="text-sm font-semibold"></span>
+      </div>
+    </div>
+
+    <div
+      id="exportFormatModal"
+      class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[1500] hidden p-4 sm:p-8"
+    >
+      <div class="bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col w-full max-w-6xl h-[85vh] overflow-hidden relative">
+
+        <div class="p-4 md:p-6 border-b border-zinc-800 flex flex-col lg:flex-row justify-between items-start lg:items-center bg-zinc-900/80 shrink-0 gap-4">
+          <div class="flex flex-col">
+            <h3 class="font-bold text-zinc-200 flex items-center gap-2 text-lg">
+              <i data-lucide="list-checks" class="w-5 h-5 text-blue-500"></i> Start / End Point
+            </h3>
+            <div class="text-xs text-zinc-500 mt-1 flex items-center gap-2">
+              <span class="uppercase tracking-widest font-bold">Current Range:</span>
+              <span id="exportRangeLabel" class="text-blue-400 font-semibold">Entire Book (Default)</span>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 sm:gap-3 w-full lg:w-auto">
+            <button id="btnClearRange" class="text-xs font-bold text-zinc-400 hover:text-white px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-colors">
+              Clear Selection
+            </button>
+            <div class="w-px h-6 bg-zinc-700 hidden sm:block"></div>
+            
+            <button id="btnExportMp3" class="flex-1 lg:flex-none justify-center flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 border border-blue-500 text-white text-sm font-bold rounded-lg transition-colors shadow-lg shadow-blue-900/20">
+              <i data-lucide="music" class="w-4 h-4"></i> Export MP3
+            </button>
+            <button id="btnExportWav" class="flex-1 lg:flex-none justify-center flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 border border-purple-500 text-white text-sm font-bold rounded-lg transition-colors shadow-lg shadow-purple-900/20">
+              <i data-lucide="disc" class="w-4 h-4"></i> Export WAV
+            </button>
+            
+            <div class="w-px h-6 bg-zinc-700 hidden lg:block"></div>
+            <button id="btnCancelFormatSelectDesktop" class="p-2 text-zinc-500 hover:text-red-500 hover:bg-zinc-800 rounded-lg transition-colors ml-auto lg:ml-0">
+              <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+            
+            <button id="btnCancelFormatSelect" class="hidden"></button>
+          </div>
+        </div>
+
+        <div class="p-3 bg-zinc-900/30 border-b border-zinc-800 shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3 text-[10px] uppercase font-bold text-zinc-500 tracking-wider">
+           <div class="flex gap-4 items-center pl-2">
+               <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-green-500"></div> Start</span>
+               <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-red-500"></div> End</span>
+               <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-purple-500"></div> Single</span>
+           </div>
+           <div class="flex items-center gap-4 pr-2">
+               <label class="flex items-center gap-1.5 cursor-pointer group" title="Export only one chapter">
+                 <input type="checkbox" id="toggleSingleChapter" class="w-3 h-3 accent-purple-600 rounded bg-zinc-800 border-zinc-700 cursor-pointer transition-colors">
+                 <span class="text-[9px] font-bold text-zinc-500 group-hover:text-purple-400 uppercase tracking-widest flex items-center gap-1 transition-colors">
+                   Single Mode
+                 </span>
+               </label>
+               
+               <label class="flex items-center gap-1.5 cursor-pointer group" title="Export selected range as separate files">
+                 <input type="checkbox" id="toggleSeparateFiles" class="w-3 h-3 accent-orange-500 rounded bg-zinc-800 border-zinc-700 cursor-pointer transition-colors">
+                 <span class="text-[9px] font-bold text-zinc-500 group-hover:text-orange-400 uppercase tracking-widest flex items-center gap-1 transition-colors">
+                   Separate Files
+                 </span>
+               </label>
+           </div>
+        </div>
+
+        <div id="exportTocList" class="flex-1 overflow-y-auto custom-scrollbar p-2 md:p-6 space-y-1">
+           </div>
+
+      </div>
+    </div>
+
+           <!-- TOC List Container -->
+           <div id="exportTocList" class="flex-1 overflow-y-auto custom-scrollbar p-2 md:p-4 space-y-1">
+              <!-- Dynamically populated -->
+           </div>
+        </div>
+
       </div>
     </div>
 
@@ -926,8 +1076,9 @@
             </div>
           </div>
 
-          <div class="text-xs text-zinc-500 text-center">
+          <div class="text-xs text-zinc-500 text-center flex flex-col gap-1">
             <span id="exportStatus">Processing paragraphs...</span>
+            <span id="exportEta" class="text-[10px] text-zinc-600 font-mono hidden">ETA: --:--</span>
           </div>
 
           <div id="exportComplete" class="hidden space-y-3">
@@ -986,6 +1137,16 @@
               class="flex-1 bg-transparent text-white text-lg outline-none placeholder-zinc-500"
               autocomplete="off"
             />
+            
+            <div class="flex items-center gap-1 bg-black/50 rounded-md p-1 border border-zinc-800">
+              <button id="btnMatchCase" class="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded transition-colors border border-transparent" title="Match Case (Aa)">
+                <span class="text-xs font-bold leading-none">Aa</span>
+              </button>
+              <button id="btnWholeWord" class="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded transition-colors border border-transparent" title="Match Whole Word (\b)">
+                <span class="text-xs font-bold leading-none">\b</span>
+              </button>
+            </div>
+
             <button
               id="closeSearchBtn"
               class="p-2 hover:bg-zinc-800 rounded-lg transition-colors"
@@ -1038,7 +1199,20 @@
         </div>
       </div>
     </div>
-
+<div id="tocModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-end">
+    <div class="w-full max-w-sm bg-zinc-900 h-full border-l border-zinc-800 flex flex-col shadow-2xl">
+        <div class="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+            <h2 class="font-bold text-lg text-zinc-100 flex items-center gap-2">
+                <i data-lucide="list" class="w-5 h-5 text-blue-500"></i> Table of Contents
+            </h2>
+            <button id="closeTocBtn" class="p-2 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <div id="tocList" class="p-2 overflow-y-auto flex-1 custom-scrollbar">
+            </div>
+    </div>
+</div>
     <script type="module" src="js/app.js"></script>
   </body>
 </html>

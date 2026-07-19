@@ -150,20 +150,70 @@ export function renderIgnoreList() {
 
 // --- Search ---
 export function escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let escaped = str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    // Make search immune to smart quotes vs straight quotes
+    escaped = escaped.replace(/['‘’´`]/g, "['‘’´`]");
+    escaped = escaped.replace(/["“”]/g, '["“”]');
+    
+    return escaped;
 }
 
-export function highlightSearchTerm(query) {
+export function highlightSearchTerm(query, matchCase = false, wholeWord = false) {
     const textContent = document.getElementById('textContent');
     if (!query || !textContent) return;
 
+    // 🌟 STRICT PAGE GATE FIX: 
+    // If the user turns the page away from the search result, stop highlighting immediately!
+    // This absolutely kills the "ghosting whole book" bug.
+    if (state.searchTargetPage !== undefined && state.viewPageIndex !== state.searchTargetPage) {
+        return; 
+    }
+
     const textElements = textContent.querySelectorAll('.sentence');
     const escapedQuery = escapeRegex(query);
-    const regex = new RegExp(`(${escapedQuery})`, 'gi');
+    
+    let pattern = escapedQuery.replace(/\s+/g, '\\s+');
+    if (wholeWord) pattern = `\\b${pattern}\\b`;
+    
+    const regex = new RegExp(`(${pattern})`, matchCase ? 'g' : 'gi');
 
-    textElements.forEach(el => {
-        highlightTextNodes(el, regex);
-    });
+    // 🌟 ONLY highlight if a specific snippet was clicked
+    if (state.searchTargetSnippet) {
+        let bestEl = null;
+        let maxScore = 0; // Score must be strictly greater than 0 to prevent random matching
+        
+        // Fingerprint the snippet
+        const snippetWords = stripHTML(state.searchTargetSnippet)
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+            .split(/\s+/)
+            .filter(w => w.length > 2);
+        
+        textElements.forEach(el => {
+            regex.lastIndex = 0;
+            
+            if (regex.test(el.textContent)) {
+                let score = 0;
+                const sentenceText = el.textContent.toLowerCase();
+                
+                snippetWords.forEach(w => {
+                    if (sentenceText.includes(w)) score++;
+                });
+                
+                if (score > maxScore) {
+                    maxScore = score;
+                    bestEl = el;
+                }
+            }
+        });
+        
+        // Highlight ONLY the single exact sentence the user clicked
+        if (bestEl) {
+            regex.lastIndex = 0;
+            highlightTextNodes(bestEl, regex);
+        }
+    } 
 }
 
 function highlightTextNodes(node, regex) {

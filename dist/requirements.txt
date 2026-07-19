@@ -1,18 +1,34 @@
+## --- Core Framework & Servers ---##
 fastapi
 uvicorn
-torch
-huggingface_hub
-scipy
-soundfile
-kokoro-onnx
 python-multipart
-pywebview
-requests
+pycairo; sys_platform == 'linux'
+PyGObject; sys_platform == 'linux'
+pywebview[gtk]; sys_platform == 'linux'
+pywebview; sys_platform == 'win32'
+pywebview[cocoa]; sys_platform == 'darwin'
+
+## --- Audio Processing ---##
+kokoro-onnx
+huggingface_hub
 numpy
-pydantic
-ebooklib
-xhtml2pdf
-beautifulsoup4
-lxml
+soundfile
 pydub
 
+## --- Text Processing & Utilities ---##
+requests
+pydantic
+beautifulsoup4
+lxml
+num2words
+
+## --- Document Parsing ---##
+ebooklib
+PyMuPDF
+
+## --- CJK Voice Support ---##
+misaki[zh]
+fugashi
+unidic-lite
+jaconv
+jamdict

@@ -16,6 +16,7 @@ import {
   selectDocument,
   renderPage,
   processPdfBlob,
+  processJsonData,
   getSentencesForPage,
 } from "./modules/library.js";
 import {
@@ -34,30 +35,67 @@ import {
   openExportLocation,
 } from "./modules/export.js";
 import { initTimer } from "./modules/timer.js";
+import { initThemeSystem } from "./modules/themes.js";
 
-// Global access for debugging
 window.state = state;
 
 async function init() {
-  // 1. Setup PDF.js
-  try {
-    if (window.pdfjsLib)
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
-  } catch (e) {
-    console.error("PDF.js init error", e);
-  }
-
-  // 2. Load Settings
   try {
     const settings = await fetchJSON(`/api/settings`);
     state.rules = settings.pronunciationRules || [];
     state.ignoreList = settings.ignoreList || [];
     state.headerFooterMode = settings.header_footer_mode || "off";
     state.engineMode = settings.engine_mode || "gpu";
-    state.pauseSettings = settings.pause_settings || state.pauseSettings;
+    state.pauseSettings = settings.pause_settings || state.pauseSettings || {
+      comma: 1, period: 2, question: 2, exclamation: 2, colon: 1, semicolon: 1
+    };
+    state.behaviorSettings = settings.behavior_settings || { H: 2000, Img: 3000, S: 1000, N: 500 };
+    ['H', 'Img', 'S', 'N'].forEach(k => {
+        const input = document.getElementById(`behavior${k}`);
+        const val = document.getElementById(`behavior${k}Val`);
+        if (input && val && state.behaviorSettings[k] !== undefined) {
+            input.value = state.behaviorSettings[k];
+            val.textContent = state.behaviorSettings[k];
+        }
+    });
     state.uiLanguage = settings.ui_language || "en";
+    
+    // Load new visual states
+    state.autoHidePlayer = settings.autoHidePlayer || false;
+    state.manualHidePlayer = settings.manualHidePlayer || false;
+    state.sentenceIndicatorOn = settings.sentenceIndicatorOn || false;
+    updateSentenceBrightness(); // I reuse this later//
+    
+    const autoHideCheckbox = document.getElementById("toggleAutoHide");
+    if (autoHideCheckbox) {
+        autoHideCheckbox.checked = state.autoHidePlayer;
+        autoHideCheckbox.onchange = (e) => {
+            state.autoHidePlayer = e.target.checked;
+            
+            if (state.autoHidePlayer) {
+                // Priority Mode: Turning Auto ON strictly nullifies Manual
+                state.manualHidePlayer = false;
+                const restoreBtn = document.getElementById("playbarRestoreBtn");
+                if (restoreBtn) {
+                    restoreBtn.classList.replace("opacity-100", "opacity-0");
+                    restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
+                }
+                resetAutoHideTimer(); // Instantly trigger the first show/countdown cycle
+            } else {
+                // Turning Auto OFF resets the player to fully visible
+                clearTimeout(mouseHideTimeout);
+                document.getElementById("controls").classList.remove("minimized");
+            }
+            saveSettings();
+        };
+    }
 
-    // Apply UI Settings
+    if (state.manualHidePlayer) {
+        document.getElementById("controls").classList.add("minimized");
+        document.getElementById("playbarRestoreBtn").classList.replace("opacity-0", "opacity-100");
+        document.getElementById("playbarRestoreBtn").classList.replace("pointer-events-none", "pointer-events-auto");
+    }
+
     const speedRange = document.getElementById("speedRange");
     if (speedRange && settings.speed) {
       speedRange.value = settings.speed;
@@ -74,7 +112,6 @@ async function init() {
         preview.style.fontSize = `${settings.font_size}px`;
         preview.style.lineHeight = parseInt(settings.font_size) * 1.5 + "px";
       }
-      // Apply to actual text content
       const textContent = document.getElementById("textContent");
       if (textContent) {
         textContent.style.fontSize = `${settings.font_size}px`;
@@ -87,7 +124,6 @@ async function init() {
     const engineSelect = document.getElementById("engineMode");
     if (engineSelect) engineSelect.value = state.engineMode;
 
-    // Pause Settings UI
     [
       "comma",
       "period",
@@ -108,12 +144,10 @@ async function init() {
       }
     });
 
-    // Language UI Init
     const langToggle = document.getElementById("languageToggle");
     if (langToggle) langToggle.textContent = state.uiLanguage.toUpperCase();
     await updateTranslations(state.uiLanguage);
 
-    // Voice Selection pre-fill
     const voiceSelect = document.getElementById("voiceSelect");
     if (settings.voice_id && voiceSelect) {
       const opt = document.createElement("option");
@@ -127,19 +161,11 @@ async function init() {
     showToast("Settings failed to load: " + e.message);
   }
 
-  // 3. Load Data & UI
   renderIcons();
+  initThemeSystem(); 
 
-  try {
-    await loadVoices();
-  } catch (e) {
-    console.error(e);
-  }
-  try {
-    await loadLibrary();
-  } catch (e) {
-    console.error(e);
-  }
+  try { await loadVoices(); } catch (e) { console.error(e); }
+  try { await loadLibrary(); } catch (e) { console.error(e); }
 
   renderRules();
   renderIgnoreList();
@@ -149,44 +175,185 @@ async function init() {
 
 document.addEventListener("DOMContentLoaded", init);
 
-// --- Event Listeners ---
+let mouseHideTimeout = null;
+window.isJumpingCamera = false; // 🌟 Master lock for the UI state
 
-// Playback
+function resetAutoHideTimer() {
+    if (window.isJumpingCamera) return; // Shield against phantom mouse movements when scrolling
+
+    const controls = document.getElementById("controls");
+    const restoreBtn = document.getElementById("playbarRestoreBtn");
+    
+    // The "Peek" Condition: Manual hide is ON, but the player has been temporarily un-minimized by the user
+    const isPeeking = state.manualHidePlayer && !controls.classList.contains("minimized");
+
+    // Strict Manual Lock: Block ALL mouse tracking if manually hidden
+    if (state.manualHidePlayer && !isPeeking) return;
+
+    // Strict Auto Lock: Ignore mouse tracking if auto is turned off
+    if (!state.autoHidePlayer && !isPeeking) return;
+    
+    // Wake up the player
+    controls.classList.remove("minimized");
+    if (restoreBtn) {
+        restoreBtn.classList.replace("opacity-100", "opacity-0"); 
+        restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
+    }
+    
+    clearTimeout(mouseHideTimeout);
+    mouseHideTimeout = setTimeout(() => {
+        controls.classList.add("minimized");
+        if (state.manualHidePlayer && restoreBtn) {
+            restoreBtn.classList.replace("opacity-0", "opacity-100"); 
+            restoreBtn.classList.replace("pointer-events-none", "pointer-events-auto");
+        }
+    }, 3000); 
+}
+
+const contentArea = document.querySelector(".content-area");
+if (contentArea) contentArea.addEventListener("mousemove", resetAutoHideTimer);
+
+const controlsArea = document.getElementById("controls");
+if (controlsArea) controlsArea.addEventListener("mousemove", resetAutoHideTimer);
+
+// --- THE PLAY BUTTON ---
 document.getElementById("playBtn").onclick = togglePlayback;
+
+// --- THE HIDE BUTTONS ---
 document.getElementById("hidePlaybarBtn").onclick = () => {
-  const controls = document.getElementById("controls");
-  const restoreBtn = document.getElementById("playbarRestoreBtn");
-  controls.classList.add("minimized");
-  restoreBtn.classList.add("visible");
+    const controls = document.getElementById("controls");
+    const restoreBtn = document.getElementById("playbarRestoreBtn");
+
+    if (state.autoHidePlayer) {
+        clearTimeout(mouseHideTimeout);
+        controls.classList.add("minimized");
+    } else {
+        state.manualHidePlayer = true;
+        saveSettings();
+        controls.classList.add("minimized");
+        restoreBtn.classList.replace("opacity-0", "opacity-100");
+        restoreBtn.classList.replace("pointer-events-none", "pointer-events-auto");
+    }
+    
+    //  ONLY swap to the Center Pill if we are in Manual Hide!
+    if (!state.autoScrollEnabled && state.manualHidePlayer) {
+        const backBtn = document.getElementById("backToReadingBtn");
+        if (backBtn) {
+            backBtn.classList.add("hidden");
+            backBtn.classList.remove("flex");
+        }
+        const hiddenBtn = document.getElementById("hiddenModeBackBtn");
+        if (hiddenBtn) {
+            hiddenBtn.classList.replace("opacity-0", "opacity-100");
+            hiddenBtn.classList.replace("pointer-events-none", "pointer-events-auto");
+        }
+    }
 };
+
 document.getElementById("playbarRestoreBtn").onclick = () => {
-  const controls = document.getElementById("controls");
-  const restoreBtn = document.getElementById("playbarRestoreBtn");
-  controls.classList.remove("minimized");
-  restoreBtn.classList.remove("visible");
+    state.manualHidePlayer = false;
+    saveSettings();
+    
+    const controls = document.getElementById("controls");
+    const restoreBtn = document.getElementById("playbarRestoreBtn");
+    controls.classList.remove("minimized");
+    
+    restoreBtn.classList.replace("opacity-100", "opacity-0");
+    restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
+    
+    // ALWAYS restore the normal top button when leaving Manual Hide!
+    if (!state.autoScrollEnabled) {
+        const backBtn = document.getElementById("backToReadingBtn");
+        if (backBtn) {
+            backBtn.classList.remove("hidden");
+            backBtn.classList.add("flex");
+        }
+        const hiddenBtn = document.getElementById("hiddenModeBackBtn");
+        if (hiddenBtn) {
+            hiddenBtn.classList.replace("opacity-100", "opacity-0");
+            hiddenBtn.classList.replace("pointer-events-auto", "pointer-events-none");
+        }
+    }
+    
+    if (state.autoHidePlayer) resetAutoHideTimer();
 };
-document.getElementById("skipBack").onclick = () => {
-  if (state.currentSentenceIndex > 0)
-    jumpToSentence(state.currentSentenceIndex - 1);
+
+// --- THE UNIFIED BACK TO READING ENGINE ---
+const performSafeJump = async () => {
+    window.isJumpingCamera = true; // Lock the mouse tracker globally
+
+    state.viewPageIndex = state.readingPageIndex;
+    state.autoScrollEnabled = true;
+
+    // Hide BOTH button variants, unifying the UI layout
+    const btnNormal = document.getElementById("backToReadingBtn");
+    if (btnNormal) {
+        btnNormal.classList.add("hidden");
+        btnNormal.classList.remove("flex");
+    }
+    const btnHidden = document.getElementById("hiddenModeBackBtn");
+    if (btnHidden) {
+        btnHidden.classList.replace("opacity-100", "opacity-0");
+        btnHidden.classList.replace("pointer-events-auto", "pointer-events-none");
+    }
+
+    // Notice we do NOT touch state.manualHidePlayer. If it is hidden, it stays hidden!
+    await renderPage();
+
+    // Release the mouse tracker lock 500ms after the jump finishes
+    setTimeout(() => { window.isJumpingCamera = false; }, 500);
 };
-document.getElementById("skipForward").onclick = async () => {
-  if (state.currentSentenceIndex < state.readingSentences.length - 1) {
-    jumpToSentence(state.currentSentenceIndex + 1);
-  } else if (state.readingPageIndex < state.currentPages.length - 1) {
-    state.readingPageIndex++;
-    state.readingSentences = await getSentencesForPage(state.readingPageIndex);
-    jumpToSentence(0);
+
+// Wire both buttons to the exact same safe jump logic
+document.getElementById("backToReadingBtn").onclick = performSafeJump;
+const hiddenModeBtn = document.getElementById("hiddenModeBackBtn");
+if (hiddenModeBtn) hiddenModeBtn.onclick = performSafeJump;
+
+
+// --- NAVIGATION & KEYBOARD LOGIC ---
+document.getElementById("skipBack").onclick = async () => {
+  if (state.currentSentenceIndex > 0) {
+    safeJumpToSentence(state.currentSentenceIndex - 1);
+  } else {
+    let targetPage = state.readingPageIndex - 1;
+    let foundSentences = [];
+    while (targetPage >= 0) {
+        foundSentences = await getSentencesForPage(targetPage);
+        if (foundSentences && foundSentences.length > 0) break;
+        targetPage--; 
+    }
+    if (targetPage >= 0 && foundSentences.length > 0) {
+        state.readingPageIndex = targetPage;
+        state.viewPageIndex = targetPage; 
+        state.readingSentences = foundSentences;
+        safeJumpToSentence(foundSentences.length - 1);
+    }
   }
 };
 
-// Keyboard Shortcuts
+document.getElementById("skipForward").onclick = async () => {
+  if (state.currentSentenceIndex < state.readingSentences.length - 1) {
+    safeJumpToSentence(state.currentSentenceIndex + 1);
+  } else {
+    let targetPage = state.readingPageIndex + 1;
+    let foundSentences = [];
+    while (targetPage < state.currentPages.length) {
+        foundSentences = await getSentencesForPage(targetPage);
+        if (foundSentences && foundSentences.length > 0) break;
+        targetPage++; 
+    }
+    if (targetPage < state.currentPages.length && foundSentences.length > 0) {
+        state.readingPageIndex = targetPage;
+        state.viewPageIndex = targetPage; 
+        state.readingSentences = foundSentences;
+        safeJumpToSentence(0);
+    }
+  }
+};
+
 window.addEventListener("keydown", (e) => {
-  if (
-    e.target.tagName === "INPUT" ||
-    e.target.tagName === "TEXTAREA" ||
-    e.target.isContentEditable
-  )
-    return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
+  
   if (e.code === "Space") {
     e.preventDefault();
     togglePlayback();
@@ -199,11 +366,37 @@ window.addEventListener("keydown", (e) => {
   } else if ((e.ctrlKey || e.metaKey) && e.key === "f" && state.currentDoc) {
     e.preventDefault();
     document.getElementById("searchBtn").click();
-  } else if (e.key === "Escape")
-    document.getElementById("closeSearchBtn").click();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    document.getElementById("searchModal").classList.add("hidden");
+    const tocModal = document.getElementById("tocModal");
+    if (tocModal) tocModal.classList.add("hidden");
+    document.querySelectorAll(".voice-settings-drawer").forEach(d => d.classList.remove("open"));
+    document.getElementById("drawerOverlay").classList.remove("active");
+  }
 });
 
-// Page Navigation (Viewing)
+// Bind hardware media keys directly to the OS Media Session
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.setActionHandler('play', () => {
+    togglePlayback();
+  });
+  
+  navigator.mediaSession.setActionHandler('pause', () => {
+    togglePlayback();
+  });
+  
+  navigator.mediaSession.setActionHandler('previoustrack', () => {
+    const skipBackBtn = document.getElementById("skipBack");
+    if (skipBackBtn) skipBackBtn.click();
+  });
+  
+  navigator.mediaSession.setActionHandler('nexttrack', () => {
+    const skipForwardBtn = document.getElementById("skipForward");
+    if (skipForwardBtn) skipForwardBtn.click();
+  });
+}
+
 document.getElementById("prevPage").onclick = async () => {
   if (state.viewPageIndex > 0) {
     state.viewPageIndex--;
@@ -227,17 +420,7 @@ document.getElementById("pageInput").onchange = async (e) => {
   }
 };
 
-// Back to Reading Logic
-document.getElementById("backToReadingBtn").onclick = async () => {
-  state.viewPageIndex = state.readingPageIndex;
-  state.autoScrollEnabled = true;
-  await renderPage();
-  // After render, auto-scroll will center the active sentence
-  const active = document.querySelector(".active-sentence");
-  if (active) active.scrollIntoView({ behavior: "smooth", block: "center" });
-};
-
-// Auto-Flip on Scroll
+// --- THE SMART SCROLL TRACKER ---
 let isAutoFlipping = false;
 const scrollContainer = document.querySelector(".content-area");
 if (scrollContainer) {
@@ -245,58 +428,71 @@ if (scrollContainer) {
     "wheel",
     async (e) => {
       if (isAutoFlipping) return;
-      const bottom =
-        scrollContainer.scrollTop + scrollContainer.clientHeight >=
-        scrollContainer.scrollHeight - 10;
+      const bottom = scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
       const top = scrollContainer.scrollTop <= 10;
 
-      // If user is manually scrolling, disable auto-alignment
+      // When the user breaks auto-scroll, spawn the correct button
       if (state.autoScrollEnabled) {
         state.autoScrollEnabled = false;
+        
+        //  If the player is hidden, the normal button is dragged off-screen.
+        // We MUST use the floating center pill instead!
+        if (state.manualHidePlayer) {
+            const hiddenBtn = document.getElementById("hiddenModeBackBtn");
+            if (hiddenBtn) {
+                hiddenBtn.classList.replace("opacity-0", "opacity-100");
+                hiddenBtn.classList.replace("pointer-events-none", "pointer-events-auto");
+            }
+        } else {
+            const backBtn = document.getElementById("backToReadingBtn");
+            if (backBtn) {
+                backBtn.classList.remove("hidden");
+                backBtn.classList.add("flex");
+            }
+        }
       }
 
-      if (
-        e.deltaY > 0 &&
-        bottom &&
-        state.viewPageIndex < state.currentPages.length - 1
-      ) {
+      if (e.deltaY > 0 && bottom && state.viewPageIndex < state.currentPages.length - 1) {
         isAutoFlipping = true;
         state.viewPageIndex++;
         await renderPage();
         scrollContainer.scrollTop = 0;
-        setTimeout(() => {
-          isAutoFlipping = false;
-        }, 700);
+        setTimeout(() => { isAutoFlipping = false; }, 700);
       } else if (e.deltaY < 0 && top && state.viewPageIndex > 0) {
         isAutoFlipping = true;
         state.viewPageIndex--;
         await renderPage();
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        setTimeout(() => {
-          isAutoFlipping = false;
-        }, 700);
+        setTimeout(() => { isAutoFlipping = false; }, 700);
       }
     },
     { passive: true },
   );
 }
 
-// Upload
-document.getElementById("pdfUpload").onchange = async (e) => {
-  const file = e.target.files[0];
-  if (file) {
+// --- SAFELY MOUNT UPLOAD HANDLER ---
+const pdfUpload = document.getElementById("pdfUpload");
+if (pdfUpload) {
+  pdfUpload.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
     if (file.name.toLowerCase().endsWith(".epub")) {
-      showToast("Converting EPUB...");
+      showToast("Parsing EPUB...");
+      const docId = crypto.randomUUID();
       const formData = new FormData();
       formData.append("file", file);
+
       try {
-        const res = await fetch("/api/convert/epub", {
+        const res = await fetch(`/api/convert/epub?id=${docId}`, {
           method: "POST",
           body: formData,
         });
         if (!res.ok) throw new Error("Conversion failed");
-        const blob = await res.blob();
-        processPdfBlob(blob, file.name.replace(".epub", ".pdf"));
+        const data = await res.json();
+        
+        // Pass everything safely
+        processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map);
       } catch (err) {
         console.error(err);
         showToast("EPUB conversion failed: " + err.message);
@@ -305,10 +501,9 @@ document.getElementById("pdfUpload").onchange = async (e) => {
       processPdfBlob(file, file.name);
     }
     e.target.value = "";
-  }
-};
+  };
+}
 
-// Tabs
 document.getElementById("tabLibrary").onclick = () =>
   switchTab(
     document.getElementById("tabLibrary"),
@@ -325,7 +520,6 @@ document.getElementById("tabIgnore").onclick = () =>
     document.getElementById("ignorePanel"),
   );
 
-// Settings
 async function saveSettings() {
   try {
     await fetchJSON(`/api/settings`, {
@@ -340,7 +534,11 @@ async function saveSettings() {
         header_footer_mode: state.headerFooterMode,
         engine_mode: state.engineMode,
         pause_settings: state.pauseSettings,
+        behavior_settings: state.behaviorSettings,
         ui_language: state.uiLanguage,
+        autoHidePlayer: state.autoHidePlayer,
+        manualHidePlayer: state.manualHidePlayer,
+        sentenceIndicatorOn: state.sentenceIndicatorOn,
       }),
     });
   } catch (e) {
@@ -358,14 +556,12 @@ document.getElementById("fontSizeSlider").oninput = (e) => {
   const newSize = e.target.value;
   document.getElementById("textSizeVal").textContent = newSize;
 
-  // Update HUD preview
   const preview = document.getElementById("currentSentencePreview");
   if (preview) {
     preview.style.fontSize = `${newSize}px`;
     preview.style.lineHeight = parseInt(newSize) * 1.5 + "px";
   }
 
-  // Update actual text content
   const textContent = document.getElementById("textContent");
   if (textContent) {
     textContent.style.fontSize = `${newSize}px`;
@@ -402,21 +598,29 @@ document.getElementById("setupBtn").onclick = async () => {
   }
 };
 
-// Drawer & Sidebar Resize
 const toggleDrawer = (open) => {
   const d = document.getElementById("voiceSettingsDrawer");
   const o = document.getElementById("drawerOverlay");
-  if (open) {
-    d.classList.add("open");
-    o.classList.add("active");
-  } else {
-    d.classList.remove("open");
-    o.classList.remove("active");
-  }
+  if (open) { o.classList.add("active"); d.classList.add("open"); } 
+  else { d.classList.remove("open"); }
 };
+const toggleBehaviorDrawer = (open) => {
+  const d = document.getElementById("behaviorSettingsDrawer");
+  const o = document.getElementById("drawerOverlay");
+  if (open) { o.classList.add("active"); d.classList.add("open"); } 
+  else { d.classList.remove("open"); }
+};
+
 document.getElementById("voiceSettingsBtn").onclick = () => toggleDrawer(true);
 document.getElementById("closeDrawerBtn").onclick = () => toggleDrawer(false);
-document.getElementById("drawerOverlay").onclick = () => toggleDrawer(false);
+
+document.getElementById("behaviorSettingsBtn").onclick = () => toggleBehaviorDrawer(true);
+document.getElementById("closeBehaviorDrawerBtn").onclick = () => toggleBehaviorDrawer(false);
+
+document.getElementById("drawerOverlay").onclick = () => {
+  document.querySelectorAll(".voice-settings-drawer").forEach(d => d.classList.remove("open"));
+  document.getElementById("drawerOverlay").classList.remove("active");
+};
 
 const sidebar = document.querySelector(".sidebar");
 const dragHandle = document.getElementById("sidebarDragHandle");
@@ -438,7 +642,6 @@ if (dragHandle && sidebar) {
   });
 }
 
-// Sidebar Collapse / Expand
 const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
 const sidebarExpandBtn = document.getElementById("sidebarExpandBtn");
 if (sidebarCollapseBtn && sidebarExpandBtn && sidebar) {
@@ -460,7 +663,6 @@ if (sidebarCollapseBtn && sidebarExpandBtn && sidebar) {
   };
 }
 
-// Drag-and-Drop PDF/EPUB Upload
 let dragCounter = 0;
 const dropOverlay = document.getElementById("dropOverlay");
 document.body.addEventListener("dragenter", (e) => {
@@ -481,25 +683,31 @@ document.body.addEventListener("drop", async (e) => {
   e.preventDefault();
   dragCounter = 0;
   if (dropOverlay) dropOverlay.classList.add("hidden");
+  
   const file = e.dataTransfer.files[0];
   if (!file) return;
+  
   const name = file.name.toLowerCase();
   if (!name.endsWith(".pdf") && !name.endsWith(".epub")) {
     showToast("Please drop a PDF or EPUB file.");
     return;
   }
+  
   if (name.endsWith(".epub")) {
-    showToast("Converting EPUB...");
+    showToast("Parsing EPUB...");
+    const docId = crypto.randomUUID(); // Added missing docId to fix conversion crash
     const formData = new FormData();
     formData.append("file", file);
+    
     try {
-      const res = await fetch("/api/convert/epub", {
+      const res = await fetch(`/api/convert/epub?id=${docId}`, { // Added ?id parameter
         method: "POST",
         body: formData,
       });
       if (!res.ok) throw new Error("Conversion failed");
-      const blob = await res.blob();
-      processPdfBlob(blob, file.name.replace(".epub", ".pdf"));
+      const data = await res.json();
+      
+      processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map);
     } catch (err) {
       console.error(err);
       showToast("EPUB conversion failed: " + err.message);
@@ -509,7 +717,6 @@ document.body.addEventListener("drop", async (e) => {
   }
 });
 
-// Language Toggle
 document.getElementById("languageToggle").onclick = async () => {
   const langs = ["en", "es", "fr", "zh"];
   let cur = langs.includes(state.uiLanguage) ? state.uiLanguage : "en";
@@ -525,7 +732,6 @@ document.getElementById("languageToggle").onclick = async () => {
   showToast(`Language set to ${next.toUpperCase()}`);
 };
 
-// Search
 document.getElementById("searchBtn").onclick = () => {
   if (!state.currentDoc) {
     showToast("No document loaded");
@@ -537,6 +743,27 @@ document.getElementById("searchBtn").onclick = () => {
 document.getElementById("closeSearchBtn").onclick = () =>
   document.getElementById("searchModal").classList.add("hidden");
 
+let searchMatchCase = false;
+let searchWholeWord = false;
+
+document.getElementById("btnMatchCase").onclick = (e) => {
+  searchMatchCase = !searchMatchCase;
+  const btn = e.currentTarget;
+  btn.classList.toggle("bg-blue-600/20", searchMatchCase);
+  btn.classList.toggle("text-blue-400", searchMatchCase);
+  btn.classList.toggle("border-blue-500/50", searchMatchCase);
+  document.getElementById("searchInput").dispatchEvent(new Event("input"));
+};
+
+document.getElementById("btnWholeWord").onclick = (e) => {
+  searchWholeWord = !searchWholeWord;
+  const btn = e.currentTarget;
+  btn.classList.toggle("bg-blue-600/20", searchWholeWord);
+  btn.classList.toggle("text-blue-400", searchWholeWord);
+  btn.classList.toggle("border-blue-500/50", searchWholeWord);
+  document.getElementById("searchInput").dispatchEvent(new Event("input"));
+};
+
 let searchDebounce = null;
 document.getElementById("searchInput").oninput = (e) => {
   clearTimeout(searchDebounce);
@@ -545,11 +772,13 @@ document.getElementById("searchInput").oninput = (e) => {
     const resultsList = document.getElementById("searchResultsList");
     if (!query || query.length < 2) {
       resultsList.innerHTML = "";
+      document.getElementById("searchEmpty").classList.add("hidden");
       return;
     }
     try {
+      // Pass the new filters to the backend
       const data = await fetchJSON(
-        `/api/library/search/${state.currentDoc.id}?q=${encodeURIComponent(query)}`,
+        `/api/library/search/${state.currentDoc.id}?q=${encodeURIComponent(query)}&match_case=${searchMatchCase}&whole_word=${searchWholeWord}`
       );
       resultsList.innerHTML = "";
       if (data.results.length === 0) {
@@ -558,18 +787,45 @@ document.getElementById("searchInput").oninput = (e) => {
       }
       document.getElementById("searchEmpty").classList.add("hidden");
       const fragment = document.createDocumentFragment();
+      
+      let snippetPattern = escapeRegex(query);
+      if (searchWholeWord) snippetPattern = `\\b${snippetPattern}\\b`;
+      const hlRegex = new RegExp(`(${snippetPattern})`, searchMatchCase ? 'g' : 'gi');
+      
       data.results.forEach((result) => {
         result.matches.forEach((match) => {
           const div = document.createElement("div");
           div.className = "search-result-item";
-          div.innerHTML = `<div class="flex justify-between mb-2"><span class="text-xs font-bold text-blue-400">Page ${result.page_index + 1}</span></div><div class="search-result-snippet">${match.snippet}</div>`;
+          div.innerHTML = `<div class="flex justify-between mb-2"><span class="text-xs font-bold text-blue-400">Page ${result.page_index + 1}</span></div><div class="search-result-snippet">${match.snippet.replace(hlRegex, '<mark>$1</mark>')}</div>`;
           div.onclick = async () => {
-            state.currentSearchQuery = data.query;
+            state.currentSearchQuery = query; 
+            state.searchMatchCase = searchMatchCase;
+            state.searchWholeWord = searchWholeWord;
+            state.searchTargetSnippet = match.snippet; 
+            
+            //  Tell the app exactly which page this highlight belongs to
+            state.searchTargetPage = result.page_index; 
+            
+            //  EXPLORER MODE: Only move the camera, do not change reading position!
             state.viewPageIndex = result.page_index;
             state.autoScrollEnabled = false;
+            
             document.getElementById("searchModal").classList.add("hidden");
+            
             await renderPage();
-            highlightSearchTerm(state.currentSearchQuery);
+            
+            // Robust scrolling: Wait for DOM to finish rendering
+            let checkCount = 0;
+            const scrollInterval = setInterval(() => {
+                const finalHl = document.querySelector('.search-highlight');
+                if (finalHl) {
+                    clearInterval(scrollInterval);
+                    finalHl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } else if (checkCount > 20) {
+                    clearInterval(scrollInterval);
+                }
+                checkCount++;
+            }, 100);
           };
           fragment.appendChild(div);
         });
@@ -579,7 +835,6 @@ document.getElementById("searchInput").oninput = (e) => {
   }, 300);
 };
 
-// Export
 document.getElementById("exportBtn").onclick = startExport;
 document.getElementById("cancelExportBtn").onclick = cancelExport;
 document.getElementById("startFFMPEGDownload").onclick = startFFMPEGDownload;
@@ -587,7 +842,6 @@ document.getElementById("cancelFFMPEGBtn").onclick = () =>
   document.getElementById("ffmpegModal").classList.add("hidden");
 document.getElementById("openFileLocationBtn").onclick = openExportLocation;
 
-// Rules
 document.getElementById("rulesList").addEventListener("input", (e) => {
   if (e.target.dataset.action === "update-rule") {
     const id = e.target.dataset.id,
@@ -629,7 +883,6 @@ document.getElementById("addRuleBtn").onclick = () => {
   saveSettings();
 };
 
-// Ignore List
 document.getElementById("addIgnoreBtn").onclick = () => {
   state.ignoreList.push("");
   renderIgnoreList();
@@ -650,7 +903,6 @@ document.getElementById("ignoreListUI").addEventListener("click", (e) => {
   }
 });
 
-// Library
 document.getElementById("libraryPanel").addEventListener("click", (e) => {
   const st = e.target.closest('[data-action="select-doc"]');
   if (st) {
@@ -674,26 +926,78 @@ window.selectDocById = async (id) => {
   if (item) selectDocument(item);
 };
 
-// Pause Settings
 ["Comma", "Period", "Question", "Exclamation", "Colon", "Semicolon"].forEach(
   (k) => {
     const el = document.getElementById(`pause${k}`);
     if (el) {
       el.oninput = (e) => {
+        if (!state.pauseSettings) state.pauseSettings = {};
         state.pauseSettings[k.toLowerCase()] = parseInt(e.target.value);
-        document.getElementById(`pause${k}Val`).textContent = e.target.value;
+        const valEl = document.getElementById(`pause${k}Val`);
+        if (valEl) valEl.textContent = e.target.value;
       };
-      el.onchange = saveSettings;
+      el.onchange = () => {
+          state.audioBufferCache.clear();
+          saveSettings();
+      };
     }
   },
 );
-document.getElementById("pauseSettingsToggle").onclick = () => {
-  document.getElementById("pauseSettingsContent").classList.toggle("hidden");
-};
 
-window.addEventListener("jump-to-sentence", (e) => jumpToSentence(e.detail));
+['H', 'Img', 'S', 'N'].forEach(k => {
+    const el = document.getElementById(`behavior${k}`);
+    if (el) {
+        el.oninput = (e) => {
+            if (!state.behaviorSettings) state.behaviorSettings = {};
+            state.behaviorSettings[k] = parseInt(e.target.value);
+            const valEl = document.getElementById(`behavior${k}Val`);
+            if (valEl) valEl.textContent = e.target.value;
+        };
+        el.onchange = () => {
+            // 🌟 SETTING SYNC FIX: Instantly clear frontend cache so new structural pauses apply
+            state.audioBufferCache.clear();
+            saveSettings();
+        }; 
+    }
+});
 
-// Status Polling
+const pauseToggleBtn = document.getElementById("pauseSettingsToggle");
+if (pauseToggleBtn) {
+  pauseToggleBtn.onclick = () => {
+    const content = document.getElementById("pauseSettingsContent");
+    if (content) content.classList.toggle("hidden");
+  };
+}
+
+function safeJumpToSentence(index) {
+    const wasPlaying = state.isPlaying;
+    if (wasPlaying) {
+        stopPlayback();
+        // Restore playing state flag so the next sentence handles autoplay instantly
+        state.isPlaying = true; 
+    }
+    jumpToSentence(index);
+}
+
+let isJumpingLock = false;
+
+window.addEventListener("jump-to-sentence", (e) => {
+    // 1. Block duplicate ghost clicks instantly
+    if (isJumpingLock) return;
+    // 2. Prevent jumping if the user is just highlighting text to copy
+    const selection = window.getSelection();
+    if (selection && selection.toString().trim().length > 0) {
+        return; 
+    }
+    // 3. Engage the lock and perform the jump
+    isJumpingLock = true;
+    safeJumpToSentence(e.detail);
+    // 4. Release the lock after 300ms (enough time to eat browser event bubbling)
+    setTimeout(() => {
+        isJumpingLock = false;
+    }, 300);
+});
+
 let lastSysState = null;
 async function startStatusPolling() {
   const poll = async () => {
@@ -714,4 +1018,82 @@ async function startStatusPolling() {
     setTimeout(poll, 2000);
   };
   poll();
+}
+
+// SAFE TOC BUTTON WIRING
+const tocBtn = document.getElementById("tocBtn");
+if (tocBtn) {
+    tocBtn.onclick = () => {
+        if (!state.currentDoc) {
+            showToast("No document loaded");
+            return;
+        }
+        const modal = document.getElementById("tocModal");
+        if (modal) modal.classList.remove("hidden");
+    };
+}
+
+const closeTocBtn = document.getElementById("closeTocBtn");
+if (closeTocBtn) {
+    closeTocBtn.onclick = () => {
+        const modal = document.getElementById("tocModal");
+        if (modal) modal.classList.add("hidden");
+    };
+}
+
+// 🌟 NEW INTERCEPTOR: Click outside empty space on backdrop to hide TOC Drawer
+const tocModalElement = document.getElementById("tocModal");
+if (tocModalElement) {
+    tocModalElement.onclick = (e) => {
+        if (e.target === e.currentTarget) {
+            tocModalElement.classList.add("hidden");
+        }
+    };
+}
+
+// --- Current Sentence Brightness Toggle ---
+const brightnessBtn = document.getElementById("toggleBrightnessBtn");
+if (brightnessBtn) {
+    brightnessBtn.onclick = () => {
+        state.sentenceIndicatorOn = !state.sentenceIndicatorOn;
+        updateSentenceBrightness();
+        saveSettings();
+    };
+}
+
+function updateSentenceBrightness() {
+    const preview = document.getElementById("currentSentencePreview");
+    const btn = document.getElementById("toggleBrightnessBtn");
+    
+    if (!preview || !btn) return;
+
+    // Restore original colors + 40% fade for dim state
+    if (state.sentenceIndicatorOn) {
+        preview.classList.remove("text-zinc-600", "opacity-40");
+        preview.classList.add("text-zinc-200");
+    } else {
+        preview.classList.remove("text-zinc-200");
+        preview.classList.add("text-zinc-600", "opacity-40");
+    }
+    
+    // Safe Memory Management (prevents the Lucide SVG crash)
+    while (btn.firstChild) {
+        btn.removeChild(btn.firstChild);
+    }
+    
+    const newIcon = document.createElement("i");
+    
+    if (state.sentenceIndicatorOn) {
+        newIcon.setAttribute("data-lucide", "sun");
+        newIcon.className = "w-4 h-4 text-zinc-400"; 
+    } else {
+        newIcon.setAttribute("data-lucide", "moon");
+        newIcon.className = "w-4 h-4 text-zinc-500"; 
+    }
+    
+    btn.appendChild(newIcon);
+    
+    if (typeof renderIcons === "function") {
+        renderIcons();
+    }
 }

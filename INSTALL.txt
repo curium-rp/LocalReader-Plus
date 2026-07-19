@@ -1,51 +1,168 @@
-========================================
-   LocalReader Pro - Installation
-========================================
+========================================================================
+                  LocalReader-Plus Installation Guide
+========================================================================
 
-HOW TO INSTALL:
+System Requirements:
+- Python 3.12+ (Fully Tested on 3.12, 3.13) 
+- Python 3.14 it has memory leak when fallback to CPU load (Kokoro_onnx FP32)
+   it use in GPU it will not have problem
+- Backward compatible with Python 3.10 and 3.11
+========================================================================
 
-1. Extract this ZIP to any folder (this folder will be the installation home)
-2. Open the extracted folder and navigate to the "dist" folder
-3. Double-click "setup.exe"
-4. Follow the installer prompts
-5. Wait for installation to complete
-
-THE INSTALLATION IS SELF-CONTAINED:
-Everything required for LocalReader Pro—including its dependencies and configuration—is stored within the folder you extracted. The installer will:
-- Check for Python 3.12+ (installs if missing)
-- Install all required dependencies into the local folder
-- Create Desktop and Start Menu shortcuts for easy access
-
-After installation, launch from:
-- Desktop shortcut: "LocalReader Pro"
-- Or Start Menu: "LocalReader Pro"
-
-========================================
-
-UNINSTALL / REMOVAL:
-
-To remove the application and its shortcuts:
-
-1. Run `uninstall.exe` in the installation directory or Delete the "LocalReader Pro" shortcuts from your Desktop and Start Menu.
-2. Delete the folder you extracted and installed it into.
-
-To completely remove the supporting software (Python and Libraries):
-
-1. **Uninstall Python**: Go to Windows Settings > Apps > Installed Apps, search for "Python 3.12", and select Uninstall.
-2. **Remove Libraries**: If you haven't deleted the folder yet, open a terminal in the "dist" folder and run: `pip uninstall -r requirements.txt`
-3. **Clear Model Cache**: Many voices and AI models are stored in your user profile. You can delete the `.cache` folder in your user directory (usually `C:\Users\<YourName>\.cache\kokoro`) to free up additional space.
-
-========================================
-
-MANUAL INSTALLATION (Advanced):
-
-If you prefer manual installation without the installer:
-
-1. Install Python 3.10-3.13
-2. Open terminal in the "dist" folder
-3. Run: pip install -r requirements.txt
-4. Run: python main.py
-
-========================================
+##################  WINDOWS MANUAL INSTALLATION  #########################
 
 
+------------------------------------------------------------------------
+METHOD 0: USING UV  (RECOMMENDED)
+------------------------------------------------------------------------
+### Step 1: Install Uv
+If you don't have `uv` installed yet, check the [Official Getting Started Guide](https://docs.astral.sh/uv/getting-started/installation/), or watch this [Installation Video](https://www.youtube.com/watch?v=zMhRLr7FmdY), or simply run this command in PowerShell:
+```powershell
+
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+```
+
+### Step 2: Download the Project
+
+**Option A: Git Clone** 
+
+```powershell
+
+git clone https://github.com/curium-rp/LocalReader-Plus
+
+cd LocalReader-Plus\dist
+
+```
+
+**Option B: Download ZIP** 
+Download and extract the ZIP from the repository, then open PowerShell inside the `LocalReader-Plus\dist` folder.
+
+### Step 3: Setup and Run
+
+Run these commands to create the environment, activate it, install dependencies, and start the app. *(Note: `uv` will automatically download Python 3.XX for you if you don't have it!)* 
+
+```powershell
+uv venv --python 3.13
+
+uv pip install -r requirements.txt
+
+uv run main.py
+
+
+Trip
+>`UV` did not require for `.venv\Scripts\activate` and `uv run` will automatically executes virtual environments.
+
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+METHOD 1: USING VIRTUAL ENVIRONMENTS (RECOMMENDED)
+------------------------------------------------------------------------
+
+IF didn't install yet
+Install Python: 3.12 or 3.13  (https://www.python.org/downloads/) link only have .exe for newest version
+ 
+ Use PowerShell run
+
+winget install -e --id Python.Python.3.13
+
+* Make sure to check "Add Python.exe to PATH" during installation.
+
+This keeps dependencies isolated from your core operating system.
+
+Step 1: Extract the downloaded project ZIP file.
+Step 2: Open the folder and navigate into the "dist" directory.
+Step 3: Right-click inside the "dist" folder and select "Open in Terminal".
+Step 4: Run the following commands:
+
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+python main.py
+
+------------------------------------------------------------------------
+METHOD 2: GLOBAL WINDOWS INSTALLATION (NO VENV)
+------------------------------------------------------------------------
+Only use this if you intentionally want to install dependencies globally.
+Install python if didn't have yet
+
+[ Option A: Download via Git Clone ]
+
+git clone https://github.com/curium-rp/LocalReader-Plus
+cd LocalReader-Plus\dist
+pip install -r requirements.txt
+
+python main.py
+
+
+[ Option B: Download via ZIP ]
+Extract files, open the "dist" folder, open a terminal there, and run:
+
+pip install -r requirements.txt
+
+python main.py
+
+
+########################################################################
+------------------------------------------------------------------------
+#############    [ Standard Mac / Linux ]   ############################
+------------------------------------------------------------------------
+>>RECOMMENDED Python version 3.12
+>> MacOS Extra Media Setup (using Homebrew):
+-------------------------------------------
+brew install ffmpeg
+
+>> Linux Extra Media & GUI Engine Setup (using Aptitude):
+--------------------------------------------------------
+
+sudo apt update && sudo apt install -y build-essential gcc pkg-config libgirepository1.0-dev libcairo2-dev python3-dev gir1.2-gtk-3.0 gir1.2-webkit2-4.1 ffmpeg libavcodec-extra libsndfile1
+
+Step 1: Extract the downloaded project ZIP file.
+Step 2: Navigate into the "dist" folder.
+Step 3: Right-click the folder and select "Open in Terminal".
+Step 4: Execute the following core environment commands:
+
+python3 -m venv .venv
+
+source .venv/bin/activate
+
+pip install -r requirements.txt
+
+python3 main.py
+
+------------------------------------------------------------------------
+⚠️ Note for Python 3.13-3.14 (Linux): 
+
+! If use 3.14 will have potential memory leak when use with CPU
+
+Because Python 3.13-3.14 compiles PyGObject directly from source, if your pip 
+installation encounters a wheel build error or re-uses a broken cached 
+attempt, force a clean compilation with:
+
+pip install --no-cache pycairo PyGObject pywebview[gtk]
+
+------------------------------------------------------------------------
+
+To turn off your virtual environment at any time, simply type:
+
+deactivate
+
+------------------------------------------------------------------------
+ ############    CLEANUP & UNINSTALLATION        #############
+------------------------------------------------------------------------
+
+[ Virtual Environment Clean ]
+Simply delete the ".venv" folder inside your "dist" directory.
+
+[ Global Windows Clean ]
+Run these commands in PowerShell to wipe dependencies and clear pip cache:
+
+pip freeze > pip.txt
+pip uninstall -r pip.txt -y
+Remove-Item pip.txt
+pip cache purge
+
+========================================================================

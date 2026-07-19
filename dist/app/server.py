@@ -1,12 +1,16 @@
+import os
+import sys
+import json
+import time
+import threading
+import platform
+from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import time
-import json
-import psutil
+from fastapi.responses import RedirectResponse
 
-# Import Refactored Modules
 from .config import (
     base_dir,
     userdata_dir,
@@ -16,68 +20,76 @@ from .config import (
 )
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
-from .routers import settings, library, tts, system, export, timer
-from .utils import safe_init_json
 
+# Extract dynamic ONNX providers configured in main.py, filtering out empty strings
+ort_env = os.environ.get("ORT_AUTO_PROVIDERS", "")
+state_module.providers = [p for p in ort_env.split(",") if p]
+
+from .models import AppSettings
+
+from .routers import settings, library, tts, system, export, timer, theme
 
 # --- Lifespan Manager ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
     start_time = time.time()
 
-    # 1. Check directories
     if not base_dir.exists():
         print(f"[CRITICAL] Base dir missing: {base_dir}")
-
-    # 2. Init JSON files
-    safe_init_json(
-        settings_file,
-        {
-            "pronunciationRules": [],
-            "ignoreList": [],
-            "voice_id": "af_bella",
-            "speed": 1.0,
-            "engine_mode": "gpu",
-            "ui_language": "en",
-        },
-    )
-    safe_init_json(library_file, [])
-
-    # 3. Check/Install FFMPEG (Async check could go here)
-    # We leave that for the frontend to query via /api/ffmpeg/status
-
-    # 4. Clean temp content
     try:
         if content_dir.exists():
             for f in content_dir.glob("temp_*"):
-                try:
-                    f.unlink()
-                except:
-                    pass
-    except Exception as e:
-        print(f"[STARTUP] Cleanup warning: {e}")
+                try: f.unlink()
+                except: pass
+    except Exception:
+        pass
 
-    # 5. Load model (Auto-load on startup)
+    # 🌟 SURGICAL FIX: Use models.py as the absolute source of truth for defaults
     try:
-        from .routers.system import load_engine_logic
+        current_data = {}
+        if settings_file.exists():
+            with open(settings_file, "r", encoding="utf-8") as f:
+                current_data = json.load(f)
+                
+        # Satisfy mandatory Pydantic fields
+        if "pronunciationRules" not in current_data: current_data["pronunciationRules"] = []
+        if "ignoreList" not in current_data: current_data["ignoreList"] = []
+            
+        # Pydantic safely merges user data with models.py defaults
+        merged_settings = AppSettings(**current_data)
+        safe_save_json(settings_file, merged_settings.model_dump())
+    except Exception:
+        # Fallback if file is completely corrupted: Generate fresh from models.py
+        fallback_settings = AppSettings(pronunciationRules=[], ignoreList=[])
+        safe_save_json(settings_file, fallback_settings.model_dump())
 
-        print("[STARTUP] Checking for existing models to auto-load...")
-        load_engine_logic()
-    except Exception as e:
-        print(f"[STARTUP] Auto-load failed (non-critical): {e}")
+    safe_init_json(library_file, [])
 
-    print(f"[STARTUP] Server ready in {time.time() - start_time:.2f}s")
+    from .routers.system import load_engine_logic
+    
+    def perform_boot():
+        try:
+            print("[BOOT] Loading Kokoro Engine (Blocking until ready)...")
+            load_engine_logic()
+            print(f"[BOOT] Kokoro Engine loaded in {time.time() - start_time:.2f}s")
+        except Exception as e:
+            # Bypass to app if engine fails to load or models are missing
+            print(f"[WARNING] Engine load bypassed (missing models or error): {e}")
+
+    # Core Logic: Always try to load synchronously. 
+    # If it fails, the except block catches it and the app continues opening.
+    perform_boot()
 
     yield
 
-    # Shutdown logic
-    state_module.sleep_timer.stop_timer()
     print("[SHUTDOWN] Cleanup complete.")
-
+    try:
+        state_module.sleep_timer.stop_timer()
+    except Exception:
+        pass
 
 # --- App Definition ---
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(title="LocalReader Plus", lifespan=lifespan)
 
 # --- Middleware ---
 app.add_middleware(
@@ -95,9 +107,9 @@ app.include_router(tts.router)
 app.include_router(system.router)
 app.include_router(export.router)
 app.include_router(timer.router)
+app.include_router(theme.router)
 
 # --- Static Files ---
-# Mount static assets
 ui_dir = base_dir / "ui"
 if ui_dir.exists():
     app.mount("/css", StaticFiles(directory=ui_dir / "css"), name="css")
@@ -109,15 +121,11 @@ if ui_dir.exists():
 else:
     print(f"[WARNING] UI directory not found: {ui_dir}")
 
-
-# --- Legacy/Root Endpoints ---
+# --- Root Endpoints ---
 @app.get("/health")
 async def health_check():
-    process = psutil.Process()
-    return {"status": "ok", "memory_mb": process.memory_info().rss / 1024 / 1024}
+    return {"status": "ok"}
 
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/index.html")
