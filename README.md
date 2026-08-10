@@ -18,21 +18,29 @@
 
 **Python versions support**:
 - Python 3.10 - 3.13 (Tested on windows: 3.10 to 3.13 run without any issue)
-- For python 3.14 it can run but it has memory leak when use run models on CPU be carefull, no issue with GPU
+- For python 3.14 it can run but may have memory leak when run model on CPU, be carefull, no issue with GPU.
 
->default will run on Cpu, cuz Kokoro-onnx will install 'onnxruntime' **Cpu version** it will run on **Cpu** regardless of whether the model is 'GPU'
+**High Quality (GPU)** mean Kokoro model_FP32 > Piority load GPU /fallback/> CPU (nealy run in real times in AMD Ryzen 4800HS slow load when started play) -_Recommended used FP32_
 
+
+**High Performance (CPU)** mean Kokoro model_int8 > Priority load CPU
+
+>Exe. setup if choose ONNXRUNTIME CPU, High Quality mode will run on CPU
+
+>For manual install, default dependencies it ONNXRUNTIME CPU it will run on CPU
 </br>
 
 ## Windows Installation 
 
-### use executable files tool (.exe)
+### use executable files tool (.exe) - Recommended
 
 &emsp;It will install UV if you don't have yet through PowerShell and you can select onnxruntime CPU/GPU version with .exe or select optional CMD GUI shortcut for change onnxruntime version later.
   
 &emsp;&emsp;-It will install all dependencies, automatically.
    
 &emsp;&emsp;-This Apps use UV to manage dependencies and virtual environment.
+
+
     
 
 
