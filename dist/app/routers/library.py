@@ -29,7 +29,7 @@ try:
         apply_header_footer_filter,
         detect_strict_scene_break
     )
-    from logic.html_normalizer import generate_toc
+    from logic.html_normalizer import generate_toc, pre_parse_clean, normalize_epub_html, standardize_footnotes
 except ImportError:
     sys.path.append(str(base_dir))
     try:
@@ -38,11 +38,15 @@ except ImportError:
             apply_header_footer_filter,
             detect_strict_scene_break
         )
-        from logic.html_normalizer import generate_toc
+        from logic.html_normalizer import generate_toc, pre_parse_clean, normalize_epub_html, standardize_footnotes
     except ImportError:
         pass
 
+import asyncio
 router = APIRouter()
+
+# 🌟 CONCURRENCY SHIELD: Global lock for all library.json mutations
+_library_lock = asyncio.Lock()
 
 class ProgressUpdatePayload(BaseModel):
     currentPage: int
@@ -59,17 +63,120 @@ def get_doc_json_path(doc_id: str) -> Path:
         return old_path
     raise HTTPException(status_code=404, detail="Document not found")
 
-# =========================================
-# 🌟 NEW: THE MASTER SENTENCE SPLITTER 🌟
-# =========================================
+def force_formatting_markers(soup: BeautifulSoup, current_href: str = "") -> None:
+    """
+    Force every formatting tag and style into indestructible markers.
+    Runs on the live tree as early as possible.
+    """
+    import re
+    import posixpath
+    
+    def make_det_id(target_file, target_id):
+        if not target_file: target_file = current_href
+        elif target_file != current_href and current_href:
+            base_dir = posixpath.dirname(current_href)
+            target_file = posixpath.normpath(posixpath.join(base_dir, target_file))
+        
+        safe_file = re.sub(r'[^a-zA-Z0-9]', '_', target_file)
+        safe_id = re.sub(r'[^a-zA-Z0-9]', '_', target_id)
+        return f"R_{safe_file}_{safe_id}"
+
+    # 🌟 FOOTNOTE EXTRACTION SHIELD
+    for a in list(soup.find_all('a', attrs={'epub:type': 'noteref'})):
+        href = a.get('href', '')
+        if '#' not in href: continue
+        
+        parts = href.split('#')
+        if len(parts) > 1:
+            det_id = make_det_id(parts[0], parts[1])
+            
+            sup_tag = a.find_parent('sup') or a.find('sup')
+            tag_type = "SUP" if sup_tag else "A"
+            
+            a.insert(0, soup.new_string(f'§§F_ON§§ §§F_S|{det_id}|{tag_type}§§ '))
+            a.append(soup.new_string(f' §§F_OFF_{tag_type}§§'))
+            
+            if sup_tag: sup_tag.unwrap()
+            a.unwrap()
+        
+    for block in list(soup.find_all(attrs={'epub:type': 'footnote'})):
+        b_id = block.get('id', '')
+        if '§§F_ON§§' in block.get_text(): continue
+        
+        backlink = block.find('a', attrs={'epub:type': 'backlink'})
+        if not b_id and backlink:
+            b_id = backlink.get('id') or backlink.get('name') or ''
+            
+        if not b_id: continue
+        
+        det_id = make_det_id(current_href, b_id)
+        if backlink:
+            backlink.insert(0, soup.new_string(f'§§F_ON§§ §§F_E|{det_id}§§ '))
+            backlink.append(soup.new_string(f' §§F_OFF_A§§'))
+            backlink.unwrap()
+        else:
+            inner = block.find(['p', 'span', 'div']) or block
+            inner.insert(0, soup.new_string(f'§§F_ON§§ §§F_E|{det_id}§§ §§F_OFF_A§§ '))
+
+    # 🌟 FORMATTING SHIELD (RESTORED)
+    bold_regex = re.compile(r'\b(bold|bld|strong|calibre_bold|fw-bold|font-bold|b-text)\b', re.IGNORECASE)
+    ital_regex = re.compile(r'\b(italic|it|em|emphasis|oblique|calibre_italic|fs-italic|i-text)\b', re.IGNORECASE)
+    und_regex = re.compile(r'\b(underline|u-text|calibre_under)\b', re.IGNORECASE)
+    del_regex = re.compile(r'\b(strike|strikethrough|line-through|del)\b', re.IGNORECASE)
+
+    for tag in list(soup.find_all(['span', 'font', 'p', 'div', 'a'])):
+        style = tag.get('style', '').lower()
+        class_str = " ".join(tag.get('class', [])).lower()
+        
+        is_bold = 'bold' in style or '600' in style or '700' in style or '800' in style or '900' in style or 'bolder' in style or bold_regex.search(class_str)
+        is_ital = 'italic' in style or 'oblique' in style or ital_regex.search(class_str)
+        is_und = 'underline' in style or und_regex.search(class_str)
+        is_del = 'line-through' in style or del_regex.search(class_str)
+        
+        if is_bold or is_ital or is_und or is_del:
+            if is_bold:
+                tag.insert(0, soup.new_string('§§B_ON§§'))
+                tag.append(soup.new_string('§§B_OFF§§'))
+            if is_ital:
+                tag.insert(0, soup.new_string('§§I_ON§§'))
+                tag.append(soup.new_string('§§I_OFF§§'))
+            if is_und:
+                tag.insert(0, soup.new_string('§§U_ON§§'))
+                tag.append(soup.new_string('§§U_OFF§§'))
+            if is_del:
+                tag.insert(0, soup.new_string('§§D_ON§§'))
+                tag.append(soup.new_string('§§D_OFF§§'))
+            
+            if 'style' in tag.attrs: del tag['style']
+            if 'class' in tag.attrs: del tag['class']
+            
+            if tag.name in ['span', 'font']:
+                tag.unwrap()
+
+    mapping = [
+        (['b', 'strong'], '§§B_ON§§', '§§B_OFF§§'),
+        (['i', 'em', 'cite', 'dfn'], '§§I_ON§§', '§§I_OFF§§'),
+        (['u', 'ins'], '§§U_ON§§', '§§U_OFF§§'),
+        (['del', 's', 'strike'], '§§D_ON§§', '§§D_OFF§§'),
+    ]
+
+    for tags, on, off in mapping:
+        for tag in list(soup.find_all(tags)):
+            tag.insert_before(soup.new_string(on))
+            tag.insert_after(soup.new_string(off))
+            tag.unwrap()
+
+    for br in list(soup.find_all('br')):
+        br.replace_with(soup.new_string('§§BR§§'))
+
 def master_sentence_splitter(text: str, start_idx: int = 0):
     text = text.strip()
-    if not text: 
+    if not text:
         return "", start_idx
-        
+
     import re
     text = re.sub(r'\.\s+\.\s+\.', '...', text)
-    
+
     abbreviations = [
         "Mr", "Mrs", "Ms", "Dr", "Prof", "St", "Rd", "Ave", "Capt",
         "Gen", "Sen", "Rep", "Gov", "Fig", "No", "Op", "vs", "etc",
@@ -77,46 +184,312 @@ def master_sentence_splitter(text: str, start_idx: int = 0):
     ]
     for abbr in abbreviations:
         text = re.sub(rf'\b({abbr})\.(?=\s)', r'\1<ABBR>', text, flags=re.IGNORECASE)
-        
+
     text = re.sub(r'(?i)\b(e\.g)\.(?=\s)', r'\1<ABBR>', text)
     text = re.sub(r'(?i)\b(i\.e)\.(?=\s)', r'\1<ABBR>', text)
-    
-    # 🌟 FIX 1: FULL STOP ONLY 
-    # Removed ! and ? so fast dialogue and questions stay glued together!
+
     pattern = (
-        r'(?<=[.])\s+(?=[A-Z"\'\u201c\u2018])|'
-        r'(?<=[.][\'"”’])\s+(?=[A-Z"\'\u201c\u2018])|'
-        r'(?<=[。])\s*(?=[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])|'
-        r'(?<=[。][\'"”’])\s*(?=[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
+        r'(?<=[.])\s+(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[A-Z"\'\u201c\u2018])|'
+        r'(?<=[.][\'"”’])\s+(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[A-Z"\'\u201c\u2018])|'
+        r'(?<=[。])\s*(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])|'
+        r'(?<=[。][\'"”’])\s*(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
     )
-    # 🌟 FIX: Clean chunks early so we can index them accurately
+
     raw_chunks = re.split(pattern, text)
     chunks = [c.strip() for c in raw_chunks if c.strip()]
-    
+
     html_out = ""
     current_idx = start_idx
     buffer = ""
-    
+
+    is_bold = is_ital = is_und = is_del = False
+
     for i, c in enumerate(chunks):
         if buffer:
             buffer += " " + c
         else:
             buffer = c
-            
-        # Count approximate words in the current buffer
-        word_count = len(re.findall(r'\b\w+\b', buffer))
-        
-        # 🌟 FIX: Bulletproof array index check
-        # Wait if it's too short AND not the last chunk in the array
+
+        clean_buf = re.sub(r'X(BOLD|ITAL|UND|DEL|F)(ON|OFF)X', '', buffer)
+        clean_buf = re.sub(r'XF[SE]\|[^X]+X', '', clean_buf)
+        word_count = len(re.findall(r'\b\w+\b', clean_buf))
+
         if word_count < 4 and i != len(chunks) - 1:
             continue
-            
+
         clean_chunk = buffer.replace('<ABBR>', '.')
+
+        # Force restore tags
+        clean_chunk = (
+            clean_chunk
+            .replace('XBOLDONX', '<b>').replace('XBOLDOFFX', '</b>')
+            .replace('XITALONX', '<i>').replace('XITALOFFX', '</i>')
+            .replace('XUNDONX', '<u>').replace('XUNDOFFX', '</u>')
+            .replace('XDELONX', '<del>').replace('XDELOFFX', '</del>')
+            .replace('XFONX ', '').replace('XFONX', '')
+            .replace(' XFOFF_AX', '</a>').replace('XFOFF_AX', '</a>')
+            .replace(' XFOFF_SUPX', '</sup></a>').replace('XFOFF_SUPX', '</sup></a>')
+        )
+        
+        # Restore footnote structural tags
+        clean_chunk = re.sub(r'XFS\|([^|]*)\|SUPX\s*', r'<a epub:type="noteref" href="#\1"><sup>', clean_chunk)
+        clean_chunk = re.sub(r'XFS\|([^|]*)\|AX\s*', r'<a epub:type="noteref" href="#\1">', clean_chunk)
+        clean_chunk = re.sub(r'XFE\|([^|]*)X\s*', r'<a epub:type="footnote" id="\1">', clean_chunk)
+
+        prefix = ""
+        if is_ital: prefix += "<i>"
+        if is_bold: prefix += "<b>"
+        if is_und:  prefix += "<u>"
+        if is_del:  prefix += "<del>"
+        clean_chunk = prefix + clean_chunk
+
+        for match in re.finditer(r'<(/?)(b|i|u|del)>', clean_chunk):
+            is_closing = match.group(1) == '/'
+            tag = match.group(2)
+            if tag == 'b': is_bold = not is_closing
+            if tag == 'i': is_ital = not is_closing
+            if tag == 'u': is_und = not is_closing
+            if tag == 'del': is_del = not is_closing
+
+        suffix = ""
+        if is_del:  suffix += "</del>"
+        if is_und:  suffix += "</u>"
+        if is_bold: suffix += "</b>"
+        if is_ital: suffix += "</i>"
+        clean_chunk = clean_chunk + suffix
+
+        clean_chunk = (
+            clean_chunk
+            .replace('<b></b>', '')
+            .replace('<i></i>', '')
+            .replace('<u></u>', '')
+            .replace('<del></del>', '')
+        )
+
         html_out += f'<n id="s_{current_idx}">{clean_chunk}</n> '
         current_idx += 1
         buffer = ""
-            
+
     return html_out.strip(), current_idx
+
+
+def get_image_size(filepath: Path):
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read()
+            if data.startswith(b'\x89PNG\r\n\x1a\n'):
+                import struct
+                w, h = struct.unpack('>LL', data[16:24])
+                return w, h
+            elif data.startswith(b'GIF87a') or data.startswith(b'GIF89a'):
+                import struct
+                w, h = struct.unpack('<HH', data[6:10])
+                return w, h
+            elif data.startswith(b'\xff\xd8'):
+                i = 2
+                while i < len(data):
+                    while i < len(data) and data[i] == 0xFF: i += 1
+                    if i >= len(data): break
+                    marker = data[i]
+                    i += 1
+                    if 0xC0 <= marker <= 0xC3:
+                        h = (data[i+3] << 8) + data[i+4]
+                        w = (data[i+5] << 8) + data[i+6]
+                        return w, h
+                    else:
+                        length = (data[i] << 8) + data[i+1]
+                        i += length
+    except Exception:
+        pass
+    return 0, 0
+
+
+def process_css_scene_breaks(pages, master_css):
+    if not pages: return pages
+        
+    from collections import defaultdict
+    import re
+    
+    class_counts = defaultdict(int)
+    
+    for page_html in pages:
+        soup = BeautifulSoup(page_html, 'html.parser')
+        for tag in soup.find_all(['hr', 'div', 'p', 'span']):
+            if not tag.get_text(strip=True) and not tag.find(['img', 'image', 'svg']):
+                classes_str = tag.get('data-orig-class', '')
+                classes = classes_str.split() if classes_str else []
+                for c in classes:
+                    class_counts[c] += 1
+                    
+    confirmed_classes = set()
+    if master_css:
+        for c, count in class_counts.items():
+            if count >= 4:
+                pattern = r'\.' + re.escape(c) + r'\s*\{([^}]+)\}'
+                matches = re.findall(pattern, master_css)
+                for block in matches:
+                    block_lower = block.lower()
+                    if any(kw in block_lower for kw in ['background', 'url(', 'content:', 'image', 'list-style']):
+                        confirmed_classes.add(c)
+                        break
+                
+    new_pages = []
+    for page_html in pages:
+        if '<hr' not in page_html and 'data-orig-class=' not in page_html:
+            new_pages.append(page_html)
+            continue
+            
+        soup = BeautifulSoup(page_html, 'html.parser')
+        modified = False
+        
+        for tag in soup.find_all(['hr', 'div', 'p', 'span']):
+            if not tag.get_text(strip=True) and not tag.find(['img', 'image', 'svg']):
+                classes_str = tag.get('data-orig-class', '')
+                classes = classes_str.split() if classes_str else []
+                
+                is_confirmed_css = any(c in confirmed_classes for c in classes)
+                
+                if is_confirmed_css:
+                    # 🌟 STRICT ORNAMENT SHIELD: Enforce sandwich rule
+                    prev_text_node = None
+                    for curr in tag.find_all_previous(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span']):
+                        if curr.get_text(strip=True):
+                            prev_text_node = curr
+                            break
+                            
+                    if not prev_text_node or prev_text_node.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] or prev_text_node.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                        continue
+
+                    s_tag = soup.new_tag('s')
+                    s_tag.string = "◆ ◆ ◆"
+                    
+                    orig_id = tag.get('id')
+                    data_id = tag.get('data-orig-id')
+                    if orig_id: s_tag['id'] = orig_id
+                    if data_id: s_tag['data-orig-id'] = data_id
+                    
+                    tag.replace_with(s_tag)
+                    modified = True
+        
+        if modified:
+            body = soup.find('body')
+            page_str = str(body) if body else str(soup)
+            page_str = re.sub(r'>\s*\n+\s*<', '><', page_str)
+        else:
+            page_str = page_html
+            
+        # 🔥 INCINERATOR: Wipe the temporary class tracking attribute from ALL tags globally
+        page_str = re.sub(r'\s*data-orig-class="[^"]*"', '', page_str)
+        page_str = re.sub(r"\s*data-orig-class='[^']*'", '', page_str)
+        
+        new_pages.append(page_str)
+            
+    return new_pages
+
+def process_image_scene_breaks(pages, image_map, doc_id, book_dir):
+    import urllib.parse
+    import re
+    
+    src_prefix = f"/api/library/image/{doc_id}/"
+    symbol_map = {}
+    
+    for page_html in pages:
+        soup = BeautifulSoup(page_html, 'html.parser')
+        for img in soup.find_all(['img', 'image']):
+            src = img.get('src') or ''
+            if not src.startswith(src_prefix) or src in symbol_map:
+                continue
+                
+            assigned_id = src.replace(src_prefix, "")
+            filename = image_map.get(urllib.parse.unquote(assigned_id))
+            if not filename: continue
+            
+            clues = filename.lower()
+            is_symbolic = False
+            shape = "●"
+            
+            if 'circle' in clues: shape = "●"
+            elif 'box' in clues or 'square' in clues: shape = "■"
+            elif 'star' in clues: shape = "★"
+            elif 'diamond' in clues or 'orn' in clues: shape = "◆"
+            elif 'triangle' in clues: shape = "▼"
+            
+            kw_match = any(kw in clues for kw in ['circle', 'box', 'square', 'star', 'art_', 'break', 'line', 'ornament', 'orn', 'sep', 'div', 'fleuron', 'diamond'])
+            
+            img_path = book_dir / filename
+            w, h = get_image_size(img_path)
+            
+            symbol_count = 3
+            
+            if h and 0 < h < 100 and w < 800:
+                symbol_count = max(1, round(w / h))
+                if kw_match or (w / h >= 1.5):
+                    is_symbolic = True
+            elif kw_match:
+                is_symbolic = True
+                nums = re.findall(r'\d+', filename)
+                if nums: 
+                    symbol_count = int(nums[-1])
+                    
+            if is_symbolic:
+                symbol_count = min(15, max(1, symbol_count))
+                symbol_map[src] = "".join([shape] * symbol_count)
+                
+    if not symbol_map: return pages
+    
+    new_pages = []
+    for page_html in pages:
+        if not any(src in page_html for src in symbol_map):
+            new_pages.append(page_html)
+            continue
+            
+        soup = BeautifulSoup(page_html, 'html.parser')
+        for img in soup.find_all(['img', 'image']):
+            src = img.get('src') or ''
+            if src in symbol_map:
+                if img.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    continue
+                    
+                parent = img.find_parent(['p', 'div', 'figure', 'section', 'blockquote'])
+                check_node = parent if parent else img
+                
+                # 🌟 STRICT ORNAMENT SHIELD: Enforce sandwich rule
+                prev_text_node = None
+                for curr in check_node.find_all_previous(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span']):
+                    if curr.get_text(strip=True):
+                        prev_text_node = curr
+                        break
+                        
+                if not prev_text_node or prev_text_node.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] or prev_text_node.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    continue
+
+                chars = symbol_map[src]
+                
+                new_tag = soup.new_tag('s')
+                
+                if parent:
+                    raw_text = parent.get_text(strip=True)
+                    other_imgs = [i for i in parent.find_all(['img', 'image']) if i != img]
+                    
+                    if raw_text or other_imgs:
+                        new_tag = soup.new_tag('span')
+                        
+                new_tag.string = chars
+                
+                orig_id = img.get('id')
+                data_id = img.get('data-orig-id')
+                if orig_id: new_tag['id'] = orig_id
+                if data_id: new_tag['data-orig-id'] = data_id
+                
+                img.replace_with(new_tag)
+                        
+        body = soup.find('body')
+        page_str = str(body) if body else str(soup)
+        page_str = re.sub(r'>\s*\n+\s*<', '><', page_str)
+        new_pages.append(page_str)
+        
+    return new_pages
+
 
 
 @router.post("/api/convert/epub")
@@ -166,6 +539,18 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
 
         # 🌟 EXTRACT NATIVE TOC TITLES EARLY FOR HTML NORMALIZATION
         known_toc_titles = set()
+        rich_toc_map = {}
+        master_css = ""
+        
+        try:
+            for item in book.get_items():
+                if getattr(item, 'media_type', '') == 'text/css' or item.file_name.lower().endswith('.css'):
+                    try:
+                        master_css += item.get_content().decode('utf-8', errors='ignore') + "\n"
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         
         try:
             # BRANCH 1: Native EPUB Metadata TOC (Bulletproofed & Sanitized)
@@ -174,14 +559,25 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                     if not isinstance(items, (list, tuple)): return
                     for item in items:
                         try:
-                            if isinstance(item, (tuple, list)) and len(item) == 2:
-                                if hasattr(item[0], 'title') and item[0].title:
-                                    clean_title = " ".join(str(item[0].title).split()).lower()
-                                    known_toc_titles.add(clean_title)
-                                extract_early_titles(item[1])
-                            elif hasattr(item, 'title') and item.title:
-                                clean_title = " ".join(str(item.title).split()).lower()
+                            node = item[0] if isinstance(item, (tuple, list)) and len(item) == 2 else item
+                            if hasattr(node, 'title') and node.title:
+                                clean_title = " ".join(str(node.title).split()).lower()
                                 known_toc_titles.add(clean_title)
+                                
+                                href = str(getattr(node, 'href', ''))
+                                if href:
+                                    import posixpath
+                                    clean_href = posixpath.basename(href.split('#')[0]).lower()
+                                    anchor = href.split('#')[1].lower() if '#' in href else ''
+                                    if clean_href not in rich_toc_map:
+                                        rich_toc_map[clean_href] = []
+                                    rich_toc_map[clean_href].append({
+                                        'title': str(node.title),
+                                        'clean_title': clean_title,
+                                        'anchor': anchor
+                                    })
+                            if isinstance(item, (tuple, list)) and len(item) == 2:
+                                extract_early_titles(item[1])
                         except Exception:
                             pass
                 extract_early_titles(book.toc)
@@ -225,20 +621,31 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             
             # 🌟 1. Pre-burn XML headers natively before Soup
             try:
-                from logic.html_normalizer import pre_parse_clean, normalize_epub_html
+                from logic.html_normalizer import pre_parse_clean, normalize_epub_html, standardize_footnotes
                 raw_html = pre_parse_clean(raw_html)
             except Exception:
                 pass
             
             soup = BeautifulSoup(raw_html, "html.parser")
             
-            # 🌟 2. Execute the Master Pipeline (handles tags, headings, cleanup)
+            # 🌟 FOOTNOTE PRE-PROCESSOR SHIELD
+            # Must run before formatting markers to fix publisher mis-tagging!
             try:
-                # pass known_toc_titles generated earlier in convert_epub
-                normalize_epub_html(soup, known_toc_titles=known_toc_titles) 
+                standardize_footnotes(soup)
+            except Exception as e:
+                pass
+
+            # ========== FORCE MARKERS AS EARLY AS POSSIBLE ==========
+            force_formatting_markers(soup, actual_href)
+
+            try:
+                normalize_epub_html(soup, known_toc_titles=known_toc_titles, current_href=actual_href, rich_toc_map=rich_toc_map)
             except Exception as e:
                 print(f"[Warning] HTML Normalizer failed: {e}")
-                
+
+            # Re-apply markers in case normalize_epub_html destroyed them
+            force_formatting_markers(soup, actual_href)
+               
             html_dir = posixpath.dirname(item.get_name())
             
             for img in soup.find_all(['img', 'image']):
@@ -382,7 +789,7 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                     is_scene_break = False
                     if length >= 2: is_scene_break = True
                     elif length == 1:
-                        valid_singles = set("*#-_~♦◇◆○●■□▼▽★☆❖✦⁂※—–―─")
+                        valid_singles = set("*#-_~♦◇◆○●■□▼▽★☆❖✦⁂※†—–―─●")
                         if chars[0] in valid_singles:
                             is_scene_break = True
                             
@@ -392,49 +799,115 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                         p.replace_with(sb)
 
             for block in soup.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']):
-                # 🌟 FIX: Protect native headings from being eaten by parent DIVs
                 if block.find(['p', 'div', 'ul', 'ol', 'table', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
                     continue
-                
-                if block.find(['img', 's', 'picture', 'svg', 'figure']):
-                    continue
+                    
+                has_media = block.find(['img', 's', 'picture', 'svg', 'figure'])
+                if has_media:
+                    # 🌟 THE IMAGE HEADER INTERCEPTOR 🌟
+                    if block.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                        orig_id = block.get('id')
+                        for a_tag in block.find_all('a'):
+                            if not orig_id and a_tag.get('id'):
+                                orig_id = a_tag.get('id')
+                            a_tag.unwrap()
+                        junk_attrs = ['class', 'style', 'lang', 'dir']
+                        for attr in list(block.attrs):
+                            if attr.lower() in junk_attrs:
+                                del block.attrs[attr]
+                        block['id'] = f's_{global_sentence_idx}'
+                        if orig_id:
+                            block['data-orig-id'] = orig_id
+                        global_sentence_idx += 1
+                        continue
+                        
+                    # 🌟 MEDIA-TEXT MIX RESCUE 🌟
+                    # If purely media with zero text, bypass splitter so JS gets a raw block
+                    if not block.get_text(strip=True):
+                        continue
 
-                # 🌟 FIX: Protect <br> tags from being wiped out by get_text()
-                for br in block.find_all('br'):
-                    br.replace_with(" XBRX ")
+                # Media protection ONLY
+                shield_map = {}
+                for shield in list(block.find_all(['img', 's', 'picture', 'svg', 'figure'])):
+                    s_id = f"§§SHIELD{len(shield_map)}§§"
+                    shield_map[s_id] = str(shield)
+                    shield.replace_with(s_id)
 
-                text = block.get_text(separator=" ", strip=True)
-                
-                # If the block was ONLY <br> tags, restore them visually and skip TTS wrapping
-                if text.replace("XBRX", "").strip() == "":
+                text = block.get_text(separator=" ", strip=False)
+                text = re.sub(r'[ \t\r\f\v]+', ' ', text)
+                text = re.sub(r' *\n+ *', ' ', text).strip()
+                text = re.sub(r'\s+(§§SHIELD\d+§§)', r'\1', text)
+
+                if text.replace('§§BR§§', '').strip() == '':
                     block.clear()
-                    for _ in range(text.count("XBRX")):
-                        block.append(BeautifulSoup("<br/>", "html.parser"))
+                    for _ in range(text.count('§§BR§§')):
+                        block.append(BeautifulSoup('<br/>', 'html.parser'))
                     continue
-
                 if not text:
                     continue
 
-                safe_text = html.escape(text)
+                # Convert to the markers that master_sentence_splitter understands
+                splitter_text = (
+                    text
+                    .replace('§§B_ON§§', 'XBOLDONX')
+                    .replace('§§B_OFF§§', 'XBOLDOFFX')
+                    .replace('§§I_ON§§', 'XITALONX')
+                    .replace('§§I_OFF§§', 'XITALOFFX')
+                    .replace('§§U_ON§§', 'XUNDONX')
+                    .replace('§§U_OFF§§', 'XUNDOFFX')
+                    .replace('§§D_ON§§', 'XDELONX')
+                    .replace('§§D_OFF§§', 'XDELOFFX')
+                    .replace('§§F_ON§§', 'XFONX')
+                    .replace('§§F_OFF_A§§', 'XFOFF_AX')
+                    .replace('§§F_OFF_SUP§§', 'XFOFF_SUPX')
+                    .replace('§§BR§§', ' XBRX ')
+                )
+                splitter_text = re.sub(r'§§F_S\|([^§]+)§§', r'XFS|\1X', splitter_text)
+                splitter_text = re.sub(r'§§F_E\|([^§]+)§§', r'XFE|\1X', splitter_text)
+
+                safe_text = html.escape(splitter_text)
 
                 if block.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                    orig_id = block.get('id')
+                    if not orig_id:
+                        # Salvage IDs hiding inside inner tags before block.clear() destroys them
+                        inner_tag = block.find(id=True)
+                        if inner_tag:
+                            orig_id = inner_tag.get('id')
+                            
                     block.clear()
-                    block['id'] = f"s_{global_sentence_idx}"
-                    # Restore <br/> tags natively into the header without an <n> wrapper
-                    header_html = safe_text.replace(" XBRX ", "<br/>").replace("XBRX", "<br/>")
-                    block.append(BeautifulSoup(header_html, "html.parser"))
+                    block['id'] = f's_{global_sentence_idx}'
+                    if orig_id:
+                        block['data-orig-id'] = orig_id
+                    header_html = (
+                        safe_text
+                        .replace('XBOLDONX', '<b>').replace('XBOLDOFFX', '</b>')
+                        .replace('XITALONX', '<i>').replace('XITALOFFX', '</i>')
+                        .replace('XUNDONX', '<u>').replace('XUNDOFFX', '</u>')
+                        .replace('XDELONX', '<del>').replace('XDELOFFX', '</del>')
+                        .replace(' XBRX ', '<br/>').replace('XBRX', '<br/>')
+                        .replace('XFONX ', '').replace('XFONX', '')
+                        .replace(' XFOFF_AX', '</a>').replace('XFOFF_AX', '</a>')
+                        .replace(' XFOFF_SUPX', '</sup></a>').replace('XFOFF_SUPX', '</sup></a>')
+                    )
+                    header_html = re.sub(r'XFS\|([^|]*)\|SUPX\s*', r'<a epub:type="noteref" href="#\1"><sup>', header_html)
+                    header_html = re.sub(r'XFS\|([^|]*)\|AX\s*', r'<a epub:type="noteref" href="#\1">', header_html)
+                    header_html = re.sub(r'XFE\|([^|]*)X\s*', r'<a epub:type="footnote" id="\1">', header_html)
+                    
+                    for s_id, s_html in shield_map.items():
+                        header_html = header_html.replace(s_id, s_html)
+                    block.append(BeautifulSoup(header_html, 'html.parser'))
                     global_sentence_idx += 1
                     continue
 
                 new_html, global_sentence_idx = master_sentence_splitter(safe_text, global_sentence_idx)
-                
+
                 if new_html:
-                    # 🌟 FIX: Inject the <br> tags back into the HTML stream!
-                    new_html = new_html.replace(" XBRX ", "<br/>").replace("XBRX", "<br/>")
-                    
-                    block.clear() 
-                    wrapper = BeautifulSoup(new_html, "html.parser")
-                    block.append(wrapper)
+                    new_html = new_html.replace(' XBRX ', '<br/>').replace('XBRX', '<br/>')
+                    for s_id, s_html in shield_map.items():
+                        new_html = new_html.replace(s_id, s_html)
+                    block.clear()
+                    block.append(BeautifulSoup(new_html, 'html.parser'))
 
             for block in soup.find_all(['div', 'p', 'figure', 'span']):
                 if not block.get_text(strip=True) and not block.find(['img', 'hr', 'br', 'svg', 'picture', 's', 'n']):
@@ -446,10 +919,72 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             # Minify: Eliminate all linebreaks and whitespace exactly between closing and opening tags
             page_html = re.sub(r'>\s*\n+\s*<', '><', page_html)
             
+            # 🌟 THE GLOBAL CLEANUP SWEEP 🌟
+            # Revert any formatting markers left behind inside shielded image blocks
+            page_html = (
+                page_html
+                .replace('§§BR§§', '<br/>')
+                .replace('§§B_ON§§', '<b>').replace('§§B_OFF§§', '</b>')
+                .replace('§§I_ON§§', '<i>').replace('§§I_OFF§§', '</i>')
+                .replace('§§U_ON§§', '<u>').replace('§§U_OFF§§', '</u>')
+                .replace('§§D_ON§§', '<del>').replace('§§D_OFF§§', '</del>')
+            )
+            
             if "<n id=" in page_html or "<img" in page_html or "<s>" in page_html:
                 href_to_page[actual_href] = len(pages)
                 pages.append(page_html)
-
+                
+        # 🌟 THE FALSE-POSITIVE IMAGE HEADER REVOKER 🌟
+        # Demotes Chapter Art ONLY if the exact TOC text appears in a real header on the following page.
+        for i in range(len(pages)):
+            if '<h1' in pages[i] and ('<img' in pages[i] or '<image' in pages[i]):
+                current_soup = BeautifulSoup(pages[i], 'html.parser')
+                modified = False
+                for h in current_soup.find_all('h1'):
+                    img = h.find(['img', 'image'])
+                    if img:
+                        text_nodes = "".join(h.stripped_strings)
+                        hidden = h.find('span', class_='epub-visually-hidden')
+                        hidden_text = hidden.get_text(strip=True) if hidden else ""
+                        
+                        # 🌟 STRICT SHIELD: Must have hidden TOC text to verify duplication
+                        if hidden_text and text_nodes == hidden_text:
+                            found_duplicate = False
+                            
+                            for lookahead in range(1, 3):
+                                if i + lookahead < len(pages):
+                                    next_soup = BeautifulSoup(pages[i + lookahead], 'html.parser')
+                                    real_headers = [nx.get_text(strip=True) for nx in next_soup.find_all(['h1', 'h2', 'h3']) if nx.get_text(strip=True)]
+                                    
+                                    if real_headers:
+                                        hidden_lower = re.sub(r'[^\w]', '', hidden_text.lower())
+                                        for rh in real_headers:
+                                            rh_lower = re.sub(r'[^\w]', '', rh.lower())
+                                            if hidden_lower and rh_lower and (hidden_lower in rh_lower or rh_lower in hidden_lower):
+                                                found_duplicate = True
+                                                break
+                                                
+                                        # Stop looking. If headers didn't match the TOC string, DO NOT REVOKE.
+                                        break
+                                        
+                                    if "".join(next_soup.stripped_strings):
+                                        break 
+                            
+                            if found_duplicate:
+                                h.name = 'p'
+                                if hidden: hidden.decompose()
+                                modified = True
+                
+                if modified:
+                    body = current_soup.find('body')
+                    page_str = str(body) if body else str(current_soup)
+                    page_str = re.sub(r'>\s*\n+\s*<', '><', page_str)
+                    pages[i] = page_str
+                
+        pages = process_css_scene_breaks(pages, master_css)
+        pages = process_image_scene_breaks(pages, image_map, doc_id, book_dir)
+     
+        
         # 🌟 FIX: Stop Windows WinError 32 from crashing the finish line
         try:
             temp_epub.unlink(missing_ok=True)
@@ -467,7 +1002,9 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                             section = item[0]
                             children = item[1]
                             href = getattr(section, 'href', '') or ''
-                            clean_href = str(href).split('#')[0]
+                            href_str = str(href)
+                            clean_href = href_str.split('#')[0]
+                            anchor_id = href_str.split('#')[1] if '#' in href_str else None
                             
                             idx = href_to_page.get(clean_href, -1)
                             if idx == -1:
@@ -477,16 +1014,17 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                                         break
                                         
                             if idx != -1:
-                                # Shield against 'None' titles crashing the UI later
                                 title_str = str(getattr(section, 'title') or f"Chapter (Page {idx + 1})")
-                                res.append({"title": title_str, "level": level, "page_index": idx})
+                                res.append({"title": title_str, "level": level, "page_index": idx, "anchor_id": anchor_id})
                                 
                             res.extend(parse_native_toc(children, level + 1))
                         else:
                             res.extend(parse_native_toc(item, level))
                     elif hasattr(item, 'title') and hasattr(item, 'href'):
                         href = getattr(item, 'href', '') or ''
-                        clean_href = str(href).split('#')[0]
+                        href_str = str(href)
+                        clean_href = href_str.split('#')[0]
+                        anchor_id = href_str.split('#')[1] if '#' in href_str else None
                         
                         idx = href_to_page.get(clean_href, -1)
                         if idx == -1:
@@ -496,9 +1034,8 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                                     break
                                     
                         if idx != -1:
-                            # Shield against 'None' titles crashing the UI later
                             title_str = str(getattr(item, 'title') or f"Chapter (Page {idx + 1})")
-                            res.append({"title": title_str, "level": level, "page_index": idx})
+                            res.append({"title": title_str, "level": level, "page_index": idx, "anchor_id": anchor_id})
                 except Exception:
                     # Automatically skip malformed .ncx items without crashing the pipeline
                     continue
@@ -512,18 +1049,62 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             print(f"[Warning] Native TOC parser failed: {e}")
             
         if not toc_map:
-            try:
-                toc_map = generate_toc(pages)
-            except Exception as e:
-                print(f"[Warning] Fallback HTML TOC gen failed: {e}")
-                toc_map = [{"title": "Start of Book", "level": 1, "page_index": 0}]
+            toc_map = generate_toc(pages)
+
+        claimed_ids = set()
+
+        for toc_item in toc_map:
+            p_idx = toc_item.get('page_index', 0)
+            if p_idx < 0 or p_idx >= len(pages):
+                continue
+                
+            page_soup = BeautifulSoup(pages[p_idx], 'html.parser')
+            target_tts_id = None
+            
+            anchor = toc_item.get('anchor_id')
+            if anchor:
+                clean_anchor = anchor.split('#')[-1]
+                el = page_soup.find(attrs={"data-orig-id": clean_anchor}) or page_soup.find(id=clean_anchor)
+                if el and el.get('id', '').startswith('s_'):
+                    target_tts_id = el.get('id')
+                elif el:
+                    child = el.find(id=re.compile(r'^s_'))
+                    if child: target_tts_id = child.get('id')
+                    
+            if not target_tts_id and toc_item.get('title'):
+                clean_title = re.sub(r'[^\w]', '', toc_item['title'].lower())
+                for h in page_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    h_text = re.sub(r'[^\w]', '', h.get_text().lower())
+                    if clean_title and (clean_title in h_text or h_text in clean_title):
+                        h_id = h.get('id')
+                        if h_id and h_id.startswith('s_') and h_id not in claimed_ids:
+                            target_tts_id = h_id
+                            break
+                            
+            if not target_tts_id:
+                for first_h in page_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    h_id = first_h.get('id')
+                    if h_id and h_id.startswith('s_') and h_id not in claimed_ids:
+                        target_tts_id = h_id
+                        break
+                    
+            if not target_tts_id:
+                for first_n in page_soup.find_all(id=re.compile(r'^s_')):
+                    n_id = first_n.get('id')
+                    if n_id and n_id not in claimed_ids:
+                        target_tts_id = n_id
+                        break
+                        
+            if target_tts_id:
+                claimed_ids.add(target_tts_id)
+                
+            toc_item['target_tts_id'] = target_tts_id
 
         return {
             "pages": pages,
             "image_map": image_map,
             "toc_map": toc_map
         }
-
     except Exception as e:
         import traceback
         print("\n" + "="*60)
@@ -575,7 +1156,7 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
         if raw_toc:
             for item in raw_toc:
                 lvl, title, page_num = item
-                toc_map.append({"title": title, "level": lvl, "page_index": max(0, page_num - 1)})
+                toc_map.append({"title": title, "level": lvl, "page_index": max(0, page_num - 1), "anchor_id": None})
 
         allow_scene_breaks = False
         if len(doc) > 0:
@@ -738,6 +1319,55 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
         if not toc_map:
             toc_map = generate_toc(pages)
 
+        claimed_ids = set()
+
+        for toc_item in toc_map:
+            p_idx = toc_item.get('page_index', 0)
+            if p_idx < 0 or p_idx >= len(pages):
+                continue
+                
+            page_soup = BeautifulSoup(pages[p_idx], 'html.parser')
+            target_tts_id = None
+            
+            anchor = toc_item.get('anchor_id')
+            if anchor:
+                clean_anchor = anchor.split('#')[-1]
+                el = page_soup.find(attrs={"data-orig-id": clean_anchor}) or page_soup.find(id=clean_anchor)
+                if el and el.get('id', '').startswith('s_'):
+                    target_tts_id = el.get('id')
+                elif el:
+                    child = el.find(id=re.compile(r'^s_'))
+                    if child: target_tts_id = child.get('id')
+                    
+            if not target_tts_id and toc_item.get('title'):
+                clean_title = re.sub(r'[^\w]', '', toc_item['title'].lower())
+                for h in page_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    h_text = re.sub(r'[^\w]', '', h.get_text().lower())
+                    if clean_title and (clean_title in h_text or h_text in clean_title):
+                        h_id = h.get('id')
+                        if h_id and h_id.startswith('s_') and h_id not in claimed_ids:
+                            target_tts_id = h_id
+                            break
+                            
+            if not target_tts_id:
+                for first_h in page_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    h_id = first_h.get('id')
+                    if h_id and h_id.startswith('s_') and h_id not in claimed_ids:
+                        target_tts_id = h_id
+                        break
+                    
+            if not target_tts_id:
+                for first_n in page_soup.find_all(id=re.compile(r'^s_')):
+                    n_id = first_n.get('id')
+                    if n_id and n_id not in claimed_ids:
+                        target_tts_id = n_id
+                        break
+                        
+            if target_tts_id:
+                claimed_ids.add(target_tts_id)
+                
+            toc_item['target_tts_id'] = target_tts_id
+
         return {
             "pages": pages,
             "image_map": image_map,
@@ -757,57 +1387,59 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
 @router.get("/api/library")
 def get_library():
     try:
-        with open(library_file, "r") as f:
+        with open(library_file, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
 
 @router.post("/api/library")
-def save_library_item(item: LibraryItem):
-    try:
-        with open(library_file, "r") as f:
-            library = json.load(f)
-    except Exception:
-        library = []
+async def save_library_item(item: LibraryItem):
+    async with _library_lock:
+        try:
+            with open(library_file, "r", encoding="utf-8") as f:
+                library = json.load(f)
+        except Exception:
+            library = []
 
-    found = False
-    for i, existing in enumerate(library):
-        if existing.get("id") == item.id:
-            library[i] = item.model_dump()
-            found = True
-            break
-    if not found:
-        library.append(item.model_dump())
+        found = False
+        for i, existing in enumerate(library):
+            if existing.get("id") == item.id:
+                library[i] = item.model_dump()
+                found = True
+                break
+        if not found:
+            library.append(item.model_dump())
 
-    safe_save_json(library_file, library)
-    return {"status": "ok"}
+        safe_save_json(library_file, library)
+        return {"status": "ok"}
 
 @router.delete("/api/library/{doc_id}")
-def delete_library_item(doc_id: str):
-    try:
-        with open(library_file, "r") as f:
-            library = json.load(f)
+async def delete_library_item(doc_id: str):
+    async with _library_lock:
+        try:
+            with open(library_file, "r", encoding="utf-8") as f:
+                library = json.load(f)
 
-        len_before = len(library)
-        library = [item for item in library if item.get("id") != doc_id]
+            len_before = len(library)
+            library = [item for item in library if item.get("id") != doc_id]
 
-        if len(library) < len_before:
-            safe_save_json(library_file, library)
-            book_dir = content_dir / doc_id
-            if book_dir.exists():
-                shutil.rmtree(book_dir, ignore_errors=True)
-            for ext in [".json", ".pdf", ".epub"]:
-                file_path = content_dir / f"{doc_id}{ext}"
-                if file_path.exists():
-                    try:
-                        file_path.unlink()
-                    except Exception:
-                        pass
-            return {"status": "deleted"}
-        else:
-            raise HTTPException(status_code=404, detail="Document not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            if len(library) < len_before:
+                safe_save_json(library_file, library)
+                book_dir = content_dir / doc_id
+                if book_dir.exists():
+                    shutil.rmtree(book_dir, ignore_errors=True)
+                for ext in [".json", ".pdf", ".epub"]:
+                    file_path = content_dir / f"{doc_id}{ext}"
+                    if file_path.exists():
+                        try:
+                            file_path.unlink()
+                        except Exception:
+                            pass
+                return {"status": "deleted"}
+            else:
+                raise HTTPException(status_code=404, detail="Document not found")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/api/library/content/{doc_id}")
 def get_content(doc_id: str):
@@ -912,27 +1544,28 @@ async def update_book_progress_checkpoint(doc_id: str, payload: ProgressUpdatePa
     if not library_file.exists():
         raise HTTPException(status_code=404, detail="Library inventory log absent.")
 
-    try:
-        with open(library_file, "r", encoding="utf-8") as f:
-            books_inventory = json.load(f)
+    async with _library_lock:
+        try:
+            with open(library_file, "r", encoding="utf-8") as f:
+                books_inventory = json.load(f)
+                
+            target_book = next((book for book in books_inventory if book.get("id") == doc_id), None)
+
+            if not target_book:
+                raise HTTPException(status_code=404, detail="Requested record entry missing.")
+
+            target_book["currentPage"] = payload.currentPage
+            target_book["lastSentenceId"] = payload.lastSentenceId
+            target_book["lastSentenceIndex"] = payload.lastSentenceIndex
+            target_book["lastAccessed"] = payload.lastAccessed
+
+            temp_lib_path = library_file.with_suffix(".tmp")
+            with open(temp_lib_path, "w", encoding="utf-8") as write_handle:
+                json.dump(books_inventory, write_handle, indent=4, ensure_ascii=False)
+            temp_lib_path.replace(library_file)
             
-        target_book = next((book for book in books_inventory if book.get("id") == doc_id), None)
-
-        if not target_book:
-            raise HTTPException(status_code=404, detail="Requested record entry missing.")
-
-        target_book["currentPage"] = payload.currentPage
-        target_book["lastSentenceId"] = payload.lastSentenceId
-        target_book["lastSentenceIndex"] = payload.lastSentenceIndex
-        target_book["lastAccessed"] = payload.lastAccessed
-
-        temp_lib_path = library_file.with_suffix(".tmp")
-        with open(temp_lib_path, "w", encoding="utf-8") as write_handle:
-            json.dump(books_inventory, write_handle, indent=4, ensure_ascii=False)
-        temp_lib_path.replace(library_file)
-        
-    except Exception as io_error:
-        print(f"[Error] Failed to auto-save progress to library.json: {io_error}")
-        raise HTTPException(status_code=500, detail=f"Database sync failure: {str(io_error)}")
+        except Exception as io_error:
+            print(f"[Error] Failed to auto-save progress to library.json: {io_error}")
+            raise HTTPException(status_code=500, detail=f"Database sync failure: {str(io_error)}")
 
     return {"status": "success", "message": f"Checkpoint saved for {doc_id}"}

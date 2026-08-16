@@ -105,16 +105,16 @@
                 <span data-i18n="sidebar.text_size">Text Size</span>
               </span>
               <span class="text-blue-400 font-mono"
-                ><span id="textSizeVal">16</span>px</span
+                ><span id="textSizeVal">18</span>px</span
               >
             </label>
             <input
               type="range"
               id="fontSizeSlider"
-              min="12"
-              max="24"
+              min="14"
+              max="40"
               step="1"
-              value="16"
+              value="18"
               class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
             />
           </div>
@@ -239,11 +239,11 @@
               class="text-[9px] text-zinc-400 flex items-center gap-2"
             >
               <span id="gpuStatus"
-                >GPU: <span class="text-zinc-600">?</span></span
+                >FP32 model: <span class="text-zinc-600">?</span></span
               >
               <span class="text-zinc-700">|</span>
               <span id="cpuStatus"
-                >CPU: <span class="text-zinc-600">?</span></span
+                >In8 model: <span class="text-zinc-600">?</span></span
               >
             </div>
             <p

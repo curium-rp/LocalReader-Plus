@@ -1,6 +1,56 @@
 import { state } from "./state.js";
 import { fetchJSON, fetchBlob } from "./api.js";
-import { showToast, renderIcons, stripHTML, highlightSearchTerm } from "./ui.js";
+import { showToast, renderIcons, stripHTML, highlightSearchTerm, showFootnoteModal } from "./ui.js";
+
+export async function openFootnote(targetId) {
+    if (!targetId || !state.currentPages) return;
+    
+    const cleanId = targetId.split('#').pop();
+    let footnoteHTML = null;
+    let foundPageIdx = -1;
+    
+    // Priority search: Current page -> Forward -> Backward
+    const searchOrder = [state.viewPageIndex];
+    for (let i = state.viewPageIndex + 1; i < state.currentPages.length; i++) searchOrder.push(i);
+    for (let i = state.viewPageIndex - 1; i >= 0; i--) searchOrder.push(i);
+    
+    for (const idx of searchOrder) {
+        const pageHtml = state.currentPages[idx];
+        if (pageHtml.includes(`id="${cleanId}"`) || pageHtml.includes(`id='${cleanId}'`)) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(pageHtml, 'text/html');
+            const targetEl = doc.getElementById(cleanId) || doc.querySelector(`[id="${cleanId}"]`);
+            
+            if (targetEl) {
+                const container = targetEl.closest('aside, li, p[epub\\:type="footnote"], div[epub\\:type="footnote"], .epub-footnote') 
+                                || targetEl.closest('p') 
+                                || targetEl.parentElement;
+                footnoteHTML = container ? container.innerHTML : targetEl.innerHTML;
+                foundPageIdx = idx;
+                break;
+            }
+        }
+    }
+    
+    if (footnoteHTML) {
+        showFootnoteModal(footnoteHTML, async () => {
+            state.viewPageIndex = foundPageIdx;
+            state.autoScrollEnabled = false;
+            await renderPage();
+            setTimeout(() => {
+                const targetEl = document.getElementById(cleanId);
+                if (targetEl) {
+                    const scrollTarget = targetEl.closest('.sentence') || targetEl;
+                    scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    scrollTarget.classList.add('bg-blue-600/40', 'rounded', 'px-1', 'transition-colors', 'duration-500');
+                    setTimeout(() => scrollTarget.classList.remove('bg-blue-600/40', 'px-1'), 1500);
+                }
+            }, 100);
+        });
+    } else {
+        showToast("Footnote content not found.");
+    }
+}
 
 export async function loadLibrary() {
   const libraryPanel = document.getElementById("libraryPanel");
@@ -202,34 +252,21 @@ export function renderTOC() {
             const tocModal = document.getElementById('tocModal');
             if (tocModal) tocModal.classList.add('hidden');
 
-            // 1. Fetch the sentences for the target page to find the heading position
             const targetSentences = await getSentencesForPage(item.page_index);
-            
-            // 2. Find the exact sentence index that matches this heading's title
-            let targetIndex = 0; 
-            if (item.title && targetSentences && targetSentences.length > 0) {
-                const cleanTitle = item.title.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-                
-                let bestMatchIndex = 0;
-                let foundHeading = false;
+            let targetIndex = 0;
 
+            if (targetSentences && targetSentences.length > 0) {
                 for (let i = 0; i < targetSentences.length; i++) {
                     const rawSentence = targetSentences[i];
-                    const sText = stripHTML(rawSentence).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-                    
-                    if (cleanTitle && sText && (sText.includes(cleanTitle) || cleanTitle.includes(sText))) {
-                        const isHeading = /<h[1-6]/i.test(rawSentence) || /\[H[1-6]\]/i.test(rawSentence);
-                        if (isHeading) {
-                            bestMatchIndex = i;
-                            foundHeading = true;
-                            break; 
-                        } else if (!foundHeading) {
-                            bestMatchIndex = i; 
-                        }
+                    if ((item.target_tts_id && (rawSentence.includes(`id="${item.target_tts_id}"`) || rawSentence.includes(`id='${item.target_tts_id}'`))) ||
+                        (item.id && (rawSentence.includes(`id="${item.id}"`) || rawSentence.includes(`id='${item.id}'`) || rawSentence.includes(`data-orig-id="${item.id}"`)))) {
+                        targetIndex = i;
+                        break;
                     }
                 }
-                targetIndex = bestMatchIndex;
             }
+
+            // 3. THE EXPLORER FIX: Only move the CAMERA (viewPageIndex), do NOT change the reading position!
 
             // 3. THE EXPLORER FIX: Only move the CAMERA (viewPageIndex), do NOT change the reading position!
             // This preserves the user's bookmark, keeps the "Back to Reading" button visible, and stops audio from auto-playing.
@@ -263,6 +300,7 @@ export function renderTOC() {
         fragment.appendChild(div);
     });
     tocList.appendChild(fragment);
+    updateActiveTOC();
 }
 
 export async function getSentencesForPage(pageIndex) {
@@ -272,11 +310,30 @@ export async function getSentencesForPage(pageIndex) {
     if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>') || /<h[1-6]/i.test(pageText)) {        
         const tempDiv = document.createElement('div');
         tempDiv.innerHTML = pageText;
-        // 🌟 PURE H-TAG SUPPORT: Include native headings in the DOM array
         const elements = Array.from(tempDiv.querySelectorAll('n, s, img.epub-image, h1, h2, h3, h4, h5, h6'));
         return elements.map(el => {
             if (el.tagName.match(/^(img|s|h[1-6])$/i)) return el.outerHTML; 
-            let text = el.textContent;
+            
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll('a[epub\\:type="noteref"], a[href*="#R_"], .epub-noteref').forEach(ref => {
+                const parentText = ref.parentElement ? ref.parentElement.textContent.trim() : "";
+                const refText = ref.textContent.trim();
+                const nextText = ref.nextSibling && ref.nextSibling.nodeType === 3 ? ref.nextSibling.textContent.trim() : "";
+                
+                const isDefinition = parentText.startsWith(refText) || nextText.startsWith(':');
+                
+                if (isDefinition) {
+                    const cleanNum = refText.replace(/[\[\]\(\)]/g, '');
+                    ref.textContent = `Footnote ${cleanNum}, `;
+                    if (ref.nextSibling && ref.nextSibling.nodeType === 3) {
+                        ref.nextSibling.textContent = ref.nextSibling.textContent.replace(/^[\s:,\-]+/, ' ');
+                    }
+                } else {
+                    ref.remove();
+                }
+            });
+            
+            let text = clone.textContent;
             const pause = parseInt(el.getAttribute('data-pause') || "0");
             if (pause > 0) text = `[PAUSE_${pause}] ` + text;
             return text;
@@ -308,6 +365,8 @@ export async function getSentencesForPage(pageIndex) {
     }
     return sentences;
 }
+
+
 
 export async function renderPage() {
     const textContent = document.getElementById("textContent");
@@ -372,7 +431,8 @@ export async function renderPage() {
             state.sentenceElements.forEach((tag, i) => {
                 tag.classList.add('sentence'); 
                 if (isReadingCurrentPage && i === state.currentSentenceIndex) tag.classList.add('active-sentence');
-                tag.onclick = () => {
+                tag.onclick = (e) => {
+                    e.stopPropagation(); // 🌟 PHANTOM ROUTER: Prevent click from bubbling up to parent header and double-firing
                     state.readingPageIndex = state.viewPageIndex;
                     state.readingSentences = [...state.viewSentences];
                     state.autoScrollEnabled = true; 
@@ -443,12 +503,272 @@ export async function renderPage() {
     const currentReadingSentence = (state.readingSentences && state.readingSentences.length > 0) ? state.readingSentences[state.currentSentenceIndex] : "";
     if (currentSentencePreview && currentReadingSentence) {
         const cleanText = currentReadingSentence.replace(/\[PAUSE_\d+\]\s*/g, '');
-        const finalStr = typeof stripHTML === "function" ? stripHTML(cleanText) : cleanText;
+        
+        let bType = "N";
+        if (/<h[1-6]/i.test(currentReadingSentence)) bType = "H";
+        else if (/<img|<svg/i.test(currentReadingSentence)) bType = "Img";
+        else if (/<s\b/i.test(currentReadingSentence) || /class="scene-break"/i.test(currentReadingSentence)) bType = "S";
+        
+        const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
+        let finalStr = cleanText.replace(validTags, '').trim();
+        
+        // 🌟 UI Rescue Interceptor: Restores TOC titles for images wrapped in Headers
+        if (finalStr === "" && bType.startsWith("H")) {
+            const idMatch = currentReadingSentence.match(/(?:id|data-orig-id)=['"]([^'"]+)['"]/);
+            if (idMatch && state.tocMap) {
+                const matchedToc = state.tocMap.find(t => t.target_tts_id === idMatch[1] || t.id === idMatch[1]);
+                if (matchedToc && matchedToc.title) {
+                    finalStr = matchedToc.title;
+                }
+            }
+        }
+        
+        // Final fallback for raw UI display 
+        if (bType === "Img" && finalStr === "") finalStr = "🖼️ [Viewing Image]";
+        if (bType === "S" && finalStr === "") finalStr = "•••";
         
         currentSentencePreview.textContent = finalStr;
         
         const monitorText = document.getElementById("monitorSentenceText");
         if (monitorText) monitorText.textContent = finalStr;
     }
-    if (state.currentSearchQuery && typeof highlightSearchTerm === "function") highlightSearchTerm(state.currentSearchQuery, state.searchMatchCase, state.searchWholeWord);
+
+    const pageImages = document.querySelectorAll('#textContent img.epub-image');
+    if (pageImages.length > 0) {
+        const imgObserver = new IntersectionObserver((entries, observer) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const img = entry.target;
+                    
+                    const reveal = () => {
+                        if (img.naturalWidth > 0 && img.naturalWidth < 150 && img.naturalHeight < 150) {
+                            img.classList.add('epub-icon');
+                        }
+                        img.classList.remove('lazy-prep');
+                        img.classList.add('lazy-loaded');
+                    };
+                    
+                    if (img.complete) {
+                        setTimeout(reveal, 50);
+                    } else {
+                        img.addEventListener('load', reveal);
+                    }
+                    
+                    observer.unobserve(img);
+                }
+            });
+        }, { root: null, rootMargin: '800px 0px' });
+
+        pageImages.forEach(img => {
+            img.classList.add('lazy-prep');
+            imgObserver.observe(img);
+        });
+    }
+
+   if (state.currentSearchQuery && typeof highlightSearchTerm === "function") highlightSearchTerm(state.currentSearchQuery, state.searchMatchCase, state.searchWholeWord);
+    
+    const footnoteElements = textContent.querySelectorAll(
+        'a[epub\\:type="noteref"], a[epub\\:type="footnote"], a[epub\\:type="backlink"], a[href*="#R_"], a[id*="R_"], .epub-noteref, .epub-footnote, p[epub\\:type="footnote"], div[epub\\:type="footnote"], aside[epub\\:type="footnote"], li[epub\\:type="footnote"]'
+    );
+
+    footnoteElements.forEach(ref => {
+        const href = ref.getAttribute('href') || '';
+        const id = ref.getAttribute('id') || '';
+        const epubType = (ref.getAttribute('epub:type') || '').toLowerCase();
+        const isDefinition = epubType === 'footnote' || epubType === 'backlink' || id.startsWith('R_') || ref.classList.contains('epub-footnote');
+
+        if (!isDefinition) {
+            // --- 1. CALLOUT / IN-TEXT NOTE (POPUP TRIGGER) ---
+            ref.classList.add('relative', 'group', 'cursor-pointer', 'text-blue-400', 'hover:text-blue-300', 'transition-colors', 'font-bold');
+            ref.style.display = 'inline';
+            ref.style.margin = '0 2px';
+            ref.style.padding = '0';
+
+            if (!ref.querySelector('.footnote-tooltip')) {
+                const tooltip = document.createElement('span');
+                tooltip.className = 'footnote-tooltip absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-max whitespace-nowrap px-2.5 py-1.5 bg-[#27272a] text-zinc-100 text-[11px] font-bold rounded-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-xl border border-zinc-600';
+                tooltip.style.textIndent = '0px';
+                tooltip.style.lineHeight = '1';
+                tooltip.textContent = 'View Footnote';
+                ref.appendChild(tooltip);
+            }
+
+            ref.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (href) openFootnote(href);
+            };
+        } else {
+            // --- 2. DEFINITION / ENDNOTE (JUMP-BACK TRIGGER) ---
+            if (ref.tagName === 'A') {
+                ref.classList.add('cursor-pointer', 'text-zinc-900', 'bg-blue-500', 'hover:bg-blue-400', 'font-bold', 'inline-flex', 'items-center', 'px-1.5', 'py-0.5', 'rounded', 'text-[10px]', 'uppercase', 'mx-1');
+                if (ref.textContent.trim().length <= 2 || ref.textContent.includes('↩') || ref.textContent.includes('↑')) {
+                    ref.textContent = '↩ Back';
+                }
+            } else {
+                ref.classList.add('cursor-pointer', 'hover:bg-blue-900/20', 'rounded', 'transition-colors', 'block', 'p-1');
+            }
+            
+            ref.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const cleanHref = href.split('#').pop();
+                const cleanId = id;
+                if (!cleanHref && !cleanId) return;
+                
+                let targetPageIdx = -1;
+                let foundSelector = "";
+
+                // Priority search: Backward -> Current Page -> Forward
+                const searchOrder = [];
+                for (let i = state.viewPageIndex - 1; i >= 0; i--) searchOrder.push(i);
+                searchOrder.push(state.viewPageIndex);
+                for (let i = state.viewPageIndex + 1; i < state.currentPages.length; i++) searchOrder.push(i);
+
+                for (const idx of searchOrder) {
+                    const pageHtml = state.currentPages[idx];
+                    
+                    if (cleanHref && (pageHtml.includes(`id="${cleanHref}"`) || pageHtml.includes(`id='${cleanHref}'`))) {
+                        targetPageIdx = idx;
+                        foundSelector = `[id="${cleanHref}"]`;
+                        break;
+                    }
+                    if (cleanId && (pageHtml.includes(`href="#${cleanId}"`) || pageHtml.includes(`href='#${cleanId}'`))) {
+                        targetPageIdx = idx;
+                        foundSelector = `[href="#${cleanId}"]`;
+                        break;
+                    }
+                    if (cleanHref && (pageHtml.includes(`href="#${cleanHref}"`) || pageHtml.includes(`href='#${cleanHref}'`))) {
+                         targetPageIdx = idx;
+                         foundSelector = `[href="#${cleanHref}"]`;
+                         break;
+                    }
+                }
+
+                if (targetPageIdx !== -1) {
+                    state.viewPageIndex = targetPageIdx;
+                    state.autoScrollEnabled = false;
+                    await renderPage();
+
+                    setTimeout(() => {
+                        const targetEl = document.querySelector(foundSelector);
+                        if (targetEl) {
+                            const scrollTarget = targetEl.closest('.sentence') || targetEl;
+                            scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            scrollTarget.classList.add('bg-blue-600/40', 'rounded', 'px-1', 'transition-colors', 'duration-500');
+                            setTimeout(() => scrollTarget.classList.remove('bg-blue-600/40', 'px-1'), 1500);
+                        }
+                    }, 100);
+                } else {
+                    if (typeof showToast === "function") showToast("Original note position not found.");
+                }
+            };
+        }
+    });
+
+    try { updateActiveTOC(); } catch (e) { console.error("TOC Sync Error:", e); }
+}
+
+export function updateActiveTOC() {
+    const tocList = document.getElementById('tocList');
+    if (!tocList || !state.tocMap || state.tocMap.length === 0) return;
+    
+    const items = tocList.children;
+    if (!items || items.length === 0 || items[0].classList.contains('italic')) return;
+
+    let lastPrevIdx = -1;
+    for (let i = 0; i < state.tocMap.length; i++) {
+        if (state.tocMap[i].page_index < state.viewPageIndex) lastPrevIdx = i;
+    }
+
+    const currentPageTOC = [];
+    for (let i = 0; i < state.tocMap.length; i++) {
+        if (state.tocMap[i].page_index === state.viewPageIndex) {
+            currentPageTOC.push({ index: i, item: state.tocMap[i] });
+        }
+    }
+
+    let activeIdx = lastPrevIdx;
+
+    if (currentPageTOC.length > 0) {
+        let matchedIdx = -1;
+        const scrollContainer = document.querySelector(".content-area");
+        
+        let querySelectors = ["#textContent h1", "#textContent h2", "#textContent h3", "#textContent h4", "#textContent h5", "#textContent h6", "#textContent .book-heading"];
+        currentPageTOC.forEach(t => {
+            if (t.item.target_tts_id) {
+                querySelectors.push(`#textContent [id="${t.item.target_tts_id}"]`);
+            }
+            if (t.item.id) {
+                querySelectors.push(`#textContent [id="${t.item.id}"]`);
+                querySelectors.push(`#textContent [data-orig-id="${t.item.id}"]`);
+            }
+        });
+        
+        const rawHeadings = Array.from(document.querySelectorAll(querySelectors.join(", ")));
+        const renderedHeadings = [...new Set(rawHeadings)].sort((a, b) => {
+            return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
+        });
+        
+        if (renderedHeadings.length > 0 && scrollContainer) {
+            const containerTop = scrollContainer.getBoundingClientRect().top;
+            const triggerPoint = scrollContainer.scrollTop < 10 ? scrollContainer.clientHeight : scrollContainer.clientHeight * 0.6; 
+            
+            let activeDomIndex = -1;
+            for (let i = renderedHeadings.length - 1; i >= 0; i--) {
+                const rect = renderedHeadings[i].getBoundingClientRect();
+                const relativeTop = rect.top - containerTop;
+                if (relativeTop <= triggerPoint) {
+                    activeDomIndex = i;
+                    break;
+                }
+            }
+
+            if (activeDomIndex !== -1) {
+                const activeEl = renderedHeadings[activeDomIndex];
+                const activeId = activeEl.getAttribute('id');
+                const origId = activeEl.getAttribute('data-orig-id');
+                
+                let foundMatch = false;
+                for (let i = currentPageTOC.length - 1; i >= 0; i--) {
+                    const tocItem = currentPageTOC[i].item;
+                    if ((tocItem.target_tts_id && activeId === tocItem.target_tts_id) || 
+                        (tocItem.id && (activeId === tocItem.id || origId === tocItem.id))) {
+                        matchedIdx = currentPageTOC[i].index;
+                        foundMatch = true;
+                        break;
+                    }
+                }
+                
+                if (!foundMatch) {
+                    const fallbackIndex = Math.min(activeDomIndex, currentPageTOC.length - 1);
+                    matchedIdx = currentPageTOC[fallbackIndex].index;
+                }
+            } else {
+                if (lastPrevIdx === -1) matchedIdx = currentPageTOC[0].index;
+            }
+        } else {
+             matchedIdx = currentPageTOC[0].index;
+        }
+        
+        if (matchedIdx !== -1) activeIdx = matchedIdx;
+    }
+
+    if (activeIdx === -1) activeIdx = 0;
+
+    for (let i = 0; i < items.length; i++) {
+        const div = items[i];
+        const titleSpan = div.querySelector('span.truncate');
+        const isMatch = (i === activeIdx);
+        
+        div.classList.toggle('bg-blue-600/20', isMatch);
+        div.classList.toggle('border-blue-500', isMatch);
+        div.classList.toggle('border-transparent', !isMatch);
+        
+        if (titleSpan) {
+            titleSpan.classList.toggle('text-blue-400', isMatch);
+            titleSpan.classList.toggle('brightness-125', isMatch);
+        }
+    }
 }

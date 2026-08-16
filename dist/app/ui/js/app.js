@@ -18,6 +18,7 @@ import {
   processPdfBlob,
   processJsonData,
   getSentencesForPage,
+  updateActiveTOC,
 } from "./modules/library.js";
 import {
   loadVoices,
@@ -422,8 +423,17 @@ document.getElementById("pageInput").onchange = async (e) => {
 
 // --- THE SMART SCROLL TRACKER ---
 let isAutoFlipping = false;
+let tocScrollTimer = null;
 const scrollContainer = document.querySelector(".content-area");
 if (scrollContainer) {
+  scrollContainer.addEventListener("scroll", () => {
+      const tocModal = document.getElementById("tocModal");
+      if (tocModal && !tocModal.classList.contains("hidden")) {
+          clearTimeout(tocScrollTimer);
+          tocScrollTimer = setTimeout(updateActiveTOC, 80);
+      }
+  }, { passive: true });
+
   scrollContainer.addEventListener(
     "wheel",
     async (e) => {
@@ -569,7 +579,6 @@ document.getElementById("fontSizeSlider").oninput = (e) => {
   }
 };
 document.getElementById("voiceSelect").onchange = async () => {
-  stopPlayback();
   state.audioBufferCache.clear();
   try {
     await fetchJSON("/api/system/clear-cache", { method: "POST" });
@@ -903,20 +912,34 @@ document.getElementById("ignoreListUI").addEventListener("click", (e) => {
   }
 });
 
-document.getElementById("libraryPanel").addEventListener("click", (e) => {
+document.getElementById("libraryPanel").addEventListener("click", async (e) => {
   const st = e.target.closest('[data-action="select-doc"]');
   if (st) {
     selectDocById(st.dataset.id);
     return;
   }
+  
   const dt = e.target.closest('[data-action="delete-doc"]');
-  if (dt && confirm("Delete?")) {
-    fetchJSON(`/api/library/${dt.dataset.id}`, { method: "DELETE" }).then(
-      () => {
-        if (state.currentDoc?.id === dt.dataset.id) location.reload();
-        else loadLibrary();
-      },
-    );
+  if (dt) {
+    if (dt.disabled) return; // 🌟 CONCURRENCY SHIELD: Block double-clicks
+    
+    if (confirm("Delete?")) {
+      dt.disabled = true;
+      dt.classList.add("opacity-50", "pointer-events-none");
+      
+      try {
+        await fetchJSON(`/api/library/${dt.dataset.id}`, { method: "DELETE" });
+        if (state.currentDoc?.id === dt.dataset.id) {
+            location.reload();
+        } else {
+            await loadLibrary();
+        }
+      } catch (err) {
+        console.error("Deletion failed:", err);
+        dt.disabled = false;
+        dt.classList.remove("opacity-50", "pointer-events-none");
+      }
+    }
   }
 });
 
@@ -1004,11 +1027,17 @@ async function startStatusPolling() {
     try {
       const status = await fetchJSON(`/api/system/status?t=${Date.now()}`);
       window.isEngineReady = status.model_loaded;
-      const selModel =
-        state.engineMode === "gpu"
-          ? status.available_models?.gpu
-          : status.available_models?.cpu;
-      const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${selModel}`;
+      
+      if (status.engine_mode) {
+        state.engineMode = status.engine_mode.toLowerCase();
+      }
+      if (status.active_hardware) {
+        state.activeHardware = status.active_hardware.toLowerCase();
+      }
+      
+      const selModel = state.engineMode === "gpu" ? status.available_models?.gpu : status.available_models?.cpu;
+      
+      const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${selModel}-${state.engineMode}-${state.activeHardware}`;
       if (curState !== lastSysState) {
         lastSysState = curState;
         updateEngineStatusUI(status, selModel);
@@ -1029,7 +1058,16 @@ if (tocBtn) {
             return;
         }
         const modal = document.getElementById("tocModal");
-        if (modal) modal.classList.remove("hidden");
+        if (modal) {
+            modal.classList.remove("hidden");
+            updateActiveTOC();
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    const active = document.querySelector('#tocList > .border-blue-500');
+                    if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                }, 50);
+            });
+        }
     };
 }
 

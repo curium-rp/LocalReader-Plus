@@ -241,26 +241,60 @@ export async function playNext() {
   let bType = "N";
   const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
 
+  // 🌟 THE PHANTOM IMAGE AUTO-SKIP: Move forward automatically if we hit a duplicate image during playback
+  if (currentEl && currentEl.tagName.toLowerCase() === 'img' && currentEl.closest('h1, h2, h3, h4, h5, h6')) {
+      state.currentSentenceIndex++;
+      return playNext();
+  }
+
   if (currentEl) {
       const hMatch = currentEl.closest('h1, h2, h3, h4, h5, h6');
       if (hMatch) bType = hMatch.tagName.toUpperCase(); 
       else if (currentEl.tagName.toLowerCase() === 'img' || currentEl.querySelector('img, svg')) bType = "Img";
-      else if (currentEl.tagName.toLowerCase() === 's' || currentEl.closest('.scene-break')) bType = "S";
-  } else {
-      const hMatch = text.match(/<h([1-6])/i);
-      if (hMatch) bType = "H" + hMatch[1];
       else if (/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) bType = "Img";
       else if (/<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
   }
 
-  let cleanText = stripHTML(text);
+  const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
+  let cleanText = text.replace(validTags, '').trim();
   if (text.endsWith('\n')) cleanText += '\n'; 
+
+  // 🌟 THE IMAGE HEADER RESCUE INTERCEPTOR 🌟
+  let rescuedTitle = null;
+  if (cleanText.trim() === "" && bType.startsWith("H")) {
+      let sentenceId = null;
+      let origId = null;
+      if (currentEl) {
+          sentenceId = currentEl.getAttribute('id');
+          origId = currentEl.getAttribute('data-orig-id');
+      } else {
+          const idMatch = text.match(/id=['"]([^'"]+)['"]/);
+          if (idMatch) sentenceId = idMatch[1];
+          const origMatch = text.match(/data-orig-id=['"]([^'"]+)['"]/);
+          if (origMatch) origId = origMatch[1];
+      }
+
+      if ((sentenceId || origId) && state.tocMap) {
+          const matchedToc = state.tocMap.find(t => t.target_tts_id === sentenceId || t.id === sentenceId || (origId && (t.target_tts_id === origId || t.id === origId)));
+          if (matchedToc && matchedToc.title) {
+              rescuedTitle = matchedToc.title;
+              cleanText = rescuedTitle;
+          }
+      }
+      
+      // If it failed to rescue, downgrade it to an image/silence so the API doesn't crash on empty text
+      if (!rescuedTitle) {
+          bType = (/<img|<svg/i.test(text) || (currentEl && currentEl.querySelector('img, svg'))) ? "Img" : "S";
+      }
+  }
 
   if (bType === "Img" && cleanText.trim() === "") cleanText = "Image.";
   if (bType === "S" && cleanText.trim() === "") cleanText = "•••";
 
   let displayChars = cleanText.trim();
-  if (bType === "Img") {
+  if (rescuedTitle) {
+      displayChars = rescuedTitle;
+  } else if (bType === "Img") {
       displayChars = "🖼️ [Viewing Image]";
   } else if (bType === "S" && currentEl) {
       displayChars = currentEl.textContent.trim() || cleanText.trim() || "•••";
@@ -372,6 +406,18 @@ export function togglePlayback() {
 }
 
 export async function jumpToSentence(i) {
+  // 🌟 THE PHANTOM IMAGE ROUTER: Redirect clicks and arrow keys from duplicate images to their parent header
+  if (state.sentenceElements && state.sentenceElements[i]) {
+    const el = state.sentenceElements[i];
+    if (el.tagName.toLowerCase() === 'img' && el.closest('h1, h2, h3, h4, h5, h6')) {
+        const parentH = el.closest('h1, h2, h3, h4, h5, h6');
+        const hIndex = state.sentenceElements.indexOf(parentH);
+        if (hIndex !== -1) {
+            i = hIndex;
+        }
+    }
+  }
+
   // 1. Stop current audio immediately and kill its listeners
   if (state.currentAudioSource) {
     try {
@@ -538,6 +584,11 @@ export async function preCacheNextSentences() {
           nextEl = state.sentenceElements[targetSentenceIndex];
       }
 
+      // 🌟 THE PHANTOM IMAGE CACHE-SKIP: Prevent downloading the duplicate image
+      if (nextEl && nextEl.tagName.toLowerCase() === 'img' && nextEl.closest('h1, h2, h3, h4, h5, h6')) {
+          continue;
+      }
+
       if (nextEl) {
           const hMatch = nextEl.closest('h1, h2, h3, h4, h5, h6');
           if (hMatch) bType = hMatch.tagName.toUpperCase();
@@ -550,9 +601,38 @@ export async function preCacheNextSentences() {
           else if (/<s\b/i.test(nextText) || /class="scene-break"/i.test(nextText)) bType = "S";
       }
 
-      let cleanText = stripHTML(nextText).replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
+      let cleanText = nextText.replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
       if (nextText.endsWith('\n')) cleanText += '\n'; 
   
+      // 🌟 THE IMAGE HEADER RESCUE INTERCEPTOR (PRE-CACHER) 🌟
+      let rescuedTitle = null;
+      if (cleanText.trim() === "" && bType.startsWith("H")) {
+          let sentenceId = null;
+          let origId = null;
+          if (nextEl) {
+              sentenceId = nextEl.getAttribute('id');
+              origId = nextEl.getAttribute('data-orig-id');
+          } else {
+              const idMatch = nextText.match(/id=['"]([^'"]+)['"]/);
+              if (idMatch) sentenceId = idMatch[1];
+              const origMatch = nextText.match(/data-orig-id=['"]([^'"]+)['"]/);
+              if (origMatch) origId = origMatch[1];
+          }
+
+          if ((sentenceId || origId) && state.tocMap) {
+              const matchedToc = state.tocMap.find(t => t.target_tts_id === sentenceId || t.id === sentenceId || (origId && (t.target_tts_id === origId || t.id === origId)));
+              if (matchedToc && matchedToc.title) {
+                  rescuedTitle = matchedToc.title;
+                  cleanText = rescuedTitle;
+              }
+          }
+          
+          if (!rescuedTitle) {
+              bType = (/<img|<svg/i.test(nextText) || (nextEl && nextEl.querySelector('img, svg'))) ? "Img" : "S";
+          }
+      }
+
       const hasNarrativeText = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(cleanText);
       
       if (bType === "N" && cleanText.trim().length < 2 && !hasNarrativeText) continue;

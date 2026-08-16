@@ -155,7 +155,9 @@ function selectExportFormat() {
             let tasks = [];
             
             if (isSingleMode && selectedSingleIndex !== null) {
-                tasks.push({ format, startPage, endPage, fileLabel: tocItems[selectedSingleIndex].title });
+                let startTtsId = tocItems[selectedSingleIndex].target_tts_id || null;
+                let endTtsId = tocItems[selectedSingleIndex + 1] ? (tocItems[selectedSingleIndex + 1].target_tts_id || null) : null;
+                tasks.push({ format, startPage, endPage, startTtsId, endTtsId, fileLabel: tocItems[selectedSingleIndex].title });
             } else if (!isSingleMode && startIndex !== null && endIndex !== null) {
                 if (isSeparateMode) {
                     // SEPARATE MODE: Auto-slice the range into multiple individual tasks
@@ -164,19 +166,22 @@ function selectExportFormat() {
                         let sPage = tocItems[i].page_index;
                         let ePage = tocItems[i+1] ? tocItems[i+1].page_index : maxPage;
                         if (sPage >= ePage) ePage = sPage + 1;
-                        tasks.push({ format, startPage: sPage, endPage: ePage, fileLabel: tocItems[i].title });
+                        let startTtsId = tocItems[i].target_tts_id || null;
+                        let endTtsId = tocItems[i+1] ? (tocItems[i+1].target_tts_id || null) : null;
+                        tasks.push({ format, startPage: sPage, endPage: ePage, startTtsId, endTtsId, fileLabel: tocItems[i].title });
                     }
                 } else {
                     // COMBINED MODE: One massive file
                     // 🌟 FIX: Calculate the true end page by looking at the start of the chapter AFTER the selection
                     let trueEndPage = tocItems[endIndex + 1] ? tocItems[endIndex + 1].page_index : maxPage;
                     if (startPage >= trueEndPage) trueEndPage = startPage + 1;
-                    
-                    tasks.push({ format, startPage, endPage: trueEndPage, fileLabel: `${tocItems[startIndex].title} - ${tocItems[endIndex].title}` });
+                    let startTtsId = tocItems[startIndex].target_tts_id || null;
+                    let endTtsId = tocItems[endIndex + 1] ? (tocItems[endIndex + 1].target_tts_id || null) : null;
+                    tasks.push({ format, startPage, endPage: trueEndPage, startTtsId, endTtsId, fileLabel: `${tocItems[startIndex].title} - ${tocItems[endIndex].title}` });
                 }
             } else {
                 // FULL BOOK
-                tasks.push({ format, startPage: null, endPage: null, fileLabel: "Full Book" });
+                tasks.push({ format, startPage: null, endPage: null, startTtsId: null, endTtsId: null, fileLabel: "Full Book" });
             }
             return tasks;
         };
@@ -190,9 +195,17 @@ function selectExportFormat() {
             } else {
                 rangeStr = `the entire document`;
             }
-            return confirm(`This will export ${rangeStr} to ${format.toUpperCase()}.\n\nContinue?`);
+            
+            let msg = `This will export ${rangeStr} to ${format.toUpperCase()}.\n\n`;
+            
+            // STRICT HARDWARE CHECK: Only show clock warning if ONNX Runtime is actively firing CUDA kernels.
+            if (state.activeHardware === "gpu") {
+                msg += "[GPU WARNING]\nExtreme GPU clock boost during export may crash app.\nIf crash occurs, lock GPU core clock to base/minimum frequency using MSI Afterburner, ASUS GPU Tweak, EVGA Precision, etc.\n\n";
+            }
+            msg += "Continue?";
+            
+            return confirm(msg);
         };
-
         const doClearRange = () => {
             startPage = null; endPage = null; startIndex = null; endIndex = null; selectedSingleIndex = null;
             renderExportToc();
@@ -311,6 +324,8 @@ export async function startExport() {
                     format: task.format,
                     start_page: task.startPage,
                     end_page: task.endPage,
+                    start_tts_id: task.startTtsId,
+                    end_tts_id: task.endTtsId,
                     pause_settings: state.pauseSettings,
                     behavior_settings: state.behaviorSettings,
                     file_label: task.fileLabel

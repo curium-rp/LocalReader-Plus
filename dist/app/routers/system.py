@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-from ..state import audio_cache, kokoro, system_status, PatchedKokoro
+from ..state import kokoro, system_status, PatchedKokoro
 from ..utils import safe_save_json
 from ..config import base_dir, settings_file, get_app_anchored_path
 import json
@@ -18,7 +18,7 @@ try:
         check_model_exists,
         get_available_models,
     )
-    from logic.audio_cache import AudioCache
+
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from downloader import (
@@ -107,7 +107,9 @@ def load_engine_logic(requested_mode=None):
                 print(" -> [WARNING] No active GPU execution provider available. Fallback to CPU path.")
                 actual_mode = "cpu"
 
-        print(f"[ENGINE] Initializing {actual_mode.upper()} model...")
+        # Record EXACTLY what hardware we ended up on (CUDA vs RAM)
+        system_status["active_hardware"] = actual_mode 
+        print(f"[ENGINE] Initializing on Hardware: {actual_mode.upper()}...")
 
         if actual_mode == "gpu":
             available_ort_providers = ort.get_available_providers()
@@ -116,11 +118,13 @@ def load_engine_logic(requested_mode=None):
             for p in getattr(state_module, "providers", []):
                 if p in available_ort_providers:
                     if p == "CUDAExecutionProvider":
-                        # Set HEURISTIC for minimal VRAM overhead and fast initialization
                         custom_providers.append(("CUDAExecutionProvider", {
-                            "device_id": 0, 
-                            "cudnn_conv_algo_search": "HEURISTIC",
-                            "arena_extend_strategy": "kSameAsRequested"
+                            "device_id": 0,
+                            "cudnn_conv_algo_search": "DEFAULT",
+                            "arena_extend_strategy": "kSameAsRequested",
+                            "cudnn_conv_use_max_workspace": "0",
+                            "do_copy_in_default_stream": "1",
+                            "has_user_compute_stream": "0"
                         }))
                     else:
                         custom_providers.append(p)
@@ -137,11 +141,13 @@ def load_engine_logic(requested_mode=None):
                         sess_options = ort.SessionOptions()
                         kwargs['sess_options'] = sess_options
                     
-                    # Prevent MEMORY LEAK 
+                    # Minimal single-thread strict allocation config
                     kwargs['sess_options'].enable_cpu_mem_arena = False
-                    kwargs['sess_options'].enable_mem_pattern = False 
-                    
-                    kwargs['sess_options'].graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+                    kwargs['sess_options'].enable_mem_pattern = False
+                    kwargs['sess_options'].execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                    kwargs['sess_options'].intra_op_num_threads = 1
+                    kwargs['sess_options'].inter_op_num_threads = 1
+                    kwargs['sess_options'].graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
                     
                     return original_session(*args, **kwargs)
                 
@@ -191,13 +197,16 @@ async def get_status():
 
     import app.state as state_module
 
+    active_mode = system_status.get("active_mode", current_engine_mode)
+
     return {
         "model_loaded": state_module.kokoro is not None,
         "is_loading": system_status["is_loading"],
         "is_downloading": system_status["is_downloading"],
         "last_error": system_status["last_error"],
         "voices": state_module.kokoro.get_voices() if state_module.kokoro else [],
-        "engine_mode": current_engine_mode,
+        "engine_mode": current_engine_mode, # The selected model (FP32/INT8)
+        "active_hardware": system_status.get("active_hardware", "cpu"), # The actual execution unit
         "available_models": available_models,
     }
 

@@ -22,14 +22,10 @@ def get_app_anchored_path(relative_path: str) -> Path:
 base_dir = Path(__file__).parent.absolute()
 userdata_dir = get_app_anchored_path("userdata")
 content_dir = userdata_dir / "content"
-cache_db_path = userdata_dir / "audio_cache.db"
 
 # File paths
 settings_file = userdata_dir / "settings.json"
 library_file = userdata_dir / "library.json"
-
-# Settings
-MAX_CACHE_SIZE_MB = 200
 
 # Ensure directories exist
 try:

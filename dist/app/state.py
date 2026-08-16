@@ -5,18 +5,8 @@ import numpy as np
 import sys
 from typing import Optional, Dict
 from kokoro_onnx import Kokoro, MAX_PHONEME_LENGTH, SAMPLE_RATE
-from .config import cache_db_path, MAX_CACHE_SIZE_MB, base_dir
-
-# Import AudioCache
-try:
-    # Standard import when launched via dist/main.py
-    from app.logic.audio_cache import AudioCache
-except ImportError:
-    # Fallback import if launched directly
-    from logic.audio_cache import AudioCache
 
 # --- Global State Instances ---
-audio_cache = AudioCache(cache_db_path, max_size_mb=MAX_CACHE_SIZE_MB)
 kokoro = None  # The TTS engine instance
 
 system_status = {"is_loading": False, "last_error": None, "is_downloading": False}

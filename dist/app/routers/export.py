@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, FileResponse
 from ..state import export_status, ffmpeg_status, kokoro
 from ..config import content_dir, library_file, userdata_dir, base_dir
@@ -94,10 +94,14 @@ async def cancel_ffmpeg_download():
 
 
 @router.post("/api/export/audio")
-async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks):
+async def export_audio(request: ExportRequest, raw_request: Request, background_tasks: BackgroundTasks):
     global export_status
     if export_status["is_exporting"]:
         return JSONResponse({"error": "Export already in progress"}, status_code=409)
+        
+    raw_data = await raw_request.json()
+    start_tts_id = raw_data.get("start_tts_id")
+    end_tts_id = raw_data.get("end_tts_id")
 
     import app.state as state_module
     if state_module.kokoro is None:
@@ -145,10 +149,9 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                 library = json.load(f)
 
             doc_item = next((item for item in library if item.get("id") == request.doc_id), None)
-            if not doc_item:
-                export_status["error"] = "Document metadata not found"
-                export_status["is_exporting"] = False
-                return
+            
+            # 🌟 Extract the TOC Map for Header Rescues
+            toc_map = doc_data.get("toc_map", [])
 
             # 2. Slice Pages based on UI Selection
             pages_list = doc_data.get("pages", [])
@@ -165,13 +168,35 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             from bs4 import BeautifulSoup
             elements_to_process = []
             
+            is_recording = not bool(start_tts_id)
+            
             for page in target_pages:
                 soup = BeautifulSoup(page, 'html.parser')
+                reached_end = False
                 
                 # Handle new structured HTML format
                 structured_elements = soup.find_all(['n', 's', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
                 if structured_elements:
                     for el in structured_elements:
+                        # 🌟 TOC ID MATCHING: Start and Stop recording dynamically
+                        el_id = el.get('id')
+                        orig_id = el.get('data-orig-id')
+                        if not el_id:
+                            child_n = el.find('n', id=True)
+                            if child_n: 
+                                el_id = child_n.get('id')
+                                if not orig_id: orig_id = child_n.get('data-orig-id')
+                            
+                        if not is_recording and start_tts_id and el_id == start_tts_id:
+                            is_recording = True
+                            
+                        if is_recording and end_tts_id and el_id == end_tts_id:
+                            reached_end = True
+                            break
+                            
+                        if not is_recording:
+                            continue
+                            
                         b_type = "N"
                         clean_text = ""
                         
@@ -181,7 +206,19 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                                 continue # Skip, let the child <n> tag handle it
                             b_type = el.name.upper()
                             clean_text = el.get_text(strip=True)
+                            
+                            # 🌟 THE EXPORT HEADER RESCUE INTERCEPTOR 🌟
+                            if not clean_text:
+                                search_ids = [x for x in [el_id, orig_id] if x]
+                                matched_toc = next((t for t in toc_map if (t.get("target_tts_id") and t.get("target_tts_id") in search_ids) or (t.get("id") and t.get("id") in search_ids)), None)
+                                if matched_toc and matched_toc.get("title"):
+                                    clean_text = matched_toc["title"]
+                                    
                         elif el.name == 'img':
+                            # 🌟 THE EXPORT PHANTOM SKIP: Ignore duplicate images inside headers
+                            if el.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                                continue
+                                
                             if 'epub-image' in el.get('class', []):
                                 b_type = "Img"
                                 clean_text = "Image."
@@ -196,6 +233,15 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                                 b_type = h_parent.name.upper()
                             raw_text = el.get_text(strip=True)
                             clean_text = re.sub(r'<[^>]+>', '', raw_text).strip()
+                            
+                            # 🌟 THE EXPORT HEADER RESCUE INTERCEPTOR (FOR N TAGS) 🌟
+                            if not clean_text and h_parent:
+                                h_id = h_parent.get('id')
+                                h_orig = h_parent.get('data-orig-id')
+                                search_ids = [x for x in [el_id, orig_id, h_id, h_orig] if x]
+                                matched_toc = next((t for t in toc_map if (t.get("target_tts_id") and t.get("target_tts_id") in search_ids) or (t.get("id") and t.get("id") in search_ids)), None)
+                                if matched_toc and matched_toc.get("title"):
+                                    clean_text = matched_toc["title"]
                         
                         if clean_text or b_type in ["Img", "S"]:
                             elements_to_process.append({"text": clean_text, "b_type": b_type})
@@ -203,20 +249,50 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                     # Strict Raw Fallback in case of formatting failure
                     lines = [p.strip() for p in page.split("\n") if p.strip()]
                     for line in lines:
+                        match_id = re.search(r'id=["\']([^"\']+)["\']', line)
+                        el_id = match_id.group(1) if match_id else None
+                        match_orig = re.search(r'data-orig-id=["\']([^"\']+)["\']', line)
+                        orig_id = match_orig.group(1) if match_orig else None
+                        
+                        if not is_recording and start_tts_id and el_id == start_tts_id:
+                            is_recording = True
+                            
+                        if is_recording and end_tts_id and el_id == end_tts_id:
+                            reached_end = True
+                            break
+                            
+                        if not is_recording:
+                            continue
+                            
                         b_type = "N"
                         if line.startswith("<h") and re.search(r'<h([1-6])', line, re.IGNORECASE):
                             match = re.search(r'<h([1-6])', line, re.IGNORECASE)
                             b_type = f"H{match.group(1)}"
+                            clean_text = re.sub(r'<[^>]+>', '', line).strip()
+                            
+                            # 🌟 FALLBACK EXPORT HEADER RESCUE 🌟
+                            if not clean_text:
+                                search_ids = [x for x in [el_id, orig_id] if x]
+                                matched_toc = next((t for t in toc_map if (t.get("target_tts_id") and t.get("target_tts_id") in search_ids) or (t.get("id") and t.get("id") in search_ids)), None)
+                                if matched_toc and matched_toc.get("title"):
+                                    clean_text = matched_toc["title"]
                         elif "<img" in line.lower():
+                            # 🌟 FALLBACK EXPORT PHANTOM SKIP 🌟
+                            if re.search(r'<h[1-6][^>]*>.*?<img', line, re.IGNORECASE):
+                                continue
                             b_type = "Img"
-                            line = "Image."
+                            clean_text = "Image."
                         elif "<s>" in line.lower() or "scene-break" in line.lower():
                             b_type = "S"
-                            line = "..."
+                            clean_text = "..."
+                        else:
+                            clean_text = re.sub(r'<[^>]+>', '', line).strip()
                         
-                        clean_text = re.sub(r'<[^>]+>', '', line).strip()
                         if clean_text or b_type in ["Img", "S"]:
                             elements_to_process.append({"text": clean_text, "b_type": b_type})
+
+                if reached_end:
+                    break
 
             export_status["total"] = len(elements_to_process)
             print(f"[Export] Successfully extracted {len(elements_to_process)} elements to process.")
@@ -280,16 +356,6 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                 try:
                     export_engine = getattr(state_module, "kokoro_export", state_module.kokoro)
                     
-                    # Apply pronunciation fixes
-                    try:
-                        text_norm = fix_special_formats(raw_text, main_voice_lang)
-                        text_norm = apply_custom_pronunciations(text_norm, rules_data, request.ignore_list, main_voice_lang)
-                    except Exception:
-                        text_norm = raw_text
-
-                    # Apply Polyglot Routing
-                    polyglot_segments = smart_polyglot_split(text_norm, request.voice, get_language_from_voice)
-
                     # ==========================================
                     # 🌟 SHIELD & STRUCTURAL EXTRACTOR
                     # ==========================================
@@ -299,8 +365,18 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                         structural_pause_ms = int(pause_match.group(1))
                         raw_text = raw_text.replace(pause_match.group(0), "")
 
-                    # Apply TTS typographic shielding
+                    # Apply TTS typographic shielding BEFORE normalizers
                     raw_text = sanitize_typography_for_engine(raw_text)
+
+                    # Apply pronunciation fixes
+                    try:
+                        text_norm = fix_special_formats(raw_text, main_voice_lang)
+                        text_norm = apply_custom_pronunciations(text_norm, rules_data, request.ignore_list, main_voice_lang)
+                    except Exception:
+                        text_norm = raw_text
+
+                    # Apply Polyglot Routing
+                    polyglot_segments = smart_polyglot_split(text_norm, request.voice, get_language_from_voice)
 
                     # ==========================================
                     # 🌟 GOLDEN RATIO BEHAVIOR ENGINE
@@ -499,6 +575,7 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                 safe_workers = min(6, total_cores)
                 batch_size = safe_workers * 4
                 print(f"[Export] GPU Mode:  Workers: {safe_workers} | Batch Size: {batch_size}")
+                print("\033[93m[Export WARNING] If export crashes or app closes, manually lock GPU core clock to minimum (via MSI Afterburner or nvidia-smi) to stabilize VRAM voltage.\033[0m")
 
 
             for batch_start in range(0, len(elements_to_process), batch_size):

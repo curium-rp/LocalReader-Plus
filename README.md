@@ -4,7 +4,7 @@
 
 **A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-### 🚨Update June 18, 2026 ##
+### 🚨Update Aug 16, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -20,10 +20,15 @@
 - Python 3.10 - 3.13 (Tested on windows: 3.10 to 3.13 run without any issue)
 - For python 3.14 it can run but may have memory leak when run model on CPU, be carefull, no issue with GPU.
 
-**High Quality (GPU)** mean Kokoro model_FP32 > Piority load GPU /fallback/> CPU (nealy run in real times in AMD Ryzen 4800HS slow load when started play) -_Recommended used FP32_
+### Engine Modes
 
-
-**High Performance (CPU)** mean Kokoro model_int8 > Priority load CPU
+*   **High Quality (FP32)**: Load `kokoro.onnx`.
+    *   **Priority**: Load CUDA Execution Provider (GPU).
+    *   **Fallback**: If CUDA fail or missing, run CPU Execution Provider (RAM).
+    *   **Performance**: CPU fallback run near real-time (tested on AMD Ryzen 4800HS, Initial load slower before play start, nearly run in realtime). Recommended for maximum audio quality.
+*   **High Performance (INT8)**: Load `kokoro.int8.onnx`.
+    *   **Priority**: Load CPU Execution Provider (RAM).
+    *   **Performance**: Quantized format. Fast load. High speed.
 
 >Exe. setup if choose ONNXRUNTIME CPU, High Quality mode will run on CPU
 

@@ -286,12 +286,12 @@ export function updateEngineStatusUI(status, selectedModelExists) {
 
     if (gpuStatusEl) {
         const isGpuReady = status.available_models?.gpu;
-        gpuStatusEl.innerHTML = `GPU: <span class="${isGpuReady ? 'text-green-400' : 'text-zinc-600'}">${isGpuReady ? '✓' : '✗'}</span>`;
+        gpuStatusEl.innerHTML = `FP32: <span class="${isGpuReady ? 'text-green-400' : 'text-zinc-600'}">${isGpuReady ? '✓' : '✗'}</span>`;
     }
 
     if (cpuStatusEl) {
         const isCpuReady = status.available_models?.cpu;
-        cpuStatusEl.innerHTML = `CPU: <span class="${isCpuReady ? 'text-green-400' : 'text-zinc-600'}">${isCpuReady ? '✓' : '✗'}</span>`;
+        cpuStatusEl.innerHTML = `INT8: <span class="${isCpuReady ? 'text-green-400' : 'text-zinc-600'}">${isCpuReady ? '✓' : '✗'}</span>`;
     }
 
     if (status.is_downloading) {
@@ -326,4 +326,169 @@ export function updateEngineStatusUI(status, selectedModelExists) {
         }
         renderIcons();
     }
+}
+//Popup footnote UI
+export function showFootnoteModal(htmlContent, onJumpCallback) {
+    let modal = document.getElementById('footnoteModal');
+
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'footnoteModal';
+        modal.style.cssText = `
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(6px);
+            padding: clamp(16px, 2vw, 32px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+        `;
+
+        modal.innerHTML = `
+            <div style="
+                background: #121214;
+                border: 1px solid #3f3f46;
+                border-radius: 12px;
+                width: min(92vw, 850px);
+                min-height: 200px;
+                max-height: 88vh;
+                display: flex;
+                flex-direction: column;
+                box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+                transform: scale(0.97);
+                transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            ">
+                <div style="
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: clamp(12px, 1.5vh, 18px) clamp(16px, 2.5vw, 28px);
+                    border-bottom: 1px solid #27272a;
+                    background: #18181b;
+                    border-radius: 12px 12px 0 0;
+                    flex-shrink: 0;
+                ">
+                    <span style="
+                        font-size: clamp(11px, 1vw, 13px);
+                        font-weight: 600;
+                        color: #a1a1aa;
+                        letter-spacing: 0.08em;
+                        text-transform: uppercase;
+                    ">Reference Note</span>
+                    
+                    <div style="display: flex; gap: clamp(8px, 1vw, 16px); align-items: center;">
+                        <button id="jumpFootnoteBtn" style="
+                            background: #2563eb;
+                            color: white;
+                            border: none;
+                            border-radius: 6px;
+                            padding: clamp(6px, 1vh, 8px) clamp(12px, 1.5vw, 18px);
+                            font-size: clamp(11px, 1vw, 13px);
+                            font-weight: bold;
+                            cursor: pointer;
+                            transition: background 0.2s;
+                        ">Jump to Note ⏎</button>
+                        
+                        <button id="closeFootnoteBtn" style="
+                            background: none;
+                            border: none;
+                            color: #71717a;
+                            font-size: clamp(18px, 2vw, 26px);
+                            line-height: 1;
+                            cursor: pointer;
+                            padding: 2px 6px;
+                            border-radius: 6px;
+                        ">&times;</button>
+                    </div>
+                </div>
+
+                <div id="footnoteModalContent" style="
+                    padding: clamp(20px, 3.5vh, 40px) clamp(24px, 4.5vw, 56px);
+                    overflow-y: auto;
+                    color: #e4e4e7;
+                    font-size: clamp(15px, 1.15vw, 24.5px);
+                    line-height: 1.75;
+                    font-weight: 400;
+                    overscroll-behavior: contain;
+                "></div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+    }
+    
+    window.currentFootnoteJump = onJumpCallback;
+    
+    const close = () => {
+        modal.style.opacity = '0';
+        modal.style.pointerEvents = 'none';
+        modal.querySelector('div').style.transform = 'scale(0.97)';
+    };
+
+    const handleKey = (e) => {
+        if (modal.style.opacity !== '1') return;
+        if (e.key === 'Enter' && window.currentFootnoteJump) {
+            e.preventDefault();
+            window.currentFootnoteJump();
+            close();
+        } else if (e.key === 'Escape') {
+            close();
+        }
+    };
+    
+    if (window._footnoteKeyHandler) window.removeEventListener('keydown', window._footnoteKeyHandler);
+    window._footnoteKeyHandler = handleKey;
+    window.addEventListener('keydown', handleKey);
+
+    document.getElementById('jumpFootnoteBtn').onclick = () => {
+        if (window.currentFootnoteJump) window.currentFootnoteJump();
+        close();
+    };
+    document.getElementById('closeFootnoteBtn').onclick = close;
+    modal.onclick = (e) => { if (e.target === modal) close(); };
+
+    const content = document.getElementById('footnoteModalContent');
+    content.innerHTML = htmlContent;
+
+    const charCount = content.textContent.length;
+    if (charCount < 100) {
+        content.style.fontSize = 'clamp(20px, 1.5vw, 24px)';
+        content.style.lineHeight = '1.6';
+    } else if (charCount > 500) {
+        content.style.fontSize = 'clamp(16px, 1vw, 20px)';
+        content.style.lineHeight = '1.5';
+    } else {
+        content.style.fontSize = 'clamp(15px, 1.15vw, 17.5px)';
+        content.style.lineHeight = '1.75';
+    }
+
+    content.querySelectorAll('p').forEach(p => {
+        p.style.margin = '0 0 1.25em 0';
+    });
+
+    content.querySelectorAll('a').forEach(a => {
+        const text = a.textContent.trim();
+        const cleanText = text.replace(/[\[\]\(\)]/g, '');
+        
+        if (text === '↩' || text === '↑' || text.toLowerCase() === 'return' || a.getAttribute('epub:type') === 'backlink') {
+            a.remove();
+        } else if (cleanText.length <= 3 && /^\d+$/.test(cleanText)) {
+            const span = document.createElement('span');
+            span.style.cssText = 'color:#60a5fa;font-weight:bold;margin-right:6px;';
+            span.textContent = `[${cleanText}]`;
+            a.replaceWith(span);
+        } else {
+            a.removeAttribute('href');
+            a.style.cssText = 'color:#60a5fa;text-decoration:underline;cursor:text;';
+        }
+    });
+
+    modal.style.opacity = '1';
+    modal.style.pointerEvents = 'auto';
+    modal.querySelector('div').style.transform = 'scale(1)';
 }

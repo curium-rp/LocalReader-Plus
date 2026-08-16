@@ -2,9 +2,10 @@ import re
 from typing import List, Dict, Any
 from num2words import num2words
 
+# ==========================================
+# 1. DICTIONARIES & MAPS
+# ==========================================
 
-
-# 1. The Stutter Map: Supports 1-3 letter stutters (Digraphs and Blends)
 STUTTER_MAP = {
     'b': 'bih', 'c': 'kih', 'd': 'dih', 'f': 'fih', 'g': 'gih', 'h': 'hih', 
     'j': 'jih', 'k': 'kih', 'l': 'lih', 'm': 'mih', 'n': 'nih', 'p': 'pih', 
@@ -27,14 +28,14 @@ INTERJECTION_MAP = {
     r'tch': 'tisk', 
     r'gah': 'gah',
     r'ngh+': 'ung',       
-    r'n+g+h+': 'ung',         # Catch variations like ngh, nngh
+    r'n+g+h+': 'ung',         
     r'oof+': 'oof', 
     r'ack': 'ack', 
     r'urk': 'erk',
     r'hmph': 'humph', 
-    r'n{2,}h?': 'uhn',        # 🌟 FIX: Forces a nasal hum instead of spelling N-N-N
-    r'm+h+': 'um',            # 🌟 FIX: Forces a hum instead of spelling M-M        
-    r'm+[\-]?p+h+': 'umph',   # Catches Mmph, Mmm-ph, Mmmph
+    r'n{2,}h?': 'uhn',        
+    r'm+h+': 'um',            
+    r'm+[\-]?p+h+': 'umph',   
     r'pff+t?': 'pufft',   
     r'bah': 'bah', 
     r'tsk(?:\-tsk)?': 'tisk, tisk',
@@ -44,44 +45,144 @@ INTERJECTION_MAP = {
     r'phew': 'fyoo', 
     r'whew': 'hweo',
     r'hngh+': 'hung',
-    r'w+a+h+': 'wah',         ## Catches Wah, waah
-    r'b+r{2,}': 'burr',       # Catches brrr, brr
-    r's+h{2,}': 'shush',      # Catches shhh, shh
-    r'p+s+t+': 'pist',        # Catches psst, pst
-    r'z{2,}': 'zuh',          # Catches zzz, zz
-    r'a+w{2,}': 'aw'          # Catches aww, awww
+    r'w+a+h+': 'wah',         
+    r'b+r{2,}': 'burr',       
+    r's+h{2,}': 'shush',      
+    r'p+s+t+': 'pist',        
+    r'z{2,}': 'zuh',          
+    r'a+w{2,}': 'aw'          
 }
 
+# 🌟 THE SHIELD: Exact terms are matched FIRST.
+# can add list word it this map like R18 to Rated 18
 EXACT_STUTTER_MAP = {
-        r'i-i': 'I I',
-        r'i-i-i': 'I I I',
-        r'a-and': 'ah and',
-        r'a-are': 'ah are',
-        r'o-okay': 'oh okay'
+    r"\bi-i\b": "I I",
+    r"\bi-i-i\b": "I I I",
+    r"\ba-and\b": "ah and",
+    r"\ba-are\b": "ah are",
+    r"\bo-okay\b": "oh okay",
+    r"\bs-series\b": "S series",
+    r"\bs-serious\b": "S serious",
+    r"\bR18\b": "Rated 18",
+    r"\ba-arm\b": "A arm",
+    r"\ba-axis\b": "A axis",
+    r"\bb-boy\b": "B boy",
+    r"\bb-ball\b": "B ball",
+    r"\bb-battery\b": "B battery",
+    r"\bc-clamp\b": "C clamp",
+    r"\bc-class\b": "C class",
+    r"\bc-cup\b": "C cup",
+    r"\bc-clef\b": "C clef",
+    r"\bc-channel\b": "C channel",
+    r"\bc-curve\b": "C curve",
+    r"\bd-day\b": "D day",
+    r"\bd-drive\b": "D drive",
+    r"\be-edition\b": "E edition",
+    r"\be-exam\b": "E exam",
+    r"\bf-factor\b": "F factor",
+    r"\bf-frame\b": "F frame",
+    r"\bg-gauge\b": "G gauge",
+    r"\bg-group\b": "G group",
+    r"\bh-hour\b": "H hour",
+    r"\bh-harness\b": "H harness",
+    r"\bm-mode\b": "M mode",
+    r"\bm-matrix\b": "M matrix",
+    r"\bn-number\b": "N number",
+    r"\bn-node\b": "N node",
+    r"\bp-phase\b": "P phase",
+    r"\bp-protein\b": "P protein",
+    r"\bp-port\b": "P port",
+    r"\br-rating\b": "R rating",
+    r"\br-ratio\b": "R ratio",
+    r"\bs-scroll\b": "S scroll",
+    r"\bs-strap\b": "S strap",
+    r"\bt-test\b": "T test",
+    r"\bt-track\b": "T track",
+    r"\bt-tube\b": "T tube",
+    r"\bt-tool\b": "T tool",
+    r"\bv-valve\b": "V valve",
+    r"\bw-waveform\b": "W waveform",
+    r"\ba-rank\b": "A rank"
 }
+
+# ==========================================
+# 2. HELPER FUNCTIONS
+# ==========================================
+
+def process_jp_stutter(match):
+    prefix = match.group(1)
+    name = match.group(2)
+    honorific = match.group(3)
+    
+    vowels = "aeiouAEIOU"
+    vowel_index = -1
+    
+    limit = min(3, len(name))
+    for i in range(limit):
+        if name[i] in vowels:
+            vowel_index = i
+            break
+            
+    if vowel_index != -1:
+        raw_prefix = name[:vowel_index + 1].lower()
+        
+        # 🌟 PHONETIC MAP FOR KOKORO TTS
+        # Forces English G2P to pronounce Japanese Romaji vowels accurately
+        jp_phonetic_fixes = {
+            # -i sounds (Fixes "Mi" -> "My", "Ki" -> "Kai", "Ri" -> "Rye")
+            'mi': 'mee', 'ki': 'kee', 'ni': 'nee', 'hi': 'hee', 
+            'bi': 'bee', 'pi': 'pee', 'ri': 'ree', 'chi': 'chee',
+            'shi': 'shee', 'ji': 'jee', 'zi': 'jee', 'ti': 'tee',
+            
+            # -a sounds (Fixes "Sa" -> "Say", "Ka" -> "Kay")
+            'ma': 'mah', 'ka': 'kah', 'na': 'nah', 'ha': 'hah',
+            'ba': 'bah', 'pa': 'pah', 'ra': 'rah', 'sa': 'sah', 'ta': 'tah',
+            
+            # -e sounds (Fixes "Me" -> "Me", "Se" -> "See")
+            'me': 'meh', 'ke': 'keh', 'ne': 'neh', 'he': 'heh',
+            'be': 'beh', 'pe': 'peh', 're': 'reh', 'se': 'seh', 'te': 'teh',
+            
+            # -o sounds
+            'mo': 'moh', 'ko': 'koh', 'no': 'noh', 'ho': 'hoh',
+            'bo': 'boh', 'po': 'poh', 'ro': 'roh', 'so': 'soh', 'to': 'toh',
+            
+            # -u sounds
+            'mu': 'moo', 'ku': 'koo', 'nu': 'noo', 'hu': 'hoo', 'fu': 'foo',
+            'bu': 'boo', 'pu': 'poo', 'ru': 'roo', 'su': 'soo', 'tsu': 'tsoo'
+        }
+        
+        # Get phonetic override or fall back to raw syllable (e.g. 'yu' stays 'yu')
+        phonetic_prefix = jp_phonetic_fixes.get(raw_prefix, raw_prefix)
+        
+        # Preserve original capitalization
+        if prefix.isupper():
+            phonetic_prefix = phonetic_prefix.capitalize()
+        else:
+            phonetic_prefix = phonetic_prefix.lower()
+            
+        return f"{phonetic_prefix} {name}-{honorific}"
+        
+    return match.group(0)
+
+# ==========================================
+# 3. MASTER NORMALIZATION ENGINE
+# ==========================================
 
 def fix_broken_words(text: str) -> str:
+    """Unified engine that fixes spaces, protects exact words, and processes stutters."""
     if not text:
         return text
 
-    # ==========================================
-    # 🌟 NEW: THE PDF GHOST SPACE MAGNET 🌟
-    # ==========================================
-    # Snaps broken contractions "We ' re" perfectly into "We're"
+    # 1. Ghost Space Cleanups
     text = re.sub(r'([a-zA-Z])\s*([\'’])\s*([a-zA-Z])', r'\1\2\3', text)
-    
-    # Protects plural possessives: Snaps "boys '" back into "boys'"
     text = re.sub(r'([sS])\s+([\'’])(?=\s|$)', r'\1\2', text)
 
-    # 0. Ligatures
     ligatures = {'\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl', '\ufb03': 'ffi', '\ufb04': 'ffl', '\ufb05': 'ft', '\ufb06': 'st', '\u00a0': ' ', '\u2013': '-', '\u2014': '--'}
     for char, rep in ligatures.items(): 
         text = text.replace(char, rep)
 
-    # 1. De-hyphenation 
     text = re.sub(r'(\w+)-\s+(\w+)', r'\1 \2', text)
     
-    # 2. Ghost spaces in common words & Broken PDF Ellipses
     common = [
         (r'\bo\s+ff\b', 'off'), (r'\bo\s+f\b', 'of'), (r'\ba\s+nd\b', 'and'), 
         (r'\bt\s+he\b', 'the'), (r'\bi\s+n\b', 'in'), (r'\bi\s+t\b', 'it'), 
@@ -91,61 +192,69 @@ def fix_broken_words(text: str) -> str:
     for pat, rep in common: 
         text = re.sub(pat, rep, text, flags=re.IGNORECASE)
 
-    # 3. Recursive single letter join 
     old = ""
     while old != text:
         old = text
         text = re.sub(r'(?:^|(?<=\s))([a-zA-Z])\s+([a-zA-Z])(?=\s|$)', r'\1\2', text)
-    
-    # 4.5. Dynamic Stutter Resolution (The Master Pattern Matcher)
+
+    # ==========================================
+    # 🌟 STEP 2: APPLY EXACT STUTTER MAP FIRST (The Shield)
+    # ==========================================
+    # This runs BEFORE the dynamic map. It turns "C-class" into "See class".
+    # Because there is no hyphen left, the dynamic stutter engine ignores it entirely.
+    for pattern, replacement in EXACT_STUTTER_MAP.items():
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # ==========================================
+    # 🌟 STEP 3: JAPANESE HONORIFIC STUTTERS
+    # ==========================================
+    jp_pattern = r"\b([A-Za-z])-([A-Za-z]+)-(san|chan|kun|sama|dono|senpai|dano)\b"
+    text = re.sub(jp_pattern, process_jp_stutter, text, flags=re.IGNORECASE)
+
+    # ==========================================
+    # 🌟 STEP 4: DYNAMIC STUTTER RESOLUTION
+    # ==========================================
     def resolve_stutter(match):
         original_prefix = match.group(1)
         remainder_of_word = match.group(2)
         lookup = original_prefix.lower()
         
-        # 🌟 THE SHIELD: Only applies phonetic stutters if the word starts with that letter!
-        # (This intentionally bypasses 'T-shirt' or 'X-ray' so Kokoro reads them normally).
+        # Only maps if the remainder of the word starts with the stuttered letter
         if lookup in STUTTER_MAP and remainder_of_word.lower().startswith(lookup):
-            
-            # 🌟 KOKORO PHONETIC OVERRIDES: Fixes AI mispronunciation of hard consonants
             kokoro_fixes = {
                 't': 'tuh', 'th': 'thuh', 
                 'w': 'wuh', 'wh': 'wuh',
                 'b': 'buh', 'd': 'duh', 
                 'p': 'puh', 'k': 'kuh', 'c': 'kuh'
             }
-            
-            # Fetch the hard override, or fall back to the standard STUTTER_MAP
             phonetic = kokoro_fixes.get(lookup, STUTTER_MAP[lookup])
-                
-            # Preserve the original capitalization for the AI engine
             phonetic_cased = phonetic.capitalize() if original_prefix[0].isupper() else phonetic
-            
-            # Fast flow execution (Space only, zero commas)
             return f"{phonetic_cased} {remainder_of_word}"
         
-        # If it fails the shield, leave the hyphen completely intact
         return f"{original_prefix}-{remainder_of_word}"
 
-    # 🌟 THE LOOP: Recursively slices through chained stutters
     old_stutter = ""
     while old_stutter != text:
         old_stutter = text
         text = re.sub(r'(?<![a-zA-Z0-9\'])([a-zA-Z]{1,3})[-—–]+([a-zA-Z]+)', resolve_stutter, text)
 
-    # 4.8. Cutoff Words (e.g., "He- ")
-    text = re.sub(r'\b([a-zA-Z]+)[-—–]+(?=\s|$|[.,!?])', r'\1,', text)
+    # ==========================================
+    # 🌟 STEP 5: FINAL CLEANUPS
+    # ==========================================
+    
+    # Repeating characters (e.g., Ewww -> Eww)
+    text = re.sub(r"([A-Za-z])\1{2,}", r"\1\1", text)
+    
+    # Trailing cutoffs (e.g., He- -> He...) for better TTS pauses
+    text = re.sub(r'\b([a-zA-Z]+)[-—–]+(?=\s|$|[.,!?])', r'\1... ', text)
 
-    # 5. Static Interjections (Match Whole Words)
+    # Static Interjections
     for pattern, phonetic_replacement in INTERJECTION_MAP.items():
         text = re.sub(r'\b' + pattern + r'\b', phonetic_replacement, text, flags=re.IGNORECASE)
 
-    # 6. Grammar-Aware Punctuation Cleanup
-    # ONLY targets structural brackets and double-quotes. 
-    # Apostrophes (') are explicitly EXCLUDED to permanently protect possessives (boys').
-    
-    text = re.sub(r'([\"\(\[\{\u201c])\s+', r'\1', text) # Remove spaces AFTER opening quotes/brackets
-    text = re.sub(r'\s+([\"\)\}\]\u201d])', r'\1', text) # Remove spaces BEFORE closing quotes/brackets
+    # Punctuation Cleanup
+    text = re.sub(r'([\"\(\[\{\u201c])\s+', r'\1', text) 
+    text = re.sub(r'\s+([\"\)\}\]\u201d])', r'\1', text) 
     
     return re.sub(r'\s+', ' ', text).strip()
 

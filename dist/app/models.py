@@ -33,7 +33,7 @@ class AppSettings(BaseModel):
     ignoreList: List[str]
     voice_id: Optional[str] = "af_heart"
     speed: Optional[float] = 1.0
-    font_size: Optional[int] = 16
+    font_size: Optional[int] = 18
     header_footer_mode: Optional[str] = "off"
     engine_mode: Optional[str] = "gpu"
     ui_language: Optional[str] = "en"

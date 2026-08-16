@@ -34,7 +34,7 @@ except ImportError:
     from japanese_g2p import pure_japanese_to_romaji
     from chinese_g2p import cleanse_chinese_text 
 
-from ..state import audio_cache, kokoro
+from ..state import kokoro
 from ..models import SynthesisRequest
 from ..utils import get_language_from_voice
 from ..config import base_dir
@@ -187,6 +187,15 @@ def sanitize_typography_for_engine(text: str) -> str:
     # 1. NFKC Normalization: Converts "Full-Width" Asian/English hybrids (Ｈｅｌｌｏ) 
     # and weird ligatures into standard ASCII so Kokoro can read them.
     text = unicodedata.normalize('NFKC', text)
+    
+    # 🌟 IDEMPOTENCY SHIELD: Protect internal tokens if function is called multiple times
+    text = text.replace('<BYP_COM>', '§§BYP_COM§§').replace('<CAP_COM>', '§§CAP_COM§§')
+    
+    # Destroy raw < and > so they don't crash Kokoro's grapheme parser or interfere with our shields later
+    text = text.replace('<', '').replace('>', '')
+    
+    # Restore internal shields
+    text = text.replace('§§BYP_COM§§', '<BYP_COM>').replace('§§CAP_COM§§', '<CAP_COM>')
 
     # 2. Vaporize Invisible Formatting (Zero-Width Spaces, BOMs, LRM/RLM markers)
     # These characters are invisible but cause Kokoro to output heavy, awkward pauses.
@@ -376,18 +385,6 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
         return np.concatenate(final_segments), sample_rate
     return create_anti_skip_silence(100, sample_rate), sample_rate
 
-def generate_cache_key(text, voice, speed, pause_settings, rules, ignore_list, behavior_settings=None, behavior_type="N"):
-    lang = get_language_from_voice(voice)
-    cache_data = {
-        "text": text, "voice": voice, "language": lang, "speed": speed,
-        "pause_settings": pause_settings,
-        "rules": [str(r) for r in rules],
-        "ignore_list": sorted(ignore_list),
-        "behavior_settings": behavior_settings or {},
-        "behavior_type": behavior_type
-    }
-    cache_string = json.dumps(cache_data, sort_keys=True)
-    return hashlib.md5(cache_string.encode("utf-8")).hexdigest()
 
 @router.get("/api/voices/available")
 async def get_voices():
@@ -433,10 +430,6 @@ async def get_locale(lang: str):
 
 # Toggle this to True to debug memory leaks in the TTS pipeline
 ENABLE_TTS_DEBUG_LOG = False
-# Master toggle for SSD Audio Caching
-ENABLE_AUDIO_CACHE = False
-
-@router.post("/api/synthesize")
 
 @router.post("/api/synthesize")
 async def synthesize(request: SynthesisRequest):
@@ -464,23 +457,33 @@ async def synthesize(request: SynthesisRequest):
 
     original_text = request.text
     
+    import html
+    # 1. Unescape entities so &lt; and &gt; revert to < and >
+    safe_text = html.unescape(original_text)
+    
     structural_pause_ms = 0
-    pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", original_text)
+    pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", safe_text)
     if pause_match:
         structural_pause_ms = int(pause_match.group(1))
-        original_text = original_text.replace(pause_match.group(0), "")
+        safe_text = safe_text.replace(pause_match.group(0), "")
 
-    #  Convert structural HTML closures to real newlines BEFORE stripping
-    safe_text = re.sub(r'<(br|/p|/div|/h[1-6])[^>]*>', '\n', original_text, flags=re.IGNORECASE)
+    # 2. Extract structural breaks before vaporizing tags (ADDED hr, tr, li)
+    safe_text = re.sub(r'<(br|/p|/div|/h[1-6]|hr|/td|/th|/li|/tr)[^>]*>', ' \n ', safe_text, flags=re.IGNORECASE)
     
-    safe_text = re.sub(r'<img[^>]*>', '', safe_text, flags=re.IGNORECASE)
-    safe_text = re.sub(r'<[^>]+>', '', safe_text) 
+    # 3. The Ultimate CSS/Class Burner: Scan explicit HTML tags and burn them to ash.
+    # \b ensures it matches <hr class="transition"/> but safely ignores <And the winner...>
+    valid_tags = r'/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)'
+    safe_text = re.sub(rf'<{valid_tags}\b[^>]*>', ' ', safe_text, flags=re.IGNORECASE)
+    
+    # 4. Convert surviving dialogue brackets (Telepathy/System) into standard quotes
+    safe_text = safe_text.replace('<', '“').replace('>', '”')
+    
     safe_text = re.sub(r'\[(?:IMAGE|IMG|VIDEO).*?\]', '', safe_text, flags=re.IGNORECASE)
     
     safe_text = sanitize_typography_for_engine(safe_text)
     
     request.text = safe_text
-    original_text = safe_text 
+    original_text = safe_text
 
     try:
         voices = state_module.kokoro.get_voices()
@@ -557,17 +560,11 @@ async def synthesize(request: SynthesisRequest):
             else:
                 behavior_end_pause_ms = int(b_settings.get("N", 500))
 
-        cache_key = generate_cache_key(original_text, selected_voice, float(request.speed or 1.0), pause_settings, request.rules, request.ignore_list, b_settings, b_type)
-        
-        if ENABLE_AUDIO_CACHE:
-            cached_audio = audio_cache.get(cache_key)
-            if cached_audio:
-                return StreamingResponse(io.BytesIO(cached_audio), media_type="audio/wav", headers={"Content-Length": str(len(cached_audio))})
-
         punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
         has_punctuation = any(p in text for p in punctuation_chars) or "<CAP_COM>" in text
 
-        if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text):
+        # 🌟 IMAGE & SCENE BREAK BYPASS: Do not send placeholders like "Image." or "■" to Kokoro. Generate pure silence.
+        if b_type in ["Img", "S"] or not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text):
             total_pause = structural_pause_ms + behavior_end_pause_ms + behavior_front_pause_ms
             if total_pause <= 0: total_pause = 100
             samples = create_anti_skip_silence(total_pause, 24000)
@@ -681,9 +678,6 @@ async def synthesize(request: SynthesisRequest):
         sf.write(buffer, samples.flatten(), sample_rate, format="WAV", subtype="FLOAT")
         audio_bytes = buffer.getvalue()
         
-        if ENABLE_AUDIO_CACHE:
-            audio_cache.put(cache_key, audio_bytes)
-
         if ENABLE_TTS_DEBUG_LOG:
             import tracemalloc
             from datetime import datetime
