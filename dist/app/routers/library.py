@@ -264,10 +264,15 @@ def master_sentence_splitter(text: str, start_idx: int = 0):
             .replace('<i></i>', '')
             .replace('<u></u>', '')
             .replace('<del></del>', '')
-        )
+        ).strip()
 
-        html_out += f'<n id="s_{current_idx}">{clean_chunk}</n> '
-        current_idx += 1
+        visible_text = re.sub(r'<[^>]+>', '', clean_chunk)
+        visible_text = re.sub(r'[\s\u200b\u200c\u200d\ufeff]+', '', visible_text)
+        
+        if visible_text:
+            html_out += f'<n id="s_{current_idx}">{clean_chunk}</n> '
+            current_idx += 1
+            
         buffer = ""
 
     return html_out.strip(), current_idx
@@ -908,6 +913,8 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                         new_html = new_html.replace(s_id, s_html)
                     block.clear()
                     block.append(BeautifulSoup(new_html, 'html.parser'))
+                else:
+                    block.clear()
 
             for block in soup.find_all(['div', 'p', 'figure', 'span']):
                 if not block.get_text(strip=True) and not block.find(['img', 'hr', 'br', 'svg', 'picture', 's', 'n']):
@@ -1250,7 +1257,8 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                         global_sentence_idx += 1
                     else:
                         sentences_html, global_sentence_idx = master_sentence_splitter(block_text, global_sentence_idx)
-                        page_html += f"<p>{sentences_html}</p>"
+                        if sentences_html:
+                            page_html += f"<p>{sentences_html}</p>"
 
                 elif element["type"] == "image":
                     if held_text:
@@ -1308,10 +1316,11 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
 
         if held_text:
             sentences_html, global_sentence_idx = master_sentence_splitter(held_text, global_sentence_idx)
-            if pages:
-                pages[-1] = pages[-1].replace('</div>', f'<p>{sentences_html}</p></div>')
-            else:
-                pages.append(f'<div class="pdf-page"><p>{sentences_html}</p></div>')
+            if sentences_html:
+                if pages:
+                    pages[-1] = pages[-1].replace('</div>', f'<p>{sentences_html}</p></div>')
+                else:
+                    pages.append(f'<div class="pdf-page"><p>{sentences_html}</p></div>')
 
         doc.close()
         temp_pdf.unlink(missing_ok=True)

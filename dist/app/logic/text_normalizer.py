@@ -54,57 +54,38 @@ INTERJECTION_MAP = {
 }
 
 # 🌟 THE SHIELD: Exact terms are matched FIRST.
-# can add list word it this map like R18 to Rated 18
 EXACT_STUTTER_MAP = {
     r"\bi-i\b": "I I",
     r"\bi-i-i\b": "I I I",
-    r"\ba-and\b": "ah and",
-    r"\ba-are\b": "ah are",
-    r"\bo-okay\b": "oh okay",
-    r"\bs-series\b": "S series",
-    r"\bs-serious\b": "S serious",
-    r"\bR18\b": "Rated 18",
-    r"\ba-arm\b": "A arm",
-    r"\ba-axis\b": "A axis",
-    r"\bb-boy\b": "B boy",
-    r"\bb-ball\b": "B ball",
-    r"\bb-battery\b": "B battery",
-    r"\bc-clamp\b": "C clamp",
-    r"\bc-class\b": "C class",
-    r"\bc-cup\b": "C cup",
-    r"\bc-clef\b": "C clef",
-    r"\bc-channel\b": "C channel",
-    r"\bc-curve\b": "C curve",
-    r"\bd-day\b": "D day",
-    r"\bd-drive\b": "D drive",
-    r"\be-edition\b": "E edition",
-    r"\be-exam\b": "E exam",
-    r"\bf-factor\b": "F factor",
-    r"\bf-frame\b": "F frame",
-    r"\bg-gauge\b": "G gauge",
-    r"\bg-group\b": "G group",
-    r"\bh-hour\b": "H hour",
-    r"\bh-harness\b": "H harness",
-    r"\bm-mode\b": "M mode",
-    r"\bm-matrix\b": "M matrix",
-    r"\bn-number\b": "N number",
-    r"\bn-node\b": "N node",
-    r"\bp-phase\b": "P phase",
-    r"\bp-protein\b": "P protein",
-    r"\bp-port\b": "P port",
-    r"\br-rating\b": "R rating",
-    r"\br-ratio\b": "R ratio",
-    r"\bs-scroll\b": "S scroll",
-    r"\bs-strap\b": "S strap",
-    r"\bt-test\b": "T test",
-    r"\bt-track\b": "T track",
-    r"\bt-tube\b": "T tube",
-    r"\bt-tool\b": "T tool",
-    r"\bv-valve\b": "V valve",
-    r"\bw-waveform\b": "W waveform",
-    r"\ba-rank\b": "A rank"
+    r"\bR18\b": "Rated 18"
 }
 
+_space_words = [
+    "s-series", "s-serious", "a-arm", "a-axis", "b-boy", "b-ball", "b-battery", 
+    "c-clamp", "c-class", "c-cup", "c-clef", "c-channel", "c-curve", "d-day", 
+    "d-drive", "e-edition", "e-exam", "f-factor", "f-frame", "g-gauge", "g-group", 
+    "h-hour", "h-harness", "m-mode", "m-matrix", "n-number", "n-node", "p-phase", 
+    "p-protein", "p-port", "r-rating", "r-ratio", "s-scroll", "s-strap", "t-test", 
+    "t-track", "t-tube", "t-tool", "v-valve", "w-waveform", "a-rank", "a-frame", 
+    "a-list", "a-line", "a-side", "a-team", "a-bomb", "a-pillar", "b-side", "b-movie", 
+    "c-section", "e-book", "e-mail", "k-pop", "t-shirt", "u-turn", "v-neck", "x-ray"
+]
+for w in _space_words:
+    EXACT_STUTTER_MAP[rf"\b{w}\b"] = w.replace("-", " ")
+
+_phonetic_stutters = {
+    "a-and": "uh and", "a-as": "uh as", "a-at": "uh at", "a-an": "uh an", "a-am": "uh am", 
+    "a-about": "uh about", "a-again": "uh again", "a-all": "aw all", "a-always": "aw always", 
+    "a-any": "eh any", "a-anyone": "eh anyone", "a-anything": "eh anything", "a-are": "ar are",
+    "o-okay": "oh okay", "w-what": "wuh what", "w-why": "wuh why", "w-where": "wuh where", 
+    "w-who": "wuh who", "w-when": "wuh when", "th-that": "thuh that", "th-this": "thih this", 
+    "th-there": "thuh there", "th-they": "thuh they", "y-you": "yuh you", "y-your": "yuh your", 
+    "y-yes": "yuh yes", "n-no": "nuh no", "n-not": "nuh not", "s-so": "suh so", "b-but": "buh but", 
+    "b-because": "bih because", "h-how": "huh how", "h-he": "hih he", "sh-she": "shih she", 
+    "o-oh": "oh oh", "u-uh": "uh uh"
+}
+for k, v in _phonetic_stutters.items():
+    EXACT_STUTTER_MAP[rf"\b{k}\b"] = v
 # ==========================================
 # 2. HELPER FUNCTIONS
 # ==========================================
