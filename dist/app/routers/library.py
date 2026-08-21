@@ -499,6 +499,7 @@ def process_image_scene_breaks(pages, image_map, doc_id, book_dir):
 
 @router.post("/api/convert/epub")
 async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)): 
+    import re
     from fastapi import HTTPException
     import html
     
@@ -729,7 +730,6 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                     base_name = posixpath.splitext(clean_name)[0]
                     ext = posixpath.splitext(clean_name)[1].lower()
                     
-                    import re
                     safe_base = re.sub(r'[\\/*?:"<>|]', "", base_name.replace('/', '_').replace('\\', '_'))
                     
                     if len(safe_base) > 50:
