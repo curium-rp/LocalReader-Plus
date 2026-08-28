@@ -607,8 +607,37 @@ s {
     margin: 1em 0 !important;
     color: #71717a; 
     letter-spacing: 0.5em; 
-    text-indent: 0.5em; /* 🌟 SURGICAL FIX: Mathematically balances the letter-spacing for true center */
+    text-indent: 0.5em; 
     font-size: 1.2em;
+    transition: all 0.4s ease;
+}
+
+/* 🌟 SCENE BREAK IMAGES: Force them to be mini by default! */
+s img.epub-image {
+    display: inline-block !important;
+    width: auto !important;
+    max-width: 100px !important;
+    max-height: 100px !important;
+    margin: 0.5em auto !important;
+    border-radius: 0 !important;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 🌟 ACTIVE IMAGE EXPANSION: Link CSS to active state to make them BIG */
+/* Exclude 's' scene break wrapper so tiny ornamental images stay small */
+img.epub-image.active-sentence {
+    max-width: 95% !important;
+    max-height: 75vh !important;
+    transform: scale(1.02);
+    box-shadow: 0 15px 35px rgba(59, 130, 246, 0.3);
+    border-radius: 12px !important;
+}
+
+/* Prevent active 's' wrappers from shifting text layout */
+s.active-sentence {
+    background-color: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
 }
 
 p + p {
@@ -629,3 +658,75 @@ p {
     padding: 0 !important;
 }
 
+#libraryPanel p, .sidebar p {
+    text-indent: 0 !important;
+    text-align: left !important;
+    text-justify: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+#libraryPanel p, .sidebar p {
+    text-indent: 0 !important;
+    text-align: left !important;
+    text-justify: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* FULLSCREEN IMAGE VIEWER */
+#imageViewerModal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.95);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  backdrop-filter: blur(8px);
+}
+
+#imageViewerModal.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#imageViewerImg {
+  max-width: 95vw;
+  max-height: 95vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  transform: scale(0.95);
+  transition: transform 0.3s ease;
+}
+
+#imageViewerModal.active #imageViewerImg {
+  transform: scale(1);
+}
+
+#imageViewerClose {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 44px;
+  height: 44px;
+  background: rgba(39, 39, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+  color: #e4e4e7;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s;
+}
+
+#imageViewerClose:hover {
+  background: rgba(63, 63, 70, 0.9);
+  transform: scale(1.05);
+}

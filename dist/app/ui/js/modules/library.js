@@ -72,10 +72,10 @@ export async function loadLibrary() {
         }`;
         div.innerHTML = `
                 <div class="flex items-start justify-between gap-2">
-                    <div class="flex items-start gap-3 min-w-0" data-action="select-doc" data-id="${item.id}">
+                    <div class="flex items-start gap-3 flex-1 min-w-0" data-action="select-doc" data-id="${item.id}" title="${item.fileName}">
                         <i data-lucide="file" class="w-4 h-4 mt-0.5 shrink-0"></i>
-                        <div class="min-w-0">
-                            <p class="text-xs font-bold leading-tight break-words">${item.fileName}</p>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-xs font-bold leading-tight truncate">${item.fileName}</p>
                             <p class="text-[10px] opacity-60 mt-1">Page ${(item.currentPage || 0) + 1}/${item.totalPages}</p>
                         </div>
                     </div>
@@ -246,7 +246,7 @@ export function renderTOC() {
         const paddingLeft = item.level === 1 ? '0.5rem' : item.level === 2 ? '1.5rem' : '2.5rem';
         div.className = `cursor-pointer py-2 px-2 hover:bg-zinc-800 text-sm transition-colors border-l-2 border-transparent hover:border-blue-500`;
         div.style.paddingLeft = paddingLeft;
-        div.innerHTML = `<div class="flex justify-between items-center opacity-80 hover:opacity-100"><span class="truncate pr-2 ${item.level === 1 ? 'font-bold text-zinc-200' : 'text-zinc-400'}">${item.title}</span><span class="text-[10px] text-zinc-500 shrink-0">Pg ${item.page_index + 1}</span></div>`;
+        div.innerHTML = `<div class="flex justify-between items-center opacity-80 hover:opacity-100 gap-2 min-w-0"><span class="truncate flex-1 ${item.level === 1 ? 'font-bold text-zinc-200' : 'text-zinc-400'}">${item.title}</span><span class="text-[10px] text-zinc-500 shrink-0 whitespace-nowrap">Pg ${item.page_index + 1}</span></div>`;
         
         div.onclick = async () => {
             const tocModal = document.getElementById('tocModal');
@@ -310,7 +310,7 @@ export async function getSentencesForPage(pageIndex) {
     if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>') || /<h[1-6]/i.test(pageText)) {        
         const tempDiv = document.createElement('div');
         tempDiv.innerHTML = pageText;
-        const elements = Array.from(tempDiv.querySelectorAll('n, s, img.epub-image, h1, h2, h3, h4, h5, h6'));
+        const elements = Array.from(tempDiv.querySelectorAll('n, s, img.epub-image, h1, h2, h3, h4, h5, h6')).filter(el => !el.parentElement || !el.parentElement.closest('s, n, h1, h2, h3, h4, h5, h6'));
         return elements.map(el => {
             if (el.tagName.match(/^(img|s|h[1-6])$/i)) return el.outerHTML; 
             
@@ -410,7 +410,7 @@ export async function renderPage() {
         
         if (pageText.includes('<n ') || pageText.includes('<n>') || pageText.includes('class="epub-image"') || pageText.includes('<s>') || /<h[1-6]/i.test(pageText)) {            
             textContent.innerHTML = pageText;
-            state.sentenceElements = Array.from(textContent.querySelectorAll('n, s, img.epub-image, h1, h2, h3, h4, h5, h6'));
+            state.sentenceElements = Array.from(textContent.querySelectorAll('n, s, img.epub-image, h1, h2, h3, h4, h5, h6')).filter(el => !el.parentElement || !el.parentElement.closest('s, n, h1, h2, h3, h4, h5, h6'));
             
             if (isReadingCurrentPage && state.currentDoc && isOnSavedPage) {
                 let positionFound = false;
@@ -433,10 +433,21 @@ export async function renderPage() {
                 if (isReadingCurrentPage && i === state.currentSentenceIndex) tag.classList.add('active-sentence');
                 tag.onclick = (e) => {
                     e.stopPropagation(); // 🌟 PHANTOM ROUTER: Prevent click from bubbling up to parent header and double-firing
-                    state.readingPageIndex = state.viewPageIndex;
-                    state.readingSentences = [...state.viewSentences];
-                    state.autoScrollEnabled = true; 
-                    window.dispatchEvent(new CustomEvent("jump-to-sentence", { detail: i }));
+                    
+                    const isImg = e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'img' && e.target.classList.contains('epub-image') && !e.target.closest('s');
+                    const triggerJump = () => {
+                        state.readingPageIndex = state.viewPageIndex;
+                        state.readingSentences = [...state.viewSentences];
+                        state.autoScrollEnabled = true; 
+                        window.dispatchEvent(new CustomEvent("jump-to-sentence", { detail: i }));
+                    };
+                    
+                    if (isImg) {
+                        if (e.detail === 1) window._imgClickTimer = setTimeout(triggerJump, 250);
+                        else if (e.detail === 2) clearTimeout(window._imgClickTimer);
+                    } else {
+                        triggerJump();
+                    }
                 };
             });
         } else {
@@ -456,11 +467,22 @@ export async function renderPage() {
                     else span.textContent = cleanS;
                 }
 
-                span.onclick = () => {
-                    state.readingPageIndex = state.viewPageIndex;
-                    state.readingSentences = [...state.viewSentences];
-                    state.autoScrollEnabled = true; 
-                    window.dispatchEvent(new CustomEvent("jump-to-sentence", { detail: i }));
+                span.onclick = (e) => {
+                    e.stopPropagation();
+                    const isImg = e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'img' && e.target.classList.contains('epub-image') && !e.target.closest('s');
+                    const triggerJump = () => {
+                        state.readingPageIndex = state.viewPageIndex;
+                        state.readingSentences = [...state.viewSentences];
+                        state.autoScrollEnabled = true; 
+                        window.dispatchEvent(new CustomEvent("jump-to-sentence", { detail: i }));
+                    };
+                    
+                    if (isImg) {
+                        if (e.detail === 1) window._imgClickTimer = setTimeout(triggerJump, 250);
+                        else if (e.detail === 2) clearTimeout(window._imgClickTimer);
+                    } else {
+                        triggerJump();
+                    }
                 };
                 fragment.appendChild(span);
             });
@@ -478,41 +500,49 @@ export async function renderPage() {
             scrollContainer.scrollTop = 0;
         } 
         else if (state.autoScrollEnabled) {
-            // requestAnimationFrame ensures the DOM has physically painted before we calculate pixels
             requestAnimationFrame(() => {
-                setTimeout(() => {
+                const alignCam = () => {
                     const activeEl = document.querySelector('.active-sentence');
                     if (activeEl) {
-                        // Mathematically locate the exact pixel depth of the sentence
                         const elRect = activeEl.getBoundingClientRect();
                         const containerRect = scrollContainer.getBoundingClientRect();
-                        
                         const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
                         const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
-                        
-                        // Force the scroll container to snap perfectly to the center
                         scrollContainer.scrollTop = Math.max(0, centerPosition);
-                    } else {
-                        scrollContainer.scrollTop = 0;
+                        return activeEl.tagName && (activeEl.tagName.toLowerCase() === 'img' || activeEl.querySelector('img, svg')) && activeEl.tagName.toLowerCase() !== 's';
                     }
-                }, 20); // 20ms buffer to guarantee Heavy PDFs are fully arranged
+                    scrollContainer.scrollTop = 0;
+                    return false;
+                };
+                
+                setTimeout(() => {
+                    const isImg = alignCam();
+                    if (isImg) {
+                        // Strike 2: Only re-lock if it's an image transitioning size
+                        setTimeout(() => {
+                            alignCam();
+                            if (typeof updateActiveTOC === 'function') updateActiveTOC();
+                        }, 450);
+                    } else {
+                        // Text locks instantly, trigger TOC update immediately
+                        if (typeof updateActiveTOC === 'function') updateActiveTOC();
+                    }
+                }, 20);
             });
         }
     }
-
     const currentReadingSentence = (state.readingSentences && state.readingSentences.length > 0) ? state.readingSentences[state.currentSentenceIndex] : "";
     if (currentSentencePreview && currentReadingSentence) {
         const cleanText = currentReadingSentence.replace(/\[PAUSE_\d+\]\s*/g, '');
         
         let bType = "N";
         if (/<h[1-6]/i.test(currentReadingSentence)) bType = "H";
-        else if (/<img|<svg/i.test(currentReadingSentence)) bType = "Img";
         else if (/<s\b/i.test(currentReadingSentence) || /class="scene-break"/i.test(currentReadingSentence)) bType = "S";
+        else if (/<img|<svg/i.test(currentReadingSentence)) bType = "Img";
         
-        const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
-        let finalStr = cleanText.replace(validTags, '').trim();
+        const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
+        let finalStr = cleanText.replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/\s+/g, ' ').trim();
         
-        // 🌟 UI Rescue Interceptor: Restores TOC titles for images wrapped in Headers
         if (finalStr === "" && bType.startsWith("H")) {
             const idMatch = currentReadingSentence.match(/(?:id|data-orig-id)=['"]([^'"]+)['"]/);
             if (idMatch && state.tocMap) {
@@ -523,8 +553,6 @@ export async function renderPage() {
             }
         }
         
-        // Final fallback for raw UI display 
-        if (bType === "Img" && finalStr === "") finalStr = "🖼️ [Viewing Image]";
         if (bType === "S" && finalStr === "") finalStr = "•••";
         
         currentSentencePreview.textContent = finalStr;
@@ -533,7 +561,7 @@ export async function renderPage() {
         if (monitorText) monitorText.textContent = finalStr;
     }
 
-    const pageImages = document.querySelectorAll('#textContent img.epub-image');
+    const pageImages = document.querySelectorAll('#textContent img.epub-image:not(s img.epub-image)');
     if (pageImages.length > 0) {
         const imgObserver = new IntersectionObserver((entries, observer) => {
             entries.forEach(entry => {

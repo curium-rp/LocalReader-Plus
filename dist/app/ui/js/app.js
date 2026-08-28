@@ -171,13 +171,71 @@ async function init() {
   renderRules();
   renderIgnoreList();
   startStatusPolling();
+  let mouseHideTimeout = null;
+window.isJumpingCamera = false;
+
   initTimer();
+  
+  let imgViewer = document.getElementById("imageViewerModal");
+  if (!imgViewer) {
+      imgViewer = document.createElement("div");
+      imgViewer.id = "imageViewerModal";
+      imgViewer.innerHTML = `
+          <button id="imageViewerClose">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+          <img id="imageViewerImg" src="" alt="Fullscreen Image" />
+      `;
+      document.body.appendChild(imgViewer);
+      
+      imgViewer.onclick = (e) => {
+          if (e.target.id === "imageViewerModal" || e.target.id === "imageViewerClose") {
+              imgViewer.classList.remove("active");
+          }
+      };
+  }
 }
 
-document.addEventListener("DOMContentLoaded", init);
+document.addEventListener("DOMContentLoaded", () => {
+    init();
+    
+    // 🌟 INITIAL START SYNC FIX: Re-center camera and update TOC map indicator when images load or expand!
+    const scrollContainer = document.querySelector(".content-area");
+    if (scrollContainer) {
+        scrollContainer.addEventListener('load', (e) => {
+            if (e.target && e.target.tagName === 'IMG') {
+                const activeEl = document.querySelector('.active-sentence');
+                if (activeEl && state.autoScrollEnabled) {
+                    requestAnimationFrame(() => {
+                        const elRect = activeEl.getBoundingClientRect();
+                        const containerRect = scrollContainer.getBoundingClientRect();
+                        const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
+                        const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
+                        scrollContainer.scrollTop = Math.max(0, centerPosition);
+                        
+                        // Update TOC after physical layout stabilizes
+                        if (typeof updateActiveTOC === 'function') updateActiveTOC();
+                    });
+                }
+            }
+        }, true); // Capture phase catches nested image loads globally
+    }
+});
+
+document.addEventListener("dblclick", (e) => {
+    if (e.target && e.target.tagName && e.target.tagName.toLowerCase() === "img" && e.target.classList.contains("epub-image")) {
+        if (e.target.closest("s")) return;
+        const viewer = document.getElementById("imageViewerModal");
+        const viewerImg = document.getElementById("imageViewerImg");
+        if (viewer && viewerImg) {
+            viewerImg.src = e.target.src;
+            viewer.classList.add("active");
+        }
+    }
+});
 
 let mouseHideTimeout = null;
-window.isJumpingCamera = false; // 🌟 Master lock for the UI state
+window.isJumpingCamera = false;
 
 function resetAutoHideTimer() {
     if (window.isJumpingCamera) return; // Shield against phantom mouse movements when scrolling
@@ -374,6 +432,9 @@ window.addEventListener("keydown", (e) => {
     if (tocModal) tocModal.classList.add("hidden");
     document.querySelectorAll(".voice-settings-drawer").forEach(d => d.classList.remove("open"));
     document.getElementById("drawerOverlay").classList.remove("active");
+    
+    const imgViewer = document.getElementById("imageViewerModal");
+    if (imgViewer) imgViewer.classList.remove("active");
   }
 });
 
@@ -424,9 +485,9 @@ document.getElementById("pageInput").onchange = async (e) => {
 // --- THE SMART SCROLL TRACKER ---
 let isAutoFlipping = false;
 let tocScrollTimer = null;
-const scrollContainer = document.querySelector(".content-area");
-if (scrollContainer) {
-  scrollContainer.addEventListener("scroll", () => {
+const appScroller = document.querySelector(".content-area");
+if (appScroller) {
+  appScroller.addEventListener("scroll", () => {
       const tocModal = document.getElementById("tocModal");
       if (tocModal && !tocModal.classList.contains("hidden")) {
           clearTimeout(tocScrollTimer);
@@ -434,12 +495,12 @@ if (scrollContainer) {
       }
   }, { passive: true });
 
-  scrollContainer.addEventListener(
+  appScroller.addEventListener(
     "wheel",
     async (e) => {
       if (isAutoFlipping) return;
-      const bottom = scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
-      const top = scrollContainer.scrollTop <= 10;
+      const bottom = appScroller.scrollTop + appScroller.clientHeight >= appScroller.scrollHeight - 10;
+      const top = appScroller.scrollTop <= 10;
 
       // When the user breaks auto-scroll, spawn the correct button
       if (state.autoScrollEnabled) {
@@ -466,20 +527,19 @@ if (scrollContainer) {
         isAutoFlipping = true;
         state.viewPageIndex++;
         await renderPage();
-        scrollContainer.scrollTop = 0;
+        appScroller.scrollTop = 0;
         setTimeout(() => { isAutoFlipping = false; }, 700);
       } else if (e.deltaY < 0 && top && state.viewPageIndex > 0) {
         isAutoFlipping = true;
         state.viewPageIndex--;
         await renderPage();
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        appScroller.scrollTop = appScroller.scrollHeight;
         setTimeout(() => { isAutoFlipping = false; }, 700);
       }
     },
     { passive: true },
   );
 }
-
 // --- SAFELY MOUNT UPLOAD HANDLER ---
 const pdfUpload = document.getElementById("pdfUpload");
 if (pdfUpload) {
@@ -1015,6 +1075,12 @@ window.addEventListener("jump-to-sentence", (e) => {
     // 3. Engage the lock and perform the jump
     isJumpingLock = true;
     safeJumpToSentence(e.detail);
+    
+    // 🌟 FIX: Sync the TOC indicator with the new CSS image size layout shift!
+    setTimeout(() => {
+        if (typeof updateActiveTOC === 'function') updateActiveTOC();
+    }, 400); // Wait for the 0.4s CSS transition to finish expanding the image
+    
     // 4. Release the lock after 300ms (enough time to eat browser event bubbling)
     setTimeout(() => {
         isJumpingLock = false;

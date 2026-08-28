@@ -19,8 +19,10 @@ else:
     BASE_DIR = Path(__file__).parent.parent.parent
 
 BIN_DIR = BASE_DIR / "bin"
-FFMPEG_EXE = BIN_DIR / "ffmpeg.exe"
-FFPROBE_EXE = BIN_DIR / "ffprobe.exe"
+IS_WINDOWS = sys.platform == "win32"
+_SUFFIX = ".exe" if IS_WINDOWS else ""
+FFMPEG_EXE = BIN_DIR / f"ffmpeg{_SUFFIX}"
+FFPROBE_EXE = BIN_DIR / f"ffprobe{_SUFFIX}"
 
 # Stable FFMPEG build from Gyan.dev
 FFMPEG_DOWNLOAD_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
@@ -38,7 +40,7 @@ class FFMPEGInstaller:
     
     def check_installed(self) -> bool:
         """Check if FFMPEG binaries are already installed"""
-        return FFMPEG_EXE.exists() and FFPROBE_EXE.exists()
+        return bool(get_ffmpeg_path() and get_ffprobe_path())
     
     def cancel(self):
         """Cancel the download process"""
@@ -51,6 +53,12 @@ class FFMPEGInstaller:
         Returns:
             (success: bool, error_message: Optional[str])
         """
+        if not IS_WINDOWS:
+            if self.check_installed():
+                self._update_progress(1, 1, "Using system FFMPEG")
+                return True, None
+            return False, "FFmpeg required for MP3. Install via package manager (macOS: 'brew install ffmpeg', Linux: 'sudo apt install ffmpeg')."
+
         try:
             # 1. Create bin directory
             BIN_DIR.mkdir(exist_ok=True)
@@ -126,23 +134,51 @@ class FFMPEGInstaller:
             except Exception as e:
                 print(f"Progress callback error: {e}")
 
-def get_ffmpeg_path() -> Optional[str]:
-    """
-    Get the path to the local FFMPEG executable.
-    Returns None if not installed.
-    """
-    if FFMPEG_EXE.exists():
-        return str(FFMPEG_EXE)
+def _make_executable(path: Path):
+    if not IS_WINDOWS:
+        if path.exists():
+            if not os.access(path, os.X_OK):
+                try:
+                    os.chmod(path, 0o755)
+                except Exception:
+                    pass
+
+def _resolve(bundled: Path, name: str) -> Optional[str]:
+    _make_executable(bundled)
+    
+    if bundled.exists():
+        if IS_WINDOWS or os.access(bundled, os.X_OK):
+            return str(bundled)
+    
+    sys_path = shutil.which(name)
+    if sys_path:
+        return sys_path
+        
+    fallback_paths = []
+    if sys.platform == "darwin":
+        fallback_paths = [
+            f"/opt/homebrew/bin/{name}",
+            f"/usr/local/bin/{name}",
+            f"/usr/bin/{name}"
+        ]
+    elif sys.platform.startswith("linux"):
+        fallback_paths = [
+            f"/usr/bin/{name}",
+            f"/usr/local/bin/{name}",
+            f"/snap/bin/{name}"
+        ]
+        
+    for p in fallback_paths:
+        if os.path.exists(p):
+            if os.access(p, os.X_OK):
+                return p
     return None
 
+def get_ffmpeg_path() -> Optional[str]:
+    return _resolve(FFMPEG_EXE, "ffmpeg")
+
 def get_ffprobe_path() -> Optional[str]:
-    """
-    Get the path to the local FFPROBE executable.
-    Returns None if not installed.
-    """
-    if FFPROBE_EXE.exists():
-        return str(FFPROBE_EXE)
-    return None
+    return _resolve(FFPROBE_EXE, "ffprobe")
 
 # Configure pydub to use local FFMPEG
 def configure_pydub():

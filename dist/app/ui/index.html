@@ -66,24 +66,24 @@
             </div>
           </div>
 
-          <div id="setupArea" class="mb-4" style="display: none">
+          <div id="setupArea" class="mb-2" style="display: none">
             <button
               id="setupBtn"
-              class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all shadow-lg shadow-blue-900/20"
+              class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all shadow-md shadow-blue-900/20"
             >
-              <i data-lucide="download-cloud" class="w-4 h-4"></i>
-              <span class="text-sm font-bold" data-i18n="sidebar.setup_engine"
+              <i data-lucide="download-cloud" class="w-3.5 h-3.5"></i>
+              <span class="text-xs font-bold" data-i18n="sidebar.setup_engine"
                 >Setup Voice Engine</span
               >
             </button>
           </div>
 
-          <div id="uploadArea" class="mb-4" style="display: none">
+          <div id="uploadArea" class="mb-2" style="display: none">
             <label
-              class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg cursor-pointer transition-all border border-zinc-700"
+              class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg cursor-pointer transition-all border border-zinc-700"
             >
-              <i data-lucide="plus" class="w-4 h-4"></i>
-              <span class="text-sm font-semibold" data-i18n="sidebar.upload"
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <span class="text-xs font-semibold" data-i18n="sidebar.upload"
                 >Upload Book (PDF/EPUB)</span
               >
               <input
@@ -119,13 +119,13 @@
             />
           </div>
 
-          <div id="exportArea" class="mb-4" style="display: none">
+          <div id="exportArea" class="mb-2" style="display: none">
             <button
               id="exportBtn"
-              class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#4B0082] hover:bg-[#320056] text-white rounded-lg transition-all shadow-lg shadow-purple-900/20"
+              class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-[#4B0082] hover:bg-[#320056] text-white rounded-lg transition-all shadow-md shadow-purple-900/20"
             >
-              <i data-lucide="download" class="w-4 h-4"></i>
-              <span class="text-sm font-bold" data-i18n="export.title"
+              <i data-lucide="download" class="w-3.5 h-3.5"></i>
+              <span class="text-xs font-bold" data-i18n="export.title"
                 >Export Audio (MP3)</span
               >
             </button>
@@ -133,10 +133,10 @@
         </div>
 
         <!-- Tabs (Compact with Icons) -->
-        <div class="flex border-b border-border">
+        <div class="flex border-b border-border bg-black/10">
           <button
             id="tabLibrary"
-            class="flex-1 py-3 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest border-b-2 border-blue-600 text-blue-500 bg-white/5"
+            class="flex-1 py-2 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest border-b-2 border-blue-600 text-blue-500 bg-white/5 transition-colors"
             data-i18n-title="tabs.library"
             title="Library"
           >
@@ -147,7 +147,7 @@
           </button>
           <button
             id="tabRules"
-            class="flex-1 py-3 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest border-b-2 border-transparent text-zinc-500 hover:text-zinc-300"
+            class="flex-1 py-2 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-white/5 transition-colors"
             data-i18n-title="tabs.rules"
             title="Pronunciation Rules"
           >
@@ -156,7 +156,7 @@
           </button>
           <button
             id="tabIgnore"
-            class="flex-1 py-3 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest border-b-2 border-transparent text-zinc-500 hover:text-zinc-300"
+            class="flex-1 py-2 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-white/5 transition-colors"
             data-i18n-title="tabs.ignore"
             title="Ignore List"
           >
@@ -169,42 +169,44 @@
         <div class="flex-1 overflow-hidden flex flex-col">
           <div
             id="libraryPanel"
-            class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-2"
+            class="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1.5"
           ></div>
           <div
             id="rulesPanel"
-            class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 hidden"
+            class="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3 hidden"
           >
-            <div class="flex justify-between items-center">
+            <div class="flex justify-between items-center bg-zinc-900/50 p-2 rounded-lg border border-zinc-800/50">
               <h3
-                class="text-xs font-bold uppercase tracking-widest text-zinc-500"
+                class="text-[10px] font-bold uppercase tracking-widest text-zinc-400"
                 data-i18n="settings.pronunciation_rules"
               >
                 Pronunciation Rules
               </h3>
               <button
                 id="addRuleBtn"
-                class="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md"
+                class="p-1 bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 text-blue-400 hover:text-white rounded transition-colors"
+                title="Add Rule"
               >
                 <i data-lucide="plus" class="w-3.5 h-3.5"></i>
               </button>
             </div>
-            <div id="rulesList" class="space-y-3"></div>
+            <div id="rulesList" class="space-y-2"></div>
           </div>
           <div
             id="ignorePanel"
-            class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 hidden"
+            class="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3 hidden"
           >
-            <div class="flex justify-between items-center">
+            <div class="flex justify-between items-center bg-zinc-900/50 p-2 rounded-lg border border-zinc-800/50">
               <h3
-                class="text-xs font-bold uppercase tracking-widest text-zinc-500"
+                class="text-[10px] font-bold uppercase tracking-widest text-zinc-400"
                 data-i18n="settings.ignore_list"
               >
                 Ignore List
               </h3>
               <button
                 id="addIgnoreBtn"
-                class="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md"
+                class="p-1 bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 text-blue-400 hover:text-white rounded transition-colors"
+                title="Add Ignore"
               >
                 <i data-lucide="plus" class="w-3.5 h-3.5"></i>
               </button>
@@ -214,18 +216,18 @@
         </div>
 
         <!-- Settings -->
-        <div class="p-6 border-t border-border bg-black/20 space-y-4">
+        <div class="p-3 border-t border-border bg-black/20">
           <!-- Processing Mode (v1.9 - Dual-Engine) -->
-          <div class="p-3 bg-blue-900/20 border border-blue-800/30 rounded-lg">
+          <div class="p-2 bg-blue-900/20 border border-blue-800/30 rounded-lg">
             <label
-              class="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-2 block flex items-center gap-2"
+              class="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1.5 block flex items-center gap-2"
             >
               <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
               <span data-i18n="settings.processing_mode">Processing Mode</span>
             </label>
             <select
               id="engineMode"
-              class="w-full bg-zinc-900 text-xs font-medium border border-zinc-800 rounded px-2 py-1.5 outline-none text-zinc-300 focus:border-blue-500 mb-2"
+              class="w-full bg-zinc-900 text-[11px] font-medium border border-zinc-800 rounded px-2 py-1 outline-none text-zinc-300 focus:border-blue-500 mb-1.5"
             >
               <option value="gpu" data-i18n="settings.gpu_mode">
                 High Quality (GPU) - ~309MB
@@ -239,15 +241,15 @@
               class="text-[9px] text-zinc-400 flex items-center gap-2"
             >
               <span id="gpuStatus"
-                >FP32 model: <span class="text-zinc-600">?</span></span
+                >FP32: <span class="text-zinc-600">?</span></span
               >
               <span class="text-zinc-700">|</span>
               <span id="cpuStatus"
-                >In8 model: <span class="text-zinc-600">?</span></span
+                >In8: <span class="text-zinc-600">?</span></span
               >
             </div>
             <p
-              class="text-[9px] text-zinc-500 mt-2"
+              class="text-[8px] text-zinc-500 mt-1"
               data-i18n="settings.mode_help"
             >
               GPU: Best quality | CPU: Faster, low RAM
@@ -261,8 +263,8 @@
           class="h-16 border-b border-border flex items-center justify-between px-4 lg:px-6 bg-card/80 backdrop-blur-md shrink-0 gap-4"
         >
           <div class="flex items-center gap-3 flex-1 min-w-0"> 
-            <button id="tocBtn" class="p-2 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors shrink-0" title="Table of Contents">
-                <i data-lucide="list" class="w-5 h-5"></i>
+            <button id="tocBtn" class="p-2 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors shrink-0 inline-flex items-center justify-center" title="Table of Contents">
+                <i data-lucide="list" class="w-5 h-5 shrink-0"></i>
             </button>
             <h1 id="docTitle" class="text-sm lg:text-base font-bold truncate text-zinc-200" data-i18n="reader.no_document">
               No document selected
@@ -1199,14 +1201,15 @@
         </div>
       </div>
     </div>
-<div id="tocModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-end">
+<div id="tocModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[3000] flex justify-end">
     <div class="w-full max-w-sm bg-zinc-900 h-full border-l border-zinc-800 flex flex-col shadow-2xl">
-        <div class="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
-            <h2 class="font-bold text-lg text-zinc-100 flex items-center gap-2">
-                <i data-lucide="list" class="w-5 h-5 text-blue-500"></i> Table of Contents
-            </h2>
-            <button id="closeTocBtn" class="p-2 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors">
-                <i data-lucide="x" class="w-5 h-5"></i>
+        <div class="p-3 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50 shrink-0">
+            <div class="font-bold text-base text-zinc-100 flex flex-row items-center gap-2 m-0">
+                <i data-lucide="list" class="w-4 h-4 text-blue-500 shrink-0"></i>
+                <span class="whitespace-nowrap">Table of Contents</span>
+            </div>
+            <button id="closeTocBtn" class="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors inline-flex items-center justify-center shrink-0">
+                <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
             </button>
         </div>
         <div id="tocList" class="p-2 overflow-y-auto flex-1 custom-scrollbar">

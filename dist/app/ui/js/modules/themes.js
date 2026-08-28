@@ -119,13 +119,14 @@ export async function initThemeSystem() {
         themeModal.className = 'fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[3000] hidden';
         
         themeModal.innerHTML = `
-            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4" onclick="event.stopPropagation()">
+            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-5 max-w-sm w-full mx-4" onclick="event.stopPropagation()">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-lg font-bold text-white flex items-center gap-2">
-                        <i data-lucide="palette" class="w-5 h-5 text-blue-500"></i> Appearance Themes
-                    </h3>
-                    <button id="closeThemeModalBtn" class="text-zinc-500 hover:text-red-500 transition-colors">
-                        <i data-lucide="x" class="w-5 h-5"></i>
+                    <div class="text-base font-bold text-white flex flex-row items-center gap-2 m-0">
+                        <i data-lucide="palette" class="w-4 h-4 text-blue-500 shrink-0"></i> 
+                        <span class="whitespace-nowrap">Appearance Themes</span>
+                    </div>
+                    <button id="closeThemeModalBtn" class="p-1.5 text-zinc-500 hover:text-red-500 transition-colors inline-flex items-center justify-center shrink-0">
+                        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
                     </button>
                 </div>
                 <div id="themeGrid" class="grid grid-cols-2 gap-3"></div>

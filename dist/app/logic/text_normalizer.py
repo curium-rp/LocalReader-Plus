@@ -14,16 +14,71 @@ except ImportError as e:
 # 1. DICTIONARIES & MAPS
 # ==========================================
 
+HARD_G_WORDS = (
+    'get', 'give', 'girl', 'gift', 'gear', 'geese', 'giggle', 
+    'girth', 'gill', 'gimmick', 'geek', 'gecko', 'giga'
+)
+
 STUTTER_MAP = {
-    'b': 'bih', 'c': 'kih', 'd': 'dih', 'f': 'fih', 'g': 'gih', 'h': 'hu', 
+    'b': 'bih', 'c': 'kih', 'd': 'dih', 'f': 'fih', 'g': 'guh', 'h': 'huh', 
     'j': 'jih', 'k': 'kih', 'l': 'lih', 'm': 'mih', 'n': 'nih', 'p': 'pih',
-    'q': 'kwih', 'r': 'rih', 's': 'sih', 't': 'tih', 'v': 'vih', 'w': 'wih', 
-    'y': 'yih', 'z': 'zih',
-    'a': 'ah', 'e': 'eh', 'i': 'ih', 'o': 'oh', 'u': 'uh',
-    'sh': 'shih', 'ch': 'chih', 'th': 'thih', 'ph': 'fih', 'wh': 'wih',
+    'q': 'kwih', 'r': 'rih', 's': 'sih', 't': 'tih', 'v': 'vih', 'w': 'wuh', 
+    'x': 'zih', 'y': 'yih', 'z': 'zih',
+    'a': 'ah', 'e': 'eh', 'i': 'ih', 'o': 'oh', 'u': 'uhh',
+    'sh': 'shih', 'ch': 'chih', 'th': 'thih', 'ph': 'fih', 'wh': 'wuh', 'rh': 'rih',
+    'sk': 'skih', 'ts': 'tsih',
     'br': 'brih', 'cr': 'krih', 'dr': 'drih', 'fr': 'frih', 'gr': 'grih', 'pr': 'prih', 'tr': 'trih',
-    'bl': 'blih', 'cl': 'klih', 'fl': 'filih', 'gl': 'glih', 'pl': 'plih', 'sl': 'slih',
-    'sc': 'skih', 'sm': 'smih', 'sn': 'snih', 'sp': 'spih', 'st': 'stih', 'sw': 'swih'
+    'bl': 'blih', 'cl': 'klih', 'fl': 'flih', 'gl': 'glih', 'pl': 'plih', 'sl': 'slih',
+    'sc': 'skih', 'sm': 'smih', 'sn': 'snih', 'sp': 'spih', 'st': 'stih', 'sw': 'swih',
+    'str': 'strih', 'spr': 'sprih', 'scr': 'skrih', 'spl': 'splih', 'shr': 'shrih', 
+    'thr': 'thrih', 'squ': 'skwih', 'sch': 'skih',
+    'bw': 'bwuh', 'mw': 'mwuh'
+}
+
+CONTEXT_MAP = {
+    'a': {
+        'ipa': {'eɪ': 'ay', 'æ': 'ah', 'ə': 'uhh', 'ɑ': 'ah', 'a': 'ah'},
+        'text': lambda w: 'ay' if w.startswith(('ac', 'ap', 'av', 'ag', 'at', 'al')) and len(w) > 3 and w.endswith('e') else 'ah'
+    },
+    'e': {
+        'ipa': {'i': 'ee', 'iː': 'ee', 'ɛ': 'eh', 'e': 'eh'},
+        'text': lambda w: 'ee' if w.startswith(('ev', 'eq', 'ea', 'ee')) else 'eh'
+    },
+    'i': {
+        'ipa': {'aɪ': 'eye', 'ɪ': 'ih'},
+        'text': lambda w: 'eye' if w.startswith(('ic', 'id', 'ir', 'is')) and len(w) > 3 and w.endswith('e') else 'ih'
+    },
+    'o': {
+        'ipa': {'oʊ': 'oh', 'əʊ': 'oh', 'ɑ': 'aw', 'ɒ': 'aw', 'ɔ': 'aw'},
+        'text': lambda w: 'oh' if w.startswith(('ov', 'op', 'ol', 'oas', 'oat')) else 'oh'
+    },
+    'u': {
+        'ipa': {'u': 'oo', 'ju': 'yoo', 'ʌ': 'uhh', 'ə': 'uhh', 'ɐ': 'uhh'},
+        'text': lambda w: 'uhh' if w.startswith('un') else 'uhh'
+    },
+    'c': {
+        'ipa': {'s': 'sih', 'k': 'kih', 'tʃ': 'chih', 'ʃ': 'shih'},
+        'text': lambda w: 'sih' if w.startswith(('ce', 'ci', 'cy')) else ('chih' if w.startswith('ch') and not w.startswith(('chaos', 'chord', 'chorus', 'chrome', 'chronic', 'chef')) else 'kih')
+    },
+    'ch': {
+        'ipa': {'k': 'kih', 'ʃ': 'shih', 'tʃ': 'chih'},
+        'text': lambda w: 'kih' if w.startswith(('chaos', 'chord', 'chorus', 'chrome', 'chronic', 'charisma', 'choir')) else ('shih' if w.startswith(('chef', 'champagne', 'chiffon')) else 'chih')
+    },
+    'g': {
+        'ipa': {'dʒ': 'jih', 'g': 'guh', 'ɡ': 'guh'},
+        'text': lambda w: 'jih' if w.startswith(('ge', 'gi', 'gy')) and not w.startswith(HARD_G_WORDS) else 'guh'
+    },
+    'h': {
+        'text': lambda w: 'hu' if w == 'help' else None
+    },
+    's': {
+        'ipa': {'ʃ': 'shih', 's': 'sih', 'z': 'zih'},
+        'text': lambda w: 'shih' if w.startswith(('sur', 'sug', 'sh')) else 'sih'
+    },
+    'sc': {
+        'ipa': {'s': 'sih', 'sk': 'skih'},
+        'text': lambda w: 'sih' if w.startswith(('scen', 'scie', 'scis', 'scyt', 'scin')) else 'skih'
+    }
 }
 
 IPA_MAP = {
@@ -31,13 +86,13 @@ IPA_MAP = {
     'w': 'wuh', 'j': 'yuh', 'm': 'muh', 'n': 'nuh', 'b': 'buh', 'p': 'puh',
     'd': 'duh', 't': 'tuh', 'g': 'guh', 'h': 'hu', 'ʃ': 'shih', 'v': 'vih',
     'z': 'zih', 'f': 'fih', 'ɹ': 'rih', 'r': 'rih', 'l': 'lih',
-    'æ': 'uh', 'ɛ': 'eh', 'ɪ': 'ih', 'ʌ': 'uh', 'ɒ': 'aw', 'ɔ': 'aw', 'ə': 'uh',
+    'æ': 'ah', 'ɛ': 'eh', 'ɪ': 'ih', 'ʌ': 'uhh', 'ɒ': 'aw', 'ɔ': 'aw', 'ə': 'uhh',
     'eɪ': 'ay', 'i': 'ee', 'iː': 'ee', 'aɪ': 'eye', 'oʊ': 'oh', 'u': 'oo', 'uː': 'oo', 
     'ɑ': 'ar', 'ɑː': 'ar', 'ɔː': 'aw', 'ɜː': 'er'
 }
 
 INTERJECTION_MAP = {
-    r'h+m+': 'hum', r'm{2,}': 'uhm', r'u+h+': 'uh', r'rgh+': 'urgh', r'grr+': 'gurr',      
+    r'h+m+': 'hum', r'm{2,}': 'uhm', r'u+h+': 'uhh', r'rgh+': 'urgh', r'grr+': 'gurr',      
     r'ugh+': 'uhg', r'tch': 'tisk', r'gah': 'gah', r'ngh+': 'ung', r'n+g+h+': 'ung',         
     r'oof+': 'oof', r'ack': 'ack', r'urk': 'erk', r'hmph': 'humph', r'n{2,}h?': 'uhn',        
     r'm+h+': 'um', r'm+[\-]?p+h+': 'umph', r'pff+t?': 'pufft', r'bah': 'bah', 
@@ -54,25 +109,56 @@ EXACT_REPLACEMENTS = {
     r"\bi-i-i-i\b": "I I I I"
 }
 
-# 🌟 COMPOUND NOUN SHIELD (Bypasses Phonemizer. Protected words format safely.)
 STUTTER_EXCEPTIONS = {
-    "s-series": "s series", "s-serious": "s serious", "a-arm": "a arm", 
-    "a-axis": "a axis", "b-boy": "b boy", "b-ball": "b ball", "b-battery": "b battery", 
-    "c-clamp": "c clamp", "c-class": "c class", "c-cup": "c cup", "c-clef": "c clef", 
-    "c-channel": "c channel", "c-curve": "c curve", "d-day": "d day", 
-    "d-drive": "d drive", "e-edition": "e edition", "e-exam": "e exam", 
-    "f-factor": "f factor", "f-frame": "f frame", "g-gauge": "g gauge", 
-    "g-group": "g group", "h-hour": "h hour", "h-harness": "h harness", 
-    "m-mode": "m mode", "m-matrix": "m matrix", "n-number": "n number", 
-    "n-node": "n node", "p-phase": "p phase", "p-protein": "p protein", 
-    "p-port": "p port", "r-rating": "r rating", "r-ratio": "r ratio", 
-    "s-scroll": "s scroll", "s-strap": "s strap", "t-test": "t test", 
-    "t-track": "t track", "t-tube": "t tube", "t-tool": "t tool", 
-    "v-valve": "v valve", "w-waveform": "w waveform", "a-rank": "a rank",
-    "a-frame": "a frame", "a-list": "a list", "a-line": "a line", "a-side": "a side", 
-    "a-team": "a team", "a-bomb": "a bomb", "a-pillar": "a pillar", "b-side": "b side", 
-    "b-movie": "b movie", "c-section": "c section", "e-book": "e book", "e-mail": "e mail", 
-    "k-pop": "k pop", "t-shirt": "t shirt", "u-turn": "u turn", "v-neck": "v neck", "x-ray": "x ray"
+    "a-arm", "a-axis",
+    "b-ball", "b-battery", "b-beam", "b-block", "b-blocker", "b-box", "b-boy", "b-branch",
+    "c-cell", "c-chain", "c-channel", "c-circuit", "c-clamp", "c-class", "c-clef", "c-clip", "c-code", "c-core", "c-cup", "c-curve",
+    "d-data", "d-day", "d-delay", "d-disk", "d-domain", "d-drive",
+    "e-edition", "e-engine", "e-entry", "e-error", "e-event", "e-exam",
+    "f-factor", "f-field", "f-file", "f-filter", "f-flag", "f-flow", "f-form", "f-frame", "f-frequency", "f-function",
+    "g-gas", "g-gauge", "g-grade", "g-grid", "g-group", "g-guard", "g-guide",
+    "h-harness", "h-header", "h-hole", "h-host", "h-hour", "h-hub",
+    "j-joint", "j-junction",
+    "k-key",
+    "l-label", "l-layer", "l-level", "l-line", "l-link", "l-list", "l-lock", "l-loop",
+    "m-matrix", "m-mode", "m-module",
+    "n-network", "n-node", "n-number",
+    "p-packet", "p-path", "p-phase", "p-pin", "p-pipe", "p-plane", "p-point", "p-pool", "p-port", "p-protein",
+    "q-query", "q-queue",
+    "r-range", "r-rank", "r-rate", "r-rating", "r-ratio", "r-record", "r-register", "r-ring", "r-rod", "r-route", "r-rule",
+    "s-scale", "s-scope", "s-score", "s-scroll", "s-section", "s-series", "s-serious", "s-set", "s-side", "s-signal", "s-stage", "s-state", "s-strap", "s-stream", "s-string", "s-switch",
+    "t-table", "t-tag", "t-target", "t-team", "t-term", "t-test", "t-thread", "t-tier", "t-token", "t-tool", "t-track", "t-tree", "t-tube", "t-type",
+    "v-valve", "v-value", "v-vector", "v-view", "v-voltage",
+    "w-waveform", "w-weight", "w-wire", "w-word",
+    "x-xylophone",
+    "z-zero", "z-zone"
+}
+
+STUTTER_REMOVE = {
+    "he", "it", "its", "an", "and", "we", "if",
+    "who", "whom", "whose", "whoever", "whomever", "whole", "wholly"
+} 
+
+LIMIT_STUTTER = {
+    'a': set(),
+    'e': set(),
+    'i': set(),
+    'o': {'oh', 'ohh', 'ooh', 'oops', 'ouch', 'oof', 'ow', 'okay', 'ok', 'oy', 'oi'},
+    'u': set(),
+    'y': set(),
+    'x': set(),
+    'q': set()
+}
+
+EXPECTED_FIRST_PHONEME = {
+    'b': ('b',), 'c': ('k', 's', 'tʃ', 'ʃ', 'ts'), 'd': ('d', 'dʒ'),
+    'f': ('f',), 'g': ('g', 'ɡ', 'dʒ', 'ʒ'), 
+    'h': ('h',),
+    'j': ('dʒ', 'ʒ', 'h', 'j'), 'k': ('k',), 'l': ('l', 'j'), 'm': ('m',),
+    'n': ('n', 'ɲ'), 'p': ('p', 'f'), 'q': ('k',), 'r': ('ɹ', 'r', 'ɾ'),
+    's': ('s', 'z', 'ʃ', 'ʒ'), 't': ('t', 'θ', 'ð', 'tʃ', 'ʃ', 's', 'ts'),
+    'v': ('v',), 'w': ('w', 'v', 'h'), 'x': ('z', 'k', 's'), 'y': ('j', 'ɪ', 'i', 'aɪ'),
+    'z': ('z', 'ʒ', 's')
 }
 
 # ==========================================
@@ -162,7 +248,11 @@ def fix_broken_words(text: str) -> str:
     text = re.sub(r'([a-zA-Z])\s*([\'’])\s*([a-zA-Z])', r'\1\2\3', text)
     text = re.sub(r'([sS])\s+([\'’])(?=\s|$)', r'\1\2', text)
 
-    ligatures = {'\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl', '\ufb03': 'ffi', '\ufb04': 'ffl', '\ufb05': 'ft', '\ufb06': 'st', '\u00a0': ' ', '\u2013': '-', '\u2014': '--'}
+    ligatures = {
+        '\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl', '\ufb03': 'ffi', 
+        '\ufb04': 'ffl', '\ufb05': 'ft', '\ufb06': 'st', '\u00a0': ' ', 
+        '\u2013': '-', '\u2014': '--'
+    }
     for char, rep in ligatures.items(): 
         text = text.replace(char, rep)
 
@@ -185,52 +275,83 @@ def fix_broken_words(text: str) -> str:
     for pattern, replacement in EXACT_REPLACEMENTS.items():
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
-    jp_pattern = r"\b([A-Za-z])-([A-Za-z]+)-(san|chan|kun|sama|dono|senpai|dano)\b"
+    jp_pattern = r"\b([A-Za-z])-([A-Za-z]+)-(san|chan|kun|sama|dono|senpai|sensei|dano)\b"
     text = re.sub(jp_pattern, process_jp_stutter, text, flags=re.IGNORECASE)
 
     def resolve_stutter(match):
-        raw_prefixes = match.group(1)
-        remainder_of_word = match.group(2)
+        pre_punct = match.group(1)
+        raw_prefixes = match.group(2)
+        remainder_of_word = match.group(3)
+        rem_low = remainder_of_word.lower()
         
         prefixes = [p for p in re.split(r'[-—–]+', raw_prefixes) if p]
         
-        if not all(remainder_of_word.lower().startswith(p.lower()) for p in prefixes):
+        # 1. Reject invalid stutters (e.g. T-Rex)
+        if not all(rem_low.startswith(p.lower()) for p in prefixes):
             return match.group(0)
             
+        # 2. Exception Shield for Compound Nouns (Bypass engine, keep hyphens for TTS)
+        full_stutter_key_first = f"{prefixes[0].lower()}-{rem_low}"
+        if full_stutter_key_first in STUTTER_EXCEPTIONS:
+            return match.group(0)
+            
+        first_prefix = prefixes[0].lower()
+        first_char = first_prefix[0]
+        
+        # 3. Suppress disabled words and letters
+        if rem_low in STUTTER_REMOVE:
+            return f"{pre_punct}{remainder_of_word}"
+            
+        if first_char in LIMIT_STUTTER and rem_low not in LIMIT_STUTTER[first_char]:
+            return f"{pre_punct}{remainder_of_word}"
+            
+        # 4. Silent letter check
+        is_silent = False
+        if rem_low.startswith(('kn', 'gn', 'pn', 'ps', 'pt', 'wr', 'cz', 'mn')) and first_char == rem_low[0]:
+            is_silent = True
+            
+        first_phoneme = ""
+        if _has_phonemizer:
+            try:
+                ipa = phonemize(rem_low, language='en-us', backend='espeak', with_stress=False, preserve_punctuation=False).strip()
+                clean_ipa = re.sub(r'[ˈˌː\.\u0325]', '', ipa)
+                if clean_ipa:
+                    first_phoneme = clean_ipa[:2] if len(clean_ipa) >= 2 and clean_ipa.startswith(('dʒ', 'tʃ', 'eɪ', 'oʊ', 'aɪ', 'aʊ', 'ɔɪ', 'ju', 'iː')) else clean_ipa[0]
+                    if not is_silent:
+                        expected_sounds = EXPECTED_FIRST_PHONEME.get(first_char)
+                        if expected_sounds and not clean_ipa.startswith(expected_sounds):
+                            is_silent = True
+            except Exception:
+                pass
+                
+        if is_silent:
+            return f"{pre_punct}{remainder_of_word}"
+            
+        # 5. Phonetic translation 
         result = []
+        cluster = rem_low[:2] if len(rem_low) >= 2 else ""
+        
         for p in prefixes:
             lookup = p.lower()
-            full_stutter_key = f"{lookup}-{remainder_of_word.lower()}"
+            ctx = CONTEXT_MAP.get(lookup, {})
+            
+            smart_sound = None
+            if first_phoneme and 'ipa' in ctx:
+                smart_sound = ctx['ipa'].get(first_phoneme)
+            if not smart_sound and 'text' in ctx:
+                smart_sound = ctx['text'](rem_low)
+            
             mapped_sound = None
-            
-            if full_stutter_key in STUTTER_EXCEPTIONS:
-                mapped_val = STUTTER_EXCEPTIONS[full_stutter_key]
-                mapped_sound = mapped_val.split(" ")[0]
-            
-            if not mapped_sound:
-                digraph_sounds = {'th': 'the', 'sh': 'shih', 'ch': 'chih', 'ph': 'fih', 'wh': 'wuh'}
-                matched_digraph = next((dg for dg in digraph_sounds if remainder_of_word.lower().startswith(dg)), None)
-                
-                if matched_digraph:
-                    if len(lookup) == 1:
-                        kokoro_fixes = {'t': 'tuh', 's': 'sih', 'c': 'kih', 'p': 'pih', 'w': 'wuh'}
-                        mapped_sound = kokoro_fixes.get(lookup, STUTTER_MAP.get(lookup, f"{lookup}uh"))
-                    elif lookup in digraph_sounds:
-                        mapped_sound = digraph_sounds[lookup]
-                        
-            if not mapped_sound:
-                mapped_sound = get_ipa_sound(remainder_of_word.lower())
-                
-            if not mapped_sound:
-                if lookup in STUTTER_MAP:
-                    kokoro_fixes = {
-                        't': 'tuh', 'th': 'the', 'w': 'wuh', 'wh': 'wuh',
-                        'b': 'buh', 'd': 'duh', 'p': 'puh', 'k': 'kuh', 'c': 'kuh',
-                        'h': 'hu', 'sh': 'shih', 'ch': 'chih', 'ph': 'fih'
-                    }
-                    mapped_sound = kokoro_fixes.get(lookup, STUTTER_MAP[lookup])
-                else:
-                    return match.group(0)
+            if smart_sound:
+                mapped_sound = smart_sound
+            elif len(lookup) == 1 and cluster in STUTTER_MAP and cluster[0] == lookup:
+                mapped_sound = STUTTER_MAP[cluster]
+            elif lookup in STUTTER_MAP:
+                mapped_sound = STUTTER_MAP[lookup]
+            else:
+                mapped_sound = get_ipa_sound(rem_low)
+                if not mapped_sound:
+                    mapped_sound = f"{lookup}uhh"
 
             if p[0].isupper():
                 result.append(mapped_sound[0].upper() + mapped_sound[1:])
@@ -238,9 +359,9 @@ def fix_broken_words(text: str) -> str:
                 result.append(mapped_sound)
                 
         result.append(remainder_of_word)
-        return " ".join(result)
+        return f"{pre_punct}{' '.join(result)}"
 
-    text = re.sub(r'(?<![a-zA-Z0-9\'])((?:[a-zA-Z]{1,3}[-—–]+)+)([a-zA-Z]+)', resolve_stutter, text)
+    text = re.sub(r'(?<![a-zA-Z])([\'"“‘\[\(\{]*)((?:[a-zA-Z]{1,3}[-—–]+)+)([a-zA-Z]+(?:\'[a-zA-Z]+)?)', resolve_stutter, text)
     
     text = re.sub(r"([A-Za-z])\1{2,}", r"\1\1", text)
 
@@ -254,7 +375,7 @@ def fix_broken_words(text: str) -> str:
 
 
 def fix_special_formats(text: str, lang: str = "en") -> str:
-    """Handles edge cases like time, dates, phone numbers, and currency with a Voice Gate."""
+    """Handles edge cases like time, dates, phone numbers, and currency."""
     if not text:
         return text
 
@@ -288,7 +409,7 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
         digit_map = {"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", 
                      "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine"}
         raw_digits = match.group(0).replace("-", "")
-        return " ".join([digit_map.get(d, d) for d in raw_digits])
+        return " ".join([digit_map[d] if d in digit_map else d for d in raw_digits])
     text = re.sub(r'\b\d+(?:-\d+){2,}\b', split_hyphenated, text)
 
     year_pattern = re.compile(
@@ -313,11 +434,13 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
 
 
 def auto_translate_numbers(text: str, lang: str = "en") -> str:
-    """Converts numbers to words dynamically, using scanner bounds to protect CJK."""
+    """Converts numbers to words dynamically, supporting ordinals and CJK scanner bounds."""
     if not text:
         return text
 
     def match_to_words(match):
+        raw_number = match.group(1)
+        suffix = match.group(2)
         raw_string = match.group(0)
         start_idx = match.start()
         end_idx = match.end()
@@ -339,29 +462,31 @@ def auto_translate_numbers(text: str, lang: str = "en") -> str:
         is_right_ja = bool(re.match(ja_regex, right_char)) if right_char else False
         
         try:
-            clean_number = int(raw_string.replace(',', ''))
+            clean_number = int(raw_number.replace(',', ''))
             
+            target_lang = 'en'
             if lang.startswith('ja') or is_left_ja or is_right_ja:
-                return num2words(clean_number, lang='ja')
-            elif lang.startswith('cmn') or lang.startswith('zh') or lang.startswith('en'):
-                return num2words(clean_number, lang='en')
+                target_lang = 'ja'
             elif lang.startswith('es'):
-                return num2words(clean_number, lang='es')
+                target_lang = 'es'
             elif lang.startswith('fr'):
-                return num2words(clean_number, lang='fr')
+                target_lang = 'fr'
             elif lang.startswith('it'):
-                return num2words(clean_number, lang='it')
+                target_lang = 'it'
             elif lang.startswith('pt'):
-                return num2words(clean_number, lang='pt_BR')
+                target_lang = 'pt_BR'
             elif lang.startswith('hi'):
-                return num2words(clean_number, lang='hi') 
+                target_lang = 'hi'
+            
+            if suffix:
+                return num2words(clean_number, lang=target_lang, to='ordinal')
             else:
-                return num2words(clean_number, lang='en')
+                return num2words(clean_number, lang=target_lang)
                 
         except Exception:
             return raw_string
 
-    return re.sub(r'(?<![\d,])\d+(?:,\d{3})*(?![\d,])', match_to_words, text)
+    return re.sub(r'(?<![\d,])(\d+(?:,\d{3})*)(st|nd|rd|th)?\b', match_to_words, text, flags=re.IGNORECASE)
 
 
 def normalize_unicode_quotes(text: str) -> str:
@@ -374,10 +499,7 @@ def normalize_unicode_quotes(text: str) -> str:
 
 
 def protect_japanese_mixed_latin(text: str, lang: str) -> str:
-    """
-    Applies native Japanese reading logic to mixed English text.
-    Silences redundant bracketed metadata and converts acronyms to Katakana.
-    """
+    """Applies native Japanese reading logic to mixed English text."""
     if not lang.startswith('ja'):
         return text
         
@@ -419,12 +541,13 @@ def protect_japanese_mixed_latin(text: str, lang: str) -> str:
     
     return text
 
-def apply_custom_pronunciations(text: str, rules: List[Dict[str, Any]], ignore_list: List[str] = [], lang: str = "en") -> str:
-    """
-    Applies custom user rules and ignore lists safely and robustly.
-    Incorporates Unicode normalization to prevent smart-quote mismatching.
-    """
+
+def apply_custom_pronunciations(text: str, rules: List[Dict[str, Any]], ignore_list: List[str] = None, lang: str = "en") -> str:
+    if ignore_list is None:
+        ignore_list = []
+    """Applies custom user rules and ignore lists safely and robustly."""
     text = fix_broken_words(text)
+    text = fix_special_formats(text, lang)
     text = auto_translate_numbers(text, lang)
     text = protect_japanese_mixed_latin(text, lang)
 

@@ -178,9 +178,24 @@ def master_sentence_splitter(text: str, start_idx: int = 0):
     text = re.sub(r'\.\s+\.\s+\.', '...', text)
 
     abbreviations = [
-        "Mr", "Mrs", "Ms", "Dr", "Prof", "St", "Rd", "Ave", "Capt",
-        "Gen", "Sen", "Rep", "Gov", "Fig", "No", "Op", "vs", "etc",
-        "Inc", "Ltd", "Co"
+    # Titles and honorifics
+    "Mr", "Mrs", "Ms", "Dr", "Prof", "Rev", "Hon", "Jr", "Sr", "Esq",
+    "Messrs", "Mmes", "Fr", "Pres",
+    # Military ranks
+    "Gen", "Col", "Maj", "Capt", "Lt", "Sgt", "Cpl", "Pvt", "Adm", "Cmdr", "Brig",
+    # Political and legal titles
+    "Sen", "Rep", "Gov", "Amb", "Atty", "Cllr",
+    # Addresses and locations
+    "St", "Rd", "Ave", "Blvd", "Ln", "Dr", "Ct", "Pl", "Sq", "Ter", "Pkwy", "Hwy",
+    "Apt", "Ste", "Bldg",
+    # Business and corporate
+    "Co", "Inc", "Ltd", "Corp", "LLC", "Mfg",
+    # Latin, academic, and references
+    "vs", "viz", "etc", "eg", "ie", "al", "ca", "cf", "ibid", "op",
+    "Fig", "Figs", "No", "Nos", "Vol", "Vols", "ch", "sec", "ed", "eds",
+    "pp", "p", "approx", "dept", "est",
+    # Months
+    "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec"
     ]
     for abbr in abbreviations:
         text = re.sub(rf'\b({abbr})\.(?=\s)', r'\1<ABBR>', text, flags=re.IGNORECASE)
@@ -188,11 +203,12 @@ def master_sentence_splitter(text: str, start_idx: int = 0):
     text = re.sub(r'(?i)\b(e\.g)\.(?=\s)', r'\1<ABBR>', text)
     text = re.sub(r'(?i)\b(i\.e)\.(?=\s)', r'\1<ABBR>', text)
 
+    # Simplified regex ignores all §§...§§ markers natively
     pattern = (
-        r'(?<=[.])\s+(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[A-Z"\'\u201c\u2018])|'
-        r'(?<=[.][\'"”’])\s+(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[A-Z"\'\u201c\u2018])|'
-        r'(?<=[。])\s*(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])|'
-        r'(?<=[。][\'"”’])\s*(?=(?:X(?:BOLD|ITAL|UND|DEL|F)(?:ON|OFF)X\s*)*[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
+        r'(?<=[.])\s+(?=(?:§§[^§]+§§\s*)*[A-Z"\'\u201c\u2018])|'
+        r'(?<=[.][\'"”’])\s+(?=(?:§§[^§]+§§\s*)*[A-Z"\'\u201c\u2018])|'
+        r'(?<=[。])\s*(?=(?:§§[^§]+§§\s*)*[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])|'
+        r'(?<=[。][\'"”’])\s*(?=(?:§§[^§]+§§\s*)*[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
     )
 
     raw_chunks = re.split(pattern, text)
@@ -210,8 +226,8 @@ def master_sentence_splitter(text: str, start_idx: int = 0):
         else:
             buffer = c
 
-        clean_buf = re.sub(r'X(BOLD|ITAL|UND|DEL|F)(ON|OFF)X', '', buffer)
-        clean_buf = re.sub(r'XF[SE]\|[^X]+X', '', clean_buf)
+        # Single pass cleanup for word counting
+        clean_buf = re.sub(r'§§[^§]+§§', '', buffer)
         word_count = len(re.findall(r'\b\w+\b', clean_buf))
 
         if word_count < 4 and i != len(chunks) - 1:
@@ -219,22 +235,23 @@ def master_sentence_splitter(text: str, start_idx: int = 0):
 
         clean_chunk = buffer.replace('<ABBR>', '.')
 
-        # Force restore tags
+        # Restore tags directly from source markers. Includes BR fix.
         clean_chunk = (
             clean_chunk
-            .replace('XBOLDONX', '<b>').replace('XBOLDOFFX', '</b>')
-            .replace('XITALONX', '<i>').replace('XITALOFFX', '</i>')
-            .replace('XUNDONX', '<u>').replace('XUNDOFFX', '</u>')
-            .replace('XDELONX', '<del>').replace('XDELOFFX', '</del>')
-            .replace('XFONX ', '').replace('XFONX', '')
-            .replace(' XFOFF_AX', '</a>').replace('XFOFF_AX', '</a>')
-            .replace(' XFOFF_SUPX', '</sup></a>').replace('XFOFF_SUPX', '</sup></a>')
+            .replace('§§B_ON§§', '<b>').replace('§§B_OFF§§', '</b>')
+            .replace('§§I_ON§§', '<i>').replace('§§I_OFF§§', '</i>')
+            .replace('§§U_ON§§', '<u>').replace('§§U_OFF§§', '</u>')
+            .replace('§§D_ON§§', '<del>').replace('§§D_OFF§§', '</del>')
+            .replace('§§F_ON§§ ', '').replace('§§F_ON§§', '')
+            .replace(' §§F_OFF_A§§', '</a>').replace('§§F_OFF_A§§', '</a>')
+            .replace(' §§F_OFF_SUP§§', '</sup></a>').replace('§§F_OFF_SUP§§', '</sup></a>')
+            .replace(' §§BR§§ ', '<br/>').replace('§§BR§§', '<br/>')
         )
         
-        # Restore footnote structural tags
-        clean_chunk = re.sub(r'XFS\|([^|]*)\|SUPX\s*', r'<a epub:type="noteref" href="#\1"><sup>', clean_chunk)
-        clean_chunk = re.sub(r'XFS\|([^|]*)\|AX\s*', r'<a epub:type="noteref" href="#\1">', clean_chunk)
-        clean_chunk = re.sub(r'XFE\|([^|]*)X\s*', r'<a epub:type="footnote" id="\1">', clean_chunk)
+        # Restore footnote structural tags directly
+        clean_chunk = re.sub(r'§§F_S\|([^§|]*)\|SUP§§\s*', r'<a epub:type="noteref" href="#\1"><sup>', clean_chunk)
+        clean_chunk = re.sub(r'§§F_S\|([^§|]*)\|A§§\s*', r'<a epub:type="noteref" href="#\1">', clean_chunk)
+        clean_chunk = re.sub(r'§§F_E\|([^§|]*)§§\s*', r'<a epub:type="footnote" id="\1">', clean_chunk)
 
         prefix = ""
         if is_ital: prefix += "<i>"
@@ -397,49 +414,55 @@ def process_image_scene_breaks(pages, image_map, doc_id, book_dir):
     
     src_prefix = f"/api/library/image/{doc_id}/"
     symbol_map = {}
+    src_counts = {}
     
     for page_html in pages:
         soup = BeautifulSoup(page_html, 'html.parser')
         for img in soup.find_all(['img', 'image']):
             src = img.get('src') or ''
-            if not src.startswith(src_prefix) or src in symbol_map:
-                continue
+            if src.startswith(src_prefix):
+                src_counts[src] = src_counts.get(src, 0) + 1
                 
-            assigned_id = src.replace(src_prefix, "")
-            filename = image_map.get(urllib.parse.unquote(assigned_id))
-            if not filename: continue
-            
-            clues = filename.lower()
-            is_symbolic = False
-            shape = "●"
-            
-            if 'circle' in clues: shape = "●"
-            elif 'box' in clues or 'square' in clues: shape = "■"
-            elif 'star' in clues: shape = "★"
-            elif 'diamond' in clues or 'orn' in clues: shape = "◆"
-            elif 'triangle' in clues: shape = "▼"
-            
-            kw_match = any(kw in clues for kw in ['circle', 'box', 'square', 'star', 'art_', 'break', 'line', 'ornament', 'orn', 'sep', 'div', 'fleuron', 'diamond'])
-            
-            img_path = book_dir / filename
-            w, h = get_image_size(img_path)
-            
-            symbol_count = 3
-            
-            if h and 0 < h < 100 and w < 800:
+    for src, count in src_counts.items():
+        assigned_id = src.replace(src_prefix, "")
+        filename = image_map.get(urllib.parse.unquote(assigned_id))
+        if not filename: continue
+        
+        clues = re.split(r'[^a-zA-Z0-9]', filename.lower())
+        is_symbolic = False
+        shape = "●"
+        
+        if 'circle' in clues: shape = "●"
+        elif 'box' in clues or 'square' in clues: shape = "■"
+        elif 'star' in clues: shape = "★"
+        elif 'diamond' in clues or 'orn' in clues: shape = "◆"
+        elif 'triangle' in clues: shape = "▼"
+        
+        kw_match = any(kw in clues for kw in ['circle', 'box', 'square', 'star', 'break', 'line', 'ornament', 'orn', 'sep', 'div', 'divider', 'fleuron', 'diamond', 'decoration'])
+        
+        img_path = book_dir / filename
+        w, h = get_image_size(img_path)
+        
+        symbol_count = 1
+        
+        if kw_match:
+            is_symbolic = True
+            nums = re.findall(r'\d+', filename)
+            if nums: 
+                symbol_count = int(nums[-1])
+            elif h and h > 0:
                 symbol_count = max(1, round(w / h))
-                if kw_match or (w / h >= 1.5):
-                    is_symbolic = True
-            elif kw_match:
+        elif h and 0 < h < 150 and w < 1000:
+            if w / h >= 1.5:
                 is_symbolic = True
-                nums = re.findall(r'\d+', filename)
-                if nums: 
-                    symbol_count = int(nums[-1])
-                    
-            if is_symbolic:
-                symbol_count = min(15, max(1, symbol_count))
-                symbol_map[src] = "".join([shape] * symbol_count)
+                symbol_count = max(1, round(w / h))
                 
+        if is_symbolic:
+            symbol_count = min(15, max(1, symbol_count))
+            symbol_map[src] = "".join([shape] * symbol_count)
+        elif w and h and w <= 150 and h <= 150 and count > 5:
+            symbol_map[src] = "§§S_WRAP§§"
+            
     if not symbol_map: return pages
     
     new_pages = []
@@ -455,10 +478,17 @@ def process_image_scene_breaks(pages, image_map, doc_id, book_dir):
                 if img.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
                     continue
                     
-                parent = img.find_parent(['p', 'div', 'figure', 'section', 'blockquote'])
-                check_node = parent if parent else img
+                # Find highest empty wrapper to vaporize nested divs
+                top_node = img
+                curr = img.parent
+                while curr and curr.name in ['div', 'p', 'figure', 'section', 'span', 'a', 'center', 'blockquote']:
+                    if curr.get_text(strip=True) or len(curr.find_all(['img', 'image'])) > 1:
+                        break
+                    top_node = curr
+                    curr = curr.parent
+                    
+                check_node = top_node
                 
-                # 🌟 STRICT ORNAMENT SHIELD: Enforce sandwich rule
                 prev_text_node = None
                 for curr in check_node.find_all_previous(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span']):
                     if curr.get_text(strip=True):
@@ -468,25 +498,33 @@ def process_image_scene_breaks(pages, image_map, doc_id, book_dir):
                 if not prev_text_node or prev_text_node.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] or prev_text_node.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
                     continue
 
+                next_text_node = None
+                for curr in check_node.find_all_next(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span']):
+                    if curr.get_text(strip=True):
+                        next_text_node = curr
+                        break
+                        
+                if not next_text_node or next_text_node.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] or next_text_node.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    continue
+
                 chars = symbol_map[src]
-                
                 new_tag = soup.new_tag('s')
                 
-                if parent:
-                    raw_text = parent.get_text(strip=True)
-                    other_imgs = [i for i in parent.find_all(['img', 'image']) if i != img]
-                    
-                    if raw_text or other_imgs:
-                        new_tag = soup.new_tag('span')
-                        
-                new_tag.string = chars
+                # Nuke IDs to prevent <s> from stealing header targets
+                if 'id' in img.attrs: del img['id']
+                if 'data-orig-id' in img.attrs: del img['data-orig-id']
                 
-                orig_id = img.get('id')
-                data_id = img.get('data-orig-id')
-                if orig_id: new_tag['id'] = orig_id
-                if data_id: new_tag['data-orig-id'] = data_id
-                
-                img.replace_with(new_tag)
+                if chars == "§§S_WRAP§§":
+                    extracted_img = img.extract()
+                    new_tag.append(extracted_img)
+                    top_node.replace_with(new_tag)
+                else:
+                    new_tag.string = chars
+                    if top_node != img:
+                        top_node.replace_with(new_tag)
+                    else:
+                        new_tag.name = 'span'
+                        img.replace_with(new_tag)
                         
         body = soup.find('body')
         page_str = str(body) if body else str(soup)
@@ -494,7 +532,6 @@ def process_image_scene_breaks(pages, image_map, doc_id, book_dir):
         new_pages.append(page_str)
         
     return new_pages
-
 
 
 @router.post("/api/convert/epub")
@@ -803,8 +840,8 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                         sb.string = p_text
                         p.replace_with(sb)
 
-            for block in soup.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']):
-                if block.find(['p', 'div', 'ul', 'ol', 'table', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            for block in soup.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote', 'figure']):
+                if block.find(['p', 'div', 'ul', 'ol', 'table', 'blockquote', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
                     continue
                     
                 has_media = block.find(['img', 's', 'picture', 'svg', 'figure'])
@@ -851,31 +888,11 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 if not text:
                     continue
 
-                # Convert to the markers that master_sentence_splitter understands
-                splitter_text = (
-                    text
-                    .replace('§§B_ON§§', 'XBOLDONX')
-                    .replace('§§B_OFF§§', 'XBOLDOFFX')
-                    .replace('§§I_ON§§', 'XITALONX')
-                    .replace('§§I_OFF§§', 'XITALOFFX')
-                    .replace('§§U_ON§§', 'XUNDONX')
-                    .replace('§§U_OFF§§', 'XUNDOFFX')
-                    .replace('§§D_ON§§', 'XDELONX')
-                    .replace('§§D_OFF§§', 'XDELOFFX')
-                    .replace('§§F_ON§§', 'XFONX')
-                    .replace('§§F_OFF_A§§', 'XFOFF_AX')
-                    .replace('§§F_OFF_SUP§§', 'XFOFF_SUPX')
-                    .replace('§§BR§§', ' XBRX ')
-                )
-                splitter_text = re.sub(r'§§F_S\|([^§]+)§§', r'XFS|\1X', splitter_text)
-                splitter_text = re.sub(r'§§F_E\|([^§]+)§§', r'XFE|\1X', splitter_text)
-
-                safe_text = html.escape(splitter_text)
+                safe_text = html.escape(text)
 
                 if block.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                     orig_id = block.get('id')
                     if not orig_id:
-                        # Salvage IDs hiding inside inner tags before block.clear() destroys them
                         inner_tag = block.find(id=True)
                         if inner_tag:
                             orig_id = inner_tag.get('id')
@@ -884,20 +901,21 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                     block['id'] = f's_{global_sentence_idx}'
                     if orig_id:
                         block['data-orig-id'] = orig_id
+                        
                     header_html = (
                         safe_text
-                        .replace('XBOLDONX', '<b>').replace('XBOLDOFFX', '</b>')
-                        .replace('XITALONX', '<i>').replace('XITALOFFX', '</i>')
-                        .replace('XUNDONX', '<u>').replace('XUNDOFFX', '</u>')
-                        .replace('XDELONX', '<del>').replace('XDELOFFX', '</del>')
-                        .replace(' XBRX ', '<br/>').replace('XBRX', '<br/>')
-                        .replace('XFONX ', '').replace('XFONX', '')
-                        .replace(' XFOFF_AX', '</a>').replace('XFOFF_AX', '</a>')
-                        .replace(' XFOFF_SUPX', '</sup></a>').replace('XFOFF_SUPX', '</sup></a>')
+                        .replace('§§B_ON§§', '<b>').replace('§§B_OFF§§', '</b>')
+                        .replace('§§I_ON§§', '<i>').replace('§§I_OFF§§', '</i>')
+                        .replace('§§U_ON§§', '<u>').replace('§§U_OFF§§', '</u>')
+                        .replace('§§D_ON§§', '<del>').replace('§§D_OFF§§', '</del>')
+                        .replace(' §§BR§§ ', '<br/>').replace('§§BR§§', '<br/>')
+                        .replace('§§F_ON§§ ', '').replace('§§F_ON§§', '')
+                        .replace(' §§F_OFF_A§§', '</a>').replace('§§F_OFF_A§§', '</a>')
+                        .replace(' §§F_OFF_SUP§§', '</sup></a>').replace('§§F_OFF_SUP§§', '</sup></a>')
                     )
-                    header_html = re.sub(r'XFS\|([^|]*)\|SUPX\s*', r'<a epub:type="noteref" href="#\1"><sup>', header_html)
-                    header_html = re.sub(r'XFS\|([^|]*)\|AX\s*', r'<a epub:type="noteref" href="#\1">', header_html)
-                    header_html = re.sub(r'XFE\|([^|]*)X\s*', r'<a epub:type="footnote" id="\1">', header_html)
+                    header_html = re.sub(r'§§F_S\|([^§|]*)\|SUP§§\s*', r'<a epub:type="noteref" href="#\1"><sup>', header_html)
+                    header_html = re.sub(r'§§F_S\|([^§|]*)\|A§§\s*', r'<a epub:type="noteref" href="#\1">', header_html)
+                    header_html = re.sub(r'§§F_E\|([^§|]*)§§\s*', r'<a epub:type="footnote" id="\1">', header_html)
                     
                     for s_id, s_html in shield_map.items():
                         header_html = header_html.replace(s_id, s_html)
@@ -908,7 +926,6 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
                 new_html, global_sentence_idx = master_sentence_splitter(safe_text, global_sentence_idx)
 
                 if new_html:
-                    new_html = new_html.replace(' XBRX ', '<br/>').replace('XBRX', '<br/>')
                     for s_id, s_html in shield_map.items():
                         new_html = new_html.replace(s_id, s_html)
                     block.clear()
@@ -1058,6 +1075,8 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
         if not toc_map:
             toc_map = generate_toc(pages)
 
+        # 🌟 TOC SYNCHRONIZER 🌟
+        # Links directly to html_normalizer. No redundant text-guessing required.
         claimed_ids = set()
 
         for toc_item in toc_map:
@@ -1068,33 +1087,30 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             page_soup = BeautifulSoup(pages[p_idx], 'html.parser')
             target_tts_id = None
             
+            # Step 1: Trust the exact anchor provided by the metadata map (if any)
             anchor = toc_item.get('anchor_id')
             if anchor:
                 clean_anchor = anchor.split('#')[-1]
+                # Look for data-orig-id (salvaged by normalizer) or standard id
                 el = page_soup.find(attrs={"data-orig-id": clean_anchor}) or page_soup.find(id=clean_anchor)
-                if el and el.get('id', '').startswith('s_'):
-                    target_tts_id = el.get('id')
-                elif el:
-                    child = el.find(id=re.compile(r'^s_'))
-                    if child: target_tts_id = child.get('id')
-                    
-            if not target_tts_id and toc_item.get('title'):
-                clean_title = re.sub(r'[^\w]', '', toc_item['title'].lower())
-                for h in page_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                    h_text = re.sub(r'[^\w]', '', h.get_text().lower())
-                    if clean_title and (clean_title in h_text or h_text in clean_title):
-                        h_id = h.get('id')
-                        if h_id and h_id.startswith('s_') and h_id not in claimed_ids:
-                            target_tts_id = h_id
-                            break
+                if el:
+                    if el.get('id', '').startswith('s_'):
+                        target_tts_id = el.get('id')
+                    else:
+                        child = el.find(id=re.compile(r'^s_'))
+                        if child: target_tts_id = child.get('id')
                             
+            # Step 2: Trust the Normalizer Pipeline (If no anchor or anchor failed)
+            # The normalizer mathematically guaranteed that the TOC target is now an H1 or H2.
+            # If it's a Good EPUB with an image at the top, it skips the image and finds the native H1.
             if not target_tts_id:
-                for first_h in page_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                for first_h in page_soup.find_all(['h1', 'h2', 'h3']):
                     h_id = first_h.get('id')
                     if h_id and h_id.startswith('s_') and h_id not in claimed_ids:
                         target_tts_id = h_id
                         break
                     
+            # Step 3: Absolute fallback to the first spoken sentence on the page
             if not target_tts_id:
                 for first_n in page_soup.find_all(id=re.compile(r'^s_')):
                     n_id = first_n.get('id')

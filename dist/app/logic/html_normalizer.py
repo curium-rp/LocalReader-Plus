@@ -90,9 +90,6 @@ def pre_parse_clean(html_string: str) -> str:
     return html_string
 
 
-
-
-
 def standardize_formatting(soup: BeautifulSoup) -> None:
     # 1. Normalize semantic tags
     for tag in soup.find_all('strong'):
@@ -189,8 +186,11 @@ def standardize_formatting(soup: BeautifulSoup) -> None:
 def normalize_epub_html(soup: BeautifulSoup, known_toc_titles: set = None, current_href: str = None, rich_toc_map: dict = None) -> None:
     """
     Master pre-processing pipeline for EPUB HTML.
-    Includes the 3-Branch System Manager to protect Good EPUBs.
+    Includes 85% fuzzy match, local imports to prevent scope crashes, and top-file image fallback.
     """
+    import re
+    import difflib  # 🌟 FIX: Safe local import prevents NameError crash
+    
     exterminate_bad_tags(soup)
     if nuke_inline_toc(soup): return
     promote_image_headers(soup)
@@ -199,32 +199,99 @@ def normalize_epub_html(soup: BeautifulSoup, known_toc_titles: set = None, curre
     
     standardize_footnotes(soup)
     
-    # ==========================================
-    # 🌟 NEW: THE SYSTEM MANAGER (ROUTER) 🌟
-    # ==========================================
-    # Check if the file already has valid heading tags (Length > 2 ignores empty <h> tags)
     existing_h = [h for h in soup.find_all(['h1', 'h2', 'h3']) if len(h.get_text(strip=True)) > 2]
-    has_valid_toc = known_toc_titles and len(known_toc_titles) > 2
+    heading_promoted = False
     
-    if existing_h:
-        # 🌟 BRANCH 1: CLEAR CASE
-        # The EPUB is good. We bypass all injection logic to protect the original H1/H2 structure.
-        pass 
-    else:
-        # 検 BRANCH 3: SUPER FALLBACK (WILD WEST)
+    clean_href = current_href.split('/')[-1].split('#')[0].lower() if current_href else ""
+    expected_nodes = rich_toc_map.get(clean_href, []) if rich_toc_map else []
+    
+    matched_target = None
+    if expected_nodes and not existing_h:
+        primary_node = expected_nodes[0]
+        anchor = primary_node.get('anchor', '')
+        raw_title = primary_node.get('title', '')
+        title_norm = re.sub(r'\s+', ' ', raw_title).strip().lower()
+        
+        # 1. Exact Anchor Match
+        if anchor:
+            matched_target = soup.find(id=anchor) or soup.find(attrs={"name": anchor})
+            
+        # 2. Fuzzy Text Match (85% threshold, limit 30 blocks to avoid full HTML scan)
+        if not matched_target and title_norm and len(title_norm) > 2:
+            for block in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span', 'header'], limit=30):
+                block_text = re.sub(r'\s+', ' ', block.get_text(separator=" ", strip=True)).lower()
+                if len(block_text) < 2: continue
+                
+                if block_text == title_norm or title_norm.startswith(block_text) or block_text.startswith(title_norm):
+                    matched_target = block
+                    break
+                else:
+                    ratio = difflib.SequenceMatcher(None, title_norm, block_text).ratio()
+                    if ratio >= 0.85:
+                        matched_target = block
+                        break
+
+    def get_leaf_candidate(container):
+        if len(container.find_all(['p', 'div', 'section'])) > 1 or len(container.get_text(strip=True)) > 200:
+            for child in container.find_all(['p', 'div', 'section', 'span', 'header', 'img', 'svg']):
+                if child.name in ['img', 'svg'] or not child.find(['p', 'div', 'section']):
+                    txt = child.get_text(strip=True) if child.name not in ['img', 'svg'] else ''
+                    has_media = child.name in ['img', 'svg'] or child.find(['img', 'image', 'svg'])
+                    
+                    valid_text = txt and len(txt) < 150 and any(c.isalnum() for c in txt)
+                    valid_img = has_media and not any(c.isalnum() for c in txt)
+                    
+                    if valid_text or valid_img:
+                        return child
+        return container
+
+    if matched_target:
+        matched_target = get_leaf_candidate(matched_target)
+        target = matched_target if matched_target.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span', 'section', 'header'] else matched_target.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span', 'header'])
+        if target:
+            target.name = 'h1'
+            heading_promoted = True
+            
+    elif expected_nodes and not existing_h:
+        # 3. Top-File Guess Match (First valid text or image)
+        body = soup.find('body') or soup
+        for el in body.find_all(['p', 'div', 'section', 'header', 'img', 'svg']):
+            if el.name not in ['img', 'svg'] and el.find(['p', 'div', 'section']):
+                continue
+                
+            txt = el.get_text(strip=True) if el.name not in ['img', 'svg'] else ''
+            has_media = el.name in ['img', 'svg'] or el.find(['img', 'image', 'svg'])
+            
+            valid_text = txt and len(txt) < 150 and any(c.isalnum() for c in txt)
+            valid_img = has_media and not any(c.isalnum() for c in txt)
+            
+            if valid_text or valid_img:
+                if el.name in ['img', 'svg']:
+                    parent = el.find_parent(['p', 'div', 'section'])
+                    if parent and len(parent.get_text(strip=True)) < 150:
+                        parent.name = 'h1'
+                    else:
+                        wrap = soup.new_tag('h1')
+                        el.wrap(wrap)
+                else:
+                    el.name = 'h1'
+                heading_promoted = True
+                break
+
+    if not existing_h and not heading_promoted:
         apply_super_fallback_headings(soup)
-        
-    if not inject_mapped_image_headings(soup, current_href, rich_toc_map):
-        inject_image_headings(soup, known_toc_titles)
-        
-    # Deep Cleaning
+        if not soup.find(['h1', 'h2', 'h3']):
+            if not inject_mapped_image_headings(soup, current_href, rich_toc_map):
+                inject_image_headings(soup, known_toc_titles)
+                
     strip_junk_attributes(soup)
     heavy_paragraph_cleanup(soup)
 
 
 def inject_mapped_image_headings(soup: BeautifulSoup, current_href: str, rich_toc_map: dict) -> bool:
     if not current_href or not rich_toc_map: return False
-    if soup.find(['h1', 'h2']): return False
+    # Upgraded guard to include h3
+    if soup.find(['h1', 'h2', 'h3']): return False
     
     clean_href = current_href.split('/')[-1].split('#')[0].lower()
     expected_nodes = rich_toc_map.get(clean_href, [])
@@ -260,13 +327,13 @@ def inject_mapped_image_headings(soup: BeautifulSoup, current_href: str, rich_to
 
 
 def inject_image_headings(soup: BeautifulSoup, known_toc_titles: set) -> None:
-    if soup.find(['h1', 'h2']): return
+    # Upgraded guard to include h3
+    if soup.find(['h1', 'h2', 'h3']): return
     
     for img in soup.find_all(['img', 'image']):
         src = (img.get('src') or '').lower()
         alt = (img.get('alt') or '').lower()
         
-        # 🌟 Anti-false-positive shield
         if any(x in alt for x in ['cover', 'title page', 'illustration', 'insert', 'frontispiece', 'copyright']):
             continue
             
@@ -275,7 +342,7 @@ def inject_image_headings(soup: BeautifulSoup, known_toc_titles: set) -> None:
         
         if known_toc_titles:
             for title in known_toc_titles:
-                if len(title) < 4: continue # Too short, prone to false positive
+                if len(title) < 4: continue 
                 
                 if title == alt or title in alt:
                     match_found = True
@@ -332,29 +399,6 @@ def nuke_inline_toc(soup: BeautifulSoup) -> bool:
                 soup.clear()
             return True
     return False
-
-
-def inject_headings_from_toc(soup: BeautifulSoup, known_toc_titles: set) -> None:
-    """
-    🟡 BRANCH 2 Logic: Only runs if there are NO <h> tags, but TOC exists.
-    First match in the file becomes <h1>, subsequent matches become <h2>.
-    """
-    match_count = 0
-    for block in soup.find_all(['p', 'div']):
-        try:
-            raw_text = block.get_text(separator=" ", strip=True)
-            raw_text = " ".join(raw_text.split())
-            if not raw_text or len(raw_text) > 120: continue
-            
-            if raw_text.lower() in known_toc_titles:
-                match_count += 1
-                # The first match is the main chapter title (H1). The rest are subtitles (H2).
-                if match_count == 1:
-                    block.name = 'h1'
-                else:
-                    block.name = 'h2'
-        except Exception:
-            pass
 
 
 def apply_super_fallback_headings(soup: BeautifulSoup) -> None:

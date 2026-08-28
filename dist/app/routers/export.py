@@ -109,12 +109,7 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
 
     resolved_ffmpeg_path = None
     if request.format == "mp3":
-        resolved_ffmpeg_path = shutil.which("ffmpeg")
-        if not resolved_ffmpeg_path:
-            local_exe = "ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg"
-            local_ffmpeg = base_dir / "bin" / local_exe
-            if local_ffmpeg.exists():
-                resolved_ffmpeg_path = str(local_ffmpeg)
+        resolved_ffmpeg_path = get_ffmpeg_path()
         if not resolved_ffmpeg_path:
             ffmpeg_status["is_installed"] = False
             raise HTTPException(status_code=503, detail="FFMPEG not installed.")
@@ -745,7 +740,13 @@ async def open_file_location(req: Request = None):
     except Exception as e:
         # Bulletproof Fallback: Open userdata if Audio files fails
         try:
-            os.startfile(str(userdata_dir.absolute()))
+            fallback_dir = str(userdata_dir.absolute())
+            if system == "Windows":
+                os.startfile(fallback_dir)
+            elif system == "Darwin":
+                subprocess.Popen(["open", fallback_dir])
+            elif system == "Linux":
+                subprocess.Popen(["xdg-open", fallback_dir])
             return {"status": "opened_fallback"}
         except Exception:
             raise HTTPException(status_code=500, detail=str(e))

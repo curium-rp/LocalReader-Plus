@@ -227,13 +227,45 @@ export async function playNext() {
     }
     return;
   }
-
+  //auto scroll in this functions for adjudt cut jump later 
+  //currnet it cut 10 % top and 20 % buttom
   if (state.viewPageIndex === state.readingPageIndex) {
-    state.sentenceElements.forEach(
-      (el, i) => (el.className = `sentence ${i === state.currentSentenceIndex ? "active-sentence" : ""}`)
-    );
+    state.sentenceElements.forEach((el, i) => {
+      el.classList.add("sentence");
+      el.classList.toggle("active-sentence", i === state.currentSentenceIndex);
+    });
     const active = state.sentenceElements[state.currentSentenceIndex];
-    if (active && state.autoScrollEnabled) active.scrollIntoView({ behavior: "smooth", block: "center" });
+    
+    if (active && state.autoScrollEnabled) {
+      const scrollerNode = document.querySelector(".content-area");
+      if (scrollerNode) {
+          const elRect = active.getBoundingClientRect();
+          const containerRect = scrollerNode.getBoundingClientRect();
+          const relativeTop = elRect.top - containerRect.top + scrollerNode.scrollTop;
+          
+          const isImg = active.tagName && (active.tagName.toLowerCase() === 'img' || active.querySelector('img, svg')) && active.tagName.toLowerCase() !== 's';
+          
+          if (state.currentSentenceIndex === 0 && !isImg) {
+              scrollerNode.scrollTo({ top: 0, behavior: 'smooth' });
+          } else if (isImg) {
+              const alignImg = () => {
+                  const currentRect = active.getBoundingClientRect();
+                  const cPos = (currentRect.top - containerRect.top + scrollerNode.scrollTop) - (containerRect.height / 2) + (currentRect.height / 2);
+                  scrollerNode.scrollTo({ top: Math.max(0, cPos), behavior: 'smooth' });
+              };
+              alignImg(); 
+              setTimeout(alignImg, 450); 
+          } else {
+              const safeTop = containerRect.top + (containerRect.height * 0.10);
+              const safeBottom = containerRect.bottom - (containerRect.height * 0.20);
+              
+              if (elRect.bottom > safeBottom || elRect.top < safeTop) {
+                  const targetScroll = relativeTop - (containerRect.height * 0.15);
+                  scrollerNode.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
+              }
+          }
+      }
+    }
   }
 
   saveProgress();
@@ -250,13 +282,14 @@ export async function playNext() {
   if (currentEl) {
       const hMatch = currentEl.closest('h1, h2, h3, h4, h5, h6');
       if (hMatch) bType = hMatch.tagName.toUpperCase(); 
+      else if (currentEl.tagName.toLowerCase() === 's' || currentEl.closest('s, .scene-break')) bType = "S";
       else if (currentEl.tagName.toLowerCase() === 'img' || currentEl.querySelector('img, svg')) bType = "Img";
-      else if (/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) bType = "Img";
       else if (/<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
+      else if (/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) bType = "Img";
   }
 
-  const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
-  let cleanText = text.replace(validTags, '').trim();
+  const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
+  let cleanText = text.replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/\s+/g, ' ').trim();
   if (text.endsWith('\n')) cleanText += '\n'; 
 
   // 🌟 THE IMAGE HEADER RESCUE INTERCEPTOR 🌟
@@ -284,7 +317,7 @@ export async function playNext() {
       
       // If it failed to rescue, downgrade it to an image/silence so the API doesn't crash on empty text
       if (!rescuedTitle) {
-          bType = (/<img|<svg/i.test(text) || (currentEl && currentEl.querySelector('img, svg'))) ? "Img" : "S";
+          bType = (/<s\b/i.test(text) || (currentEl && (currentEl.tagName.toLowerCase() === 's' || currentEl.closest('s, .scene-break')))) ? "S" : (/<img|<svg/i.test(text) || (currentEl && currentEl.querySelector('img, svg'))) ? "Img" : "S";
       }
   }
 
@@ -299,6 +332,9 @@ export async function playNext() {
   } else if (bType === "S" && currentEl) {
       displayChars = currentEl.textContent.trim() || cleanText.trim() || "•••";
   }
+
+  // 🌟 Failsafe: Strip ANY remaining malformed tags before displaying in UI
+  displayChars = displayChars.replace(/<[^>]+>/g, '').trim();
 
   const currentSentencePreview = document.getElementById("currentSentencePreview");
   if (currentSentencePreview) currentSentencePreview.textContent = `⏳ Loading...`;
@@ -592,17 +628,17 @@ export async function preCacheNextSentences() {
       if (nextEl) {
           const hMatch = nextEl.closest('h1, h2, h3, h4, h5, h6');
           if (hMatch) bType = hMatch.tagName.toUpperCase();
+          else if (nextEl.tagName.toLowerCase() === 's' || nextEl.closest('s, .scene-break')) bType = "S";
           else if (nextEl.tagName.toLowerCase() === 'img' || nextEl.querySelector('img, svg')) bType = "Img";
-          else if (nextEl.tagName.toLowerCase() === 's' || nextEl.closest('.scene-break')) bType = "S";
       } else {
           const hMatch = nextText.match(/<h([1-6])/i);
           if (hMatch) bType = "H" + hMatch[1];
-          else if (/<img|<svg/i.test(nextText)) bType = "Img";
           else if (/<s\b/i.test(nextText) || /class="scene-break"/i.test(nextText)) bType = "S";
+          else if (/<img|<svg/i.test(nextText)) bType = "Img";
       }
 
-      const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
-      let cleanText = nextText.replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
+      let cleanText = nextText.replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
       if (nextText.endsWith('\n')) cleanText += '\n'; 
   
       // 🌟 THE IMAGE HEADER RESCUE INTERCEPTOR (PRE-CACHER) 🌟
@@ -629,7 +665,7 @@ export async function preCacheNextSentences() {
           }
           
           if (!rescuedTitle) {
-              bType = (/<img|<svg/i.test(nextText) || (nextEl && nextEl.querySelector('img, svg'))) ? "Img" : "S";
+              bType = (/<s\b/i.test(nextText) || (nextEl && (nextEl.tagName.toLowerCase() === 's' || nextEl.closest('s, .scene-break')))) ? "S" : (/<img|<svg/i.test(nextText) || (nextEl && nextEl.querySelector('img, svg'))) ? "Img" : "S";
           }
       }
 
