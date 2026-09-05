@@ -1,7 +1,15 @@
 import { state } from "./state.js";
 import { fetchJSON, fetchBlob, API_URL } from "./api.js";
-import { showToast, stripHTML, renderIcons } from "./ui.js";
-import { renderPage, getSentencesForPage } from "./library.js";
+import { showToast, stripHTML, renderIcons, setMonitorPreview, syncBackToReadingButton } from "./ui.js";
+import {
+  renderPage,
+  getSentencesForPage,
+  findTocEntryForPage,
+  clearActiveSentenceHighlights,
+  validTags,
+} from "./library.js";
+import { revealInSpread } from "./horizontal.js";
+import { updateProgressDisplay, getProgressMetrics } from "./progress.js";
 
 let saveProgressTimeout = null;
 let currentSynthesisId = 0; // 🌟 ADDED: Bulletproof lock to prevent voice overlap
@@ -20,7 +28,7 @@ export function initAudioContext() {
   }
 }
 
-export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
+function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
   if (state.currentAudioSource) {
     try {
       state.currentAudioSource.stop();
@@ -87,11 +95,7 @@ export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
     }
     
     // Clean up UI instantly when audio finishes
-    const preview = document.getElementById("currentSentencePreview");
-    if (preview && displayChars) preview.textContent = displayChars;
-    
-    const monitor = document.getElementById("monitorSentenceText");
-    if (monitor && displayChars) monitor.textContent = displayChars;
+    setMonitorPreview(displayChars, { center: bType === "Img" || bType === "S" });
 
     state.currentSentenceIndex++;
     console.log(`Sentence ended, moving to ${state.currentSentenceIndex}`);
@@ -103,8 +107,8 @@ export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
   source.start(0);
 
   // --- DYNAMIC AUDIO-SYNCED VISUAL TIMER ---
-  const currentSentencePreview = document.getElementById("currentSentencePreview");
-  if (bType === "Img" || bType === "S") {
+  const centerStatus = bType === "Img" || bType === "S";
+  if (centerStatus) {
       const durationMs = audioBuffer.duration * 1000;
       const endTime = Date.now() + durationMs;
       
@@ -113,31 +117,29 @@ export function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
       state.jumpTimer = setInterval(() => {
           if (!state.isPlaying) return clearInterval(state.jumpTimer);
           const remaining = endTime - Date.now();
-          const monitorText = document.getElementById("monitorSentenceText");
           
           if (remaining > 0) {
-              const textWithTime = `${displayChars} (${Math.ceil(remaining / 1000)}s)`;
-              if (currentSentencePreview) currentSentencePreview.textContent = textWithTime;
-              if (monitorText) monitorText.textContent = textWithTime;
+              setMonitorPreview(`${displayChars} (${Math.ceil(remaining / 1000)}s)`, { center: true });
           } else {
               clearInterval(state.jumpTimer);
-              if (currentSentencePreview) currentSentencePreview.textContent = displayChars;
-              if (monitorText) monitorText.textContent = displayChars;
+              setMonitorPreview(displayChars, { center: true });
           }
       }, 100);
       
-      const initText = `${displayChars} (${Math.ceil(durationMs / 1000)}s)`;
-      if (currentSentencePreview) currentSentencePreview.textContent = initText;
-      
-      const monitorText = document.getElementById("monitorSentenceText");
-      if (monitorText) monitorText.textContent = initText;
+      setMonitorPreview(`${displayChars} (${Math.ceil(durationMs / 1000)}s)`, { center: true });
   } else {
-      if (currentSentencePreview) currentSentencePreview.textContent = displayChars;
-      const monitorText = document.getElementById("monitorSentenceText");
-      if (monitorText) monitorText.textContent = displayChars;
+      setMonitorPreview(displayChars, { center: false });
   }
 
   console.log(`[WebAudio] Playing buffer: ${audioBuffer.duration.toFixed(2)}s | Type: ${bType} | Muted: ${gainNode.gain.value < 1}`);
+}
+
+function syncPlayPauseIcons(icon) {
+  ["playIcon", "sidebarMiniPlayIcon"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.setAttribute("data-lucide", icon);
+  });
+  renderIcons();
 }
 
 export function stopPlayback() {
@@ -150,11 +152,7 @@ export function stopPlayback() {
     navigator.mediaSession.playbackState = 'paused';
   }
 
-  const playIcon = document.getElementById("playIcon");
-  if (playIcon) {
-    playIcon.setAttribute("data-lucide", "play");
-    renderIcons();
-  }
+  syncPlayPauseIcons("play");
 
   if (state.jumpTimer) {
     clearInterval(state.jumpTimer); 
@@ -230,6 +228,7 @@ export async function playNext() {
   //auto scroll in this functions for adjudt cut jump later 
   //currnet it cut 10 % top and 20 % buttom
   if (state.viewPageIndex === state.readingPageIndex) {
+    clearActiveSentenceHighlights();
     state.sentenceElements.forEach((el, i) => {
       el.classList.add("sentence");
       el.classList.toggle("active-sentence", i === state.currentSentenceIndex);
@@ -237,18 +236,23 @@ export async function playNext() {
     const active = state.sentenceElements[state.currentSentenceIndex];
     
     if (active && state.autoScrollEnabled) {
+      if (revealInSpread(active)) {
+        // Horizontal spreads: keep the active sentence on the visible spread.
+      } else {
       const scrollerNode = document.querySelector(".content-area");
       if (scrollerNode) {
           const elRect = active.getBoundingClientRect();
           const containerRect = scrollerNode.getBoundingClientRect();
           const relativeTop = elRect.top - containerRect.top + scrollerNode.scrollTop;
           
-          const isImg = active.tagName && (active.tagName.toLowerCase() === 'img' || active.querySelector('img, svg')) && active.tagName.toLowerCase() !== 's';
+          const hasNarrativeActive = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(active.textContent || "");
+          const isImg = active.tagName && (active.tagName.toLowerCase() === 'img' || (!hasNarrativeActive && active.querySelector('img, svg'))) && active.tagName.toLowerCase() !== 's';
           
           if (state.currentSentenceIndex === 0 && !isImg) {
               scrollerNode.scrollTo({ top: 0, behavior: 'smooth' });
           } else if (isImg) {
               const alignImg = () => {
+                  if (!state.autoScrollEnabled) return;
                   const currentRect = active.getBoundingClientRect();
                   const cPos = (currentRect.top - containerRect.top + scrollerNode.scrollTop) - (containerRect.height / 2) + (currentRect.height / 2);
                   scrollerNode.scrollTo({ top: Math.max(0, cPos), behavior: 'smooth' });
@@ -265,31 +269,42 @@ export async function playNext() {
               }
           }
       }
+      }
     }
   }
 
+  updateProgressDisplay();
   saveProgress();
 
   let bType = "N";
   const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
 
   // 🌟 THE PHANTOM IMAGE AUTO-SKIP: Move forward automatically if we hit a duplicate image during playback
-  if (currentEl && currentEl.tagName.toLowerCase() === 'img' && currentEl.closest('h1, h2, h3, h4, h5, h6')) {
+  if (currentEl && currentEl.tagName.toLowerCase() === 'img' && currentEl.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n')) {
       state.currentSentenceIndex++;
       return playNext();
   }
+
+  const hasNarrativeTextInCurrent = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(
+      currentEl ? (currentEl.textContent || "") : text
+  );
 
   if (currentEl) {
       const hMatch = currentEl.closest('h1, h2, h3, h4, h5, h6');
       if (hMatch) bType = hMatch.tagName.toUpperCase(); 
       else if (currentEl.tagName.toLowerCase() === 's' || currentEl.closest('s, .scene-break')) bType = "S";
-      else if (currentEl.tagName.toLowerCase() === 'img' || currentEl.querySelector('img, svg')) bType = "Img";
+      else if (currentEl.tagName.toLowerCase() === 'img' || (!hasNarrativeTextInCurrent && currentEl.querySelector('img, svg'))) bType = "Img";
       else if (/<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
-      else if (/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) bType = "Img";
+      else if ((/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) && !hasNarrativeTextInCurrent) bType = "Img";
+  } else {
+      const hMatch = text.match(/<h([1-6])/i);
+      if (hMatch) bType = "H" + hMatch[1];
+      else if (/<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
+      else if ((/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) && !hasNarrativeTextInCurrent) bType = "Img";
   }
 
-  const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
-  let cleanText = text.replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/\s+/g, ' ').trim();
+  let cleanText = text.replace(/<(?:rt|rp)\b[^>]*>[\s\S]*?<\/(?:rt|rp)>/gi, '').replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+  cleanText = cleanText.replace(/\s+([,.:;!?])/g, '$1');
   if (text.endsWith('\n')) cleanText += '\n'; 
 
   // 🌟 THE IMAGE HEADER RESCUE INTERCEPTOR 🌟
@@ -298,8 +313,8 @@ export async function playNext() {
       let sentenceId = null;
       let origId = null;
       if (currentEl) {
-          sentenceId = currentEl.getAttribute('id');
-          origId = currentEl.getAttribute('data-orig-id');
+          sentenceId = currentEl.dataset?.sentenceId || currentEl.getAttribute('id') || currentEl.closest('[id^="s_"]')?.getAttribute('id') || currentEl.id;
+          origId = currentEl.getAttribute('data-orig-id') || currentEl.closest('[id^="s_"]')?.getAttribute('data-orig-id');
       } else {
           const idMatch = text.match(/id=['"]([^'"]+)['"]/);
           if (idMatch) sentenceId = idMatch[1];
@@ -307,12 +322,14 @@ export async function playNext() {
           if (origMatch) origId = origMatch[1];
       }
 
-      if ((sentenceId || origId) && state.tocMap) {
-          const matchedToc = state.tocMap.find(t => t.target_tts_id === sentenceId || t.id === sentenceId || (origId && (t.target_tts_id === origId || t.id === origId)));
-          if (matchedToc && matchedToc.title) {
-              rescuedTitle = matchedToc.title;
-              cleanText = rescuedTitle;
-          }
+      const matchedToc = findTocEntryForPage(
+          state.readingPageIndex,
+          sentenceId,
+          origId
+      );
+      if (matchedToc && matchedToc.title) {
+          rescuedTitle = matchedToc.title;
+          cleanText = rescuedTitle;
       }
       
       // If it failed to rescue, downgrade it to an image/silence so the API doesn't crash on empty text
@@ -336,8 +353,7 @@ export async function playNext() {
   // 🌟 Failsafe: Strip ANY remaining malformed tags before displaying in UI
   displayChars = displayChars.replace(/<[^>]+>/g, '').trim();
 
-  const currentSentencePreview = document.getElementById("currentSentencePreview");
-  if (currentSentencePreview) currentSentencePreview.textContent = `⏳ Loading...`;
+  setMonitorPreview("⏳ Loading...", { center: true });
 
   console.log(`Synthesizing sentence ${state.currentSentenceIndex}: "${cleanText.substring(0, 30)}..." | Type: ${bType}`);
 
@@ -427,32 +443,21 @@ export async function playNext() {
 }
 
 export function togglePlayback() {
-  const playIcon = document.getElementById("playIcon");
   if (state.isPlaying) {
     stopPlayback();
   } else {
     initAudioContext();
     state.isPlaying = true;
-    if (playIcon) {
-      playIcon.setAttribute("data-lucide", "pause");
-      renderIcons();
-    }
+    syncPlayPauseIcons("pause");
     playNext();
   }
 }
 
 export async function jumpToSentence(i) {
-  // 🌟 THE PHANTOM IMAGE ROUTER: Redirect clicks and arrow keys from duplicate images to their parent header
-  if (state.sentenceElements && state.sentenceElements[i]) {
-    const el = state.sentenceElements[i];
-    if (el.tagName.toLowerCase() === 'img' && el.closest('h1, h2, h3, h4, h5, h6')) {
-        const parentH = el.closest('h1, h2, h3, h4, h5, h6');
-        const hIndex = state.sentenceElements.indexOf(parentH);
-        if (hIndex !== -1) {
-            i = hIndex;
-        }
-    }
-  }
+  // Re-enable auto-scroll and restore reading focus
+  state.autoScrollEnabled = true;
+
+  syncBackToReadingButton();
 
   // 1. Stop current audio immediately and kill its listeners
   if (state.currentAudioSource) {
@@ -473,6 +478,23 @@ export async function jumpToSentence(i) {
     state.jumpTimer = null;
   }
 
+  if (state.viewPageIndex !== state.readingPageIndex) {
+    state.viewPageIndex = state.readingPageIndex;
+    await renderPage(); // Update UI highlight and content when switching pages
+  }
+
+  // 🌟 THE PHANTOM IMAGE ROUTER: Redirect clicks and arrow keys from duplicate images to their parent header/block
+  if (state.sentenceElements && state.sentenceElements[i]) {
+    const el = state.sentenceElements[i];
+    if (el.tagName.toLowerCase() === 'img' && el.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n')) {
+        const parentHost = el.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n');
+        const hIndex = state.sentenceElements.indexOf(parentHost);
+        if (hIndex !== -1) {
+            i = hIndex;
+        }
+    }
+  }
+
   state.currentSentenceIndex = i;
   
   if (state.sentenceElements && state.sentenceElements[i]) {
@@ -483,26 +505,21 @@ export async function jumpToSentence(i) {
         state.currentDoc.lastSentenceIndex = i;
 
         // 🌟 THE RUBBER-BAND FIX: 
-        if (targetEl.hasAttribute('id')) {
-            state.currentDoc.lastSentenceId = targetEl.getAttribute('id');
+        const targetId = targetEl.dataset?.sentenceId || targetEl.getAttribute('id') || targetEl.closest('[id^="s_"]')?.getAttribute('id');
+        if (targetId) {
+            state.currentDoc.lastSentenceId = targetId;
         } else {
             state.currentDoc.lastSentenceId = null; 
         }
     }
   }
 
-  await renderPage(); // Update UI highlight and content instantly
-
   // 🌟 UI FIX: Force the Play/Pause UI to update and sync the "Active/Blue" state unconditionally
   initAudioContext();
   state.isPlaying = true;
   const playIcon = document.getElementById("playIcon");
-  if (playIcon) {
-    playIcon.setAttribute("data-lucide", "pause");
-    // Force DOM to recognize the state change so the blue CSS applies immediately
-    void playIcon.offsetWidth; 
-    renderIcons();
-  }
+  if (playIcon) void playIcon.offsetWidth;
+  syncPlayPauseIcons("pause");
 
   console.log(`[TTS] Instant jump to index ${i}...`);
   playNext();
@@ -513,13 +530,18 @@ export async function saveProgress() {
 
   const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
   let sentenceIdString = null;
-  if (currentEl && currentEl.hasAttribute('id')) {
-      sentenceIdString = currentEl.getAttribute('id');
+  if (currentEl) {
+      sentenceIdString = currentEl.dataset?.sentenceId || currentEl.getAttribute('id') || currentEl.closest('[id^="s_"]')?.getAttribute('id') || currentEl.id || null;
   }
 
   state.currentDoc.currentPage = state.readingPageIndex;
   state.currentDoc.lastSentenceId = sentenceIdString;
   state.currentDoc.lastSentenceIndex = state.currentSentenceIndex;
+  const metrics = getProgressMetrics();
+  state.currentDoc.current_page = metrics.currentPage;
+  state.currentDoc.total_pages = metrics.totalPages;
+  state.currentDoc.progress_percent = Math.round(metrics.percent);
+  document.dispatchEvent(new CustomEvent("lr-progress-updated"));
 
   const statusEl = document.getElementById("bookmarkStatus");
   if (statusEl) {
@@ -545,6 +567,9 @@ export async function saveProgress() {
             lastSentenceId: state.currentDoc.lastSentenceId,     
             lastSentenceIndex: state.currentDoc.lastSentenceIndex, 
             lastAccessed: Date.now(),
+            current_page: state.currentDoc.current_page,
+            total_pages: state.currentDoc.total_pages,
+            progress_percent: state.currentDoc.progress_percent,
           }),
         });
         console.log(`[Checkpoint] Saved to disk. ID: ${sentenceIdString} | Fallback Index: ${state.currentDoc.lastSentenceIndex}`);
@@ -556,7 +581,7 @@ export async function saveProgress() {
 
 let isPreloading = false;
 
-export async function preCacheNextSentences() {
+async function preCacheNextSentences() {
   const MAX_FORWARD = 5; 
   const MAX_CACHE_SIZE = 10; 
 
@@ -621,24 +646,28 @@ export async function preCacheNextSentences() {
       }
 
       // 🌟 THE PHANTOM IMAGE CACHE-SKIP: Prevent downloading the duplicate image
-      if (nextEl && nextEl.tagName.toLowerCase() === 'img' && nextEl.closest('h1, h2, h3, h4, h5, h6')) {
+      if (nextEl && nextEl.tagName.toLowerCase() === 'img' && nextEl.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n')) {
           continue;
       }
+
+      const hasNarrativeInNext = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(
+          nextEl ? (nextEl.textContent || "") : nextText
+      );
 
       if (nextEl) {
           const hMatch = nextEl.closest('h1, h2, h3, h4, h5, h6');
           if (hMatch) bType = hMatch.tagName.toUpperCase();
           else if (nextEl.tagName.toLowerCase() === 's' || nextEl.closest('s, .scene-break')) bType = "S";
-          else if (nextEl.tagName.toLowerCase() === 'img' || nextEl.querySelector('img, svg')) bType = "Img";
+          else if (nextEl.tagName.toLowerCase() === 'img' || (!hasNarrativeInNext && nextEl.querySelector('img, svg'))) bType = "Img";
       } else {
           const hMatch = nextText.match(/<h([1-6])/i);
           if (hMatch) bType = "H" + hMatch[1];
           else if (/<s\b/i.test(nextText) || /class="scene-break"/i.test(nextText)) bType = "S";
-          else if (/<img|<svg/i.test(nextText)) bType = "Img";
+          else if ((/<img|<svg/i.test(nextText) || /\[IMAGE_/i.test(nextText)) && !hasNarrativeInNext) bType = "Img";
       }
 
-      const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)\b[^>]*>/gi;
-      let cleanText = nextText.replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+      let cleanText = nextText.replace(/<(?:rt|rp)\b[^>]*>[\s\S]*?<\/(?:rt|rp)>/gi, '').replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+      cleanText = cleanText.replace(/\s+([,.:;!?])/g, '$1');
       if (nextText.endsWith('\n')) cleanText += '\n'; 
   
       // 🌟 THE IMAGE HEADER RESCUE INTERCEPTOR (PRE-CACHER) 🌟
@@ -647,21 +676,23 @@ export async function preCacheNextSentences() {
           let sentenceId = null;
           let origId = null;
           if (nextEl) {
-              sentenceId = nextEl.getAttribute('id');
-              origId = nextEl.getAttribute('data-orig-id');
+              sentenceId = nextEl.dataset?.sentenceId || nextEl.getAttribute('id') || nextEl.closest('[id^="s_"]')?.getAttribute('id');
+              origId = nextEl.getAttribute('data-orig-id') || nextEl.closest('[id^="s_"]')?.getAttribute('data-orig-id');
           } else {
-              const idMatch = nextText.match(/id=['"]([^'"]+)['"]/);
+              const idMatch = nextText.match(/\sid=['"]([^'"]+)['"]/);
               if (idMatch) sentenceId = idMatch[1];
               const origMatch = nextText.match(/data-orig-id=['"]([^'"]+)['"]/);
               if (origMatch) origId = origMatch[1];
           }
 
-          if ((sentenceId || origId) && state.tocMap) {
-              const matchedToc = state.tocMap.find(t => t.target_tts_id === sentenceId || t.id === sentenceId || (origId && (t.target_tts_id === origId || t.id === origId)));
-              if (matchedToc && matchedToc.title) {
-                  rescuedTitle = matchedToc.title;
-                  cleanText = rescuedTitle;
-              }
+          const matchedToc = findTocEntryForPage(
+              targetPageIndex,
+              sentenceId,
+              origId
+          );
+          if (matchedToc && matchedToc.title) {
+              rescuedTitle = matchedToc.title;
+              cleanText = rescuedTitle;
           }
           
           if (!rescuedTitle) {
@@ -710,8 +741,21 @@ export async function preCacheNextSentences() {
 
 export async function loadVoices() {
   const voiceSelect = document.getElementById("voiceSelect");
+  if (!voiceSelect) return false;
+
   try {
-    const currentVoice = voiceSelect.value;
+    let targetVoice =
+      voiceSelect.value && !voiceSelect.selectedOptions[0]?.disabled
+        ? voiceSelect.value
+        : state.voice || "";
+
+    if (!targetVoice) {
+      try {
+        const settings = await fetchJSON(`/api/settings`);
+        targetVoice = settings.voice_id || settings.voice || "";
+      } catch (e) {}
+    }
+
     const data = await fetchJSON(`/api/voices/available`);
     const categories = data.categories || {};
 
@@ -770,12 +814,14 @@ export async function loadVoices() {
       voiceSelect.appendChild(group);
     });
 
-    if (currentVoice) {
-      const exists = Array.from(voiceSelect.options).some((opt) => opt.value === currentVoice);
-      if (exists) voiceSelect.value = currentVoice;
-    }
-
-    if (voiceSelect.options.length === 0) {
+    const validOptions = Array.from(voiceSelect.querySelectorAll("option:not([disabled])"));
+    if (validOptions.length > 0) {
+      const matched = validOptions.find((opt) => opt.value === targetVoice);
+      const fallback = validOptions.find((opt) => opt.value === "af_heart") || validOptions[0];
+      const selected = matched || fallback;
+      voiceSelect.value = selected.value;
+      state.voice = selected.value;
+    } else {
       const option = document.createElement("option");
       option.textContent = "No voices found (Download Engine)";
       option.disabled = true;

@@ -1,0 +1,776 @@
+:root {
+  --reader-font-family: Georgia, serif;
+  --reader-font-size: 18px;
+  --reader-font-weight: 400;
+  --reader-line-height: 1.8;
+  --reader-paragraph-spacing: 1.1em;
+  --reader-text-align: justify;
+  --reader-text-indent: 1.1em;
+  --reader-h1-align: center;
+  --reader-h2-align: left;
+  --reader-h3-align: left;
+  --reader-margin-left: 8%;
+  --reader-margin-right: 8%;
+  --reader-content-width: 100%;
+  --reader-lr-margin: 32px;
+  --reader-landscape-margin: 4%;
+  --reader-center-gutter: 3.5;
+ /* Auto-merge formula: expands padding below 1.50 line-height to fuse lines; shrinks above 1.50 to preserve line gap */
+  --highlight-pad-y: max(
+    calc((1.5 - var(--reader-line-height)) * 0.5 * var(--reader-font-size)),
+    clamp(0px, calc((var(--reader-line-height) - 1.28) * 0.5 * var(--reader-font-size) - 1px), calc(0.06 * var(--reader-font-size)))
+  );
+}
+
+.chapter-text {
+  width: var(--reader-content-width);
+  max-width: calc(100% - var(--reader-margin-left, var(--reader-lr-margin, 0px)) - var(--reader-margin-right, var(--reader-lr-margin, 0px)));
+  margin-inline: auto !important;
+  padding-inline-start: var(--reader-margin-left, var(--reader-lr-margin)) !important;
+  padding-inline-end: var(--reader-margin-right, var(--reader-lr-margin)) !important;
+  box-sizing: content-box;
+  font-family: var(--reader-font-family, Georgia, serif);
+  font-size: var(--reader-font-size, 18px);
+  font-weight: var(--reader-font-weight, 400);
+  line-height: var(--reader-line-height, 1.8);
+  color: var(--text-content);
+  text-align: var(--reader-text-align, justify);
+  column-count: 1;
+  height: auto;
+  column-gap: 0;
+}
+
+.chapter-text p {
+  margin-bottom: var(--reader-paragraph-spacing, 1.1em);
+  line-height: inherit;
+  text-align: var(--reader-text-align, justify);
+  text-align-last: auto;
+  text-indent: 0;
+  widows: 2;
+  orphans: 2;
+}
+
+.chapter-text ruby {
+  ruby-position: over;
+  ruby-align: center;
+  padding-top: 0.45em;
+}
+
+.chapter-text rt {
+  font-size: 0.65em;
+  line-height: 1;
+  text-align: center;
+  user-select: none;
+  font-weight: inherit;
+  font-style: inherit;
+}
+
+.chapter-text.indent-on.indent-all p {
+  text-indent: var(--reader-text-indent, 1.1em);
+}
+
+.chapter-text.indent-on.indent-follow p + p {
+  text-indent: var(--reader-text-indent, 1.1em);
+}
+
+.chapter-text.hyphens-on {
+  hyphens: auto;
+  -webkit-hyphens: auto;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphenate-limit-chars: 5 2 2;
+}
+
+.chapter-text.hyphens-on :is(h1, h2, h3, h4, h5, h6, .book-heading, s, img) {
+  hyphens: none;
+  -webkit-hyphens: none;
+}
+
+.chapter-text:not(.hyphens-on) {
+  hyphens: none;
+  -webkit-hyphens: none;
+}
+
+.chapter-text br {
+  display: block;
+  content: "";
+  height: 1em;
+  margin: 0;
+}
+
+.chapter-text n,
+.chapter-text .sentence {
+  display: inline;
+  transition: background-color 0.2s, color 0.2s;
+  cursor: pointer;
+  border-radius: 2px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  padding-left: 2px;
+  padding-right: 2px;
+  margin: 0;
+  border-left: none;
+  -webkit-box-decoration-break: slice;
+  box-decoration-break: slice;
+}
+
+.chapter-text n:hover,
+.chapter-text .sentence:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.chapter-text n.active-sentence,
+.chapter-text .sentence.active-sentence {
+  background-color: var(--bg-active-sentence) !important;
+  color: var(--text-active-sentence) !important;
+  box-shadow: none !important;
+  outline: none !important;
+  border: none !important;
+  padding-top: var(--highlight-pad-y);
+  padding-bottom: var(--highlight-pad-y);
+  padding-left: calc(0.09 * var(--reader-font-size));
+  padding-right: calc(0.09 * var(--reader-font-size));
+  margin: 0 !important;
+}
+
+.chapter-text h1,
+.chapter-text h2,
+.chapter-text h3,
+.chapter-text h4,
+.chapter-text h5,
+.chapter-text h6,
+.chapter-text .book-heading {
+  display: block !important;
+  clear: both;
+  color: var(--text-content, inherit) !important;
+  font-weight: 700 !important;
+  font-family: var(--reader-font-family, Georgia, serif);
+  margin-top: 1.618em !important;
+  margin-bottom: 0.618em !important;
+  line-height: 1.236;
+  --highlight-pad-y: 0px;
+  text-indent: 0 !important;
+  text-align: left;
+}
+
+.chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading) n,
+.chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading) .sentence {
+  --highlight-pad-y: 0px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.chapter-text h1 *,
+.chapter-text h2 *,
+.chapter-text h3 *,
+.chapter-text h4 *,
+.chapter-text h5 *,
+.chapter-text h6 * {
+  font-weight: inherit !important;
+  font-size: inherit !important;
+}
+
+.chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading) rt {
+  font-size: 0.65em !important;
+}
+
+.chapter-text h1,
+.chapter-text .book-heading.h1 {
+  font-size: 2em;
+  text-align: var(--reader-h1-align, center);
+  border-bottom: 2px solid currentColor;
+  opacity: 0.9;
+  padding-bottom: 0.2em;
+}
+
+.chapter-text h2,
+.chapter-text .book-heading.h2 {
+  font-size: 1.75em;
+  text-align: var(--reader-h2-align, left);
+}
+
+.chapter-text h3,
+.chapter-text .book-heading.h3 {
+  font-size: 1.5em;
+  text-align: var(--reader-h3-align, left);
+}
+
+.chapter-text h4 { font-size: 1.25em; }
+.chapter-text h5 { font-size: 1.1em; }
+.chapter-text h6 { font-size: 1em; }
+
+.chapter-text s {
+  text-decoration: none !important;
+  display: block !important;
+  width: 100%;
+  text-align: center !important;
+  margin: 1em 0 !important;
+  color: #71717a;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  font-size: 1.2em;
+  transition: all 0.4s ease;
+}
+
+/* Prevent massive gaps when a header is the very first element on a page */
+.chapter-text > :first-child:is(h1, h2, h3, h4, h5, h6, .book-heading),
+.chapter-text > div:first-child > :first-child:is(h1, h2, h3, h4, h5, h6, .book-heading) {
+  margin-top: 0.15em !important; 
+}
+
+/* Prevent paragraph top-margin from fighting the heading's golden 0.618em bottom-margin */
+.chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading) + p,
+.chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading) + div > p:first-child {
+  margin-top: 0 !important;
+}
+
+.chapter-text s.active-sentence {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+body.reader-two-page .chapter-text.two-page:not(.horizontal) {
+  column-count: 2;
+  column-gap: calc(var(--reader-center-gutter, 3.5) * 1rem);
+  column-rule: 1px solid rgba(255, 255, 255, 0.08);
+  max-width: none;
+  width: 100%;
+  padding-inline: 0 !important;
+  box-sizing: border-box;
+}
+
+body.reader-two-page .chapter-text.two-page:not(.horizontal) h1,
+body.reader-two-page .chapter-text.two-page:not(.horizontal) h2,
+body.reader-two-page .chapter-text.two-page:not(.horizontal) h3,
+body.reader-two-page .chapter-text.two-page:not(.horizontal) img {
+  break-inside: avoid;
+}
+
+.chapter-text.two-page :is(p, div, h1, h2, h3, h4, h5, h6, s, figure, blockquote),
+.chapter-text.horizontal :is(p, div, h1, h2, h3, h4, h5, h6, s, figure, blockquote) {
+  max-width: 100%;
+  width: auto;
+  box-sizing: border-box;
+  column-span: none;
+}
+
+.chapter-text.two-page s,
+.chapter-text.horizontal s {
+  width: auto !important;
+  max-width: 100%;
+}
+
+.chapter-text.two-page img.epub-image,
+.chapter-text.horizontal img.epub-image {
+  width: auto;
+  max-width: 100%;
+}
+
+body.horizontal-mode .content-area {
+  overflow: hidden;
+}
+
+body.horizontal-mode .content-area > header {
+  position: relative;
+  flex-shrink: 0;
+}
+
+body.horizontal-mode #readerContent {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 0.5rem;
+  align-items: stretch;
+}
+
+/* Update .horizontal class rule */
+body.horizontal-mode #textContent.chapter-text.horizontal {
+  max-width: none;
+  width: 100%;
+  margin-inline: unset;
+  margin: 0 auto;
+  padding-inline: 0 !important;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  column-count: auto;
+  column-width: var(--spread-column-width, 100%);
+  column-gap: var(--spread-column-gap, 0px);
+  column-fill: auto;
+  column-rule: none;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  scrollbar-gutter: auto;
+}
+
+body.horizontal-mode.spread-two #textContent.chapter-text.horizontal {
+  max-width: none;
+  column-rule: none;
+}
+
+body.horizontal-mode.spread-two #readerContent {
+  position: relative;
+}
+
+body.horizontal-mode.spread-two #readerContent::after {
+  content: "";
+  position: absolute;
+  top: 2rem;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background-color: rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  z-index: 10;
+}
+
+body.horizontal-mode #textContent.chapter-text.horizontal::-webkit-scrollbar {
+  display: none;
+}
+
+body.horizontal-mode #textContent.chapter-text.horizontal .active-sentence,
+body.horizontal-mode #textContent.chapter-text.horizontal n.active-sentence,
+body.horizontal-mode #textContent.chapter-text.horizontal .sentence.active-sentence {
+  border-left: none;
+}
+
+body.horizontal-mode #textContent.chapter-text.horizontal h1,
+body.horizontal-mode #textContent.chapter-text.horizontal h2,
+body.horizontal-mode #textContent.chapter-text.horizontal h3,
+body.horizontal-mode #textContent.chapter-text.horizontal img {
+  break-inside: avoid;
+}
+
+body.horizontal-mode #textContent.chapter-text.horizontal p {
+  break-inside: auto;
+  orphans: 2;
+  widows: 2;
+}
+
+body.horizontal-mode #textContent.chapter-text.horizontal img.epub-image:not(.epub-icon) {
+  width: auto;
+  max-width: 100%;
+  max-height: 65vh;
+  object-fit: contain;
+  break-inside: avoid;
+}
+
+body.horizontal-mode #textContent.chapter-text.horizontal img.epub-image.active-sentence {
+  max-width: 100% !important;
+  max-height: 65vh !important;
+  transform: none !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.6) !important;
+  border-radius: 6px;
+}
+
+body.horizontal-mode #textContent.chapter-text.horizontal s img.epub-image {
+  width: auto !important;
+  max-width: 100px !important;
+  max-height: 100px !important;
+  margin: 0.5em auto !important;
+}
+
+.player-text {
+  font-family: var(--reader-font-family, Georgia, serif);
+}
+
+.typo-menu-btn.active {
+  box-shadow: 0 0 0 2px rgba(191, 219, 254, 0.95);
+}
+
+.typo-float-menu {
+  position: fixed;
+  z-index: 1100;
+  width: 280px;
+  max-height: min(82vh, 640px);
+  display: none;
+  flex-direction: column;
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 12px;
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.typo-float-menu.open {
+  display: flex;
+}
+
+.typo-float-header {
+  padding: 0.7rem 0.85rem 0.5rem;
+  border-bottom: 1px solid #27272a;
+  flex-shrink: 0;
+}
+
+.typo-float-body {
+  padding: 0.75rem 0.85rem 0.9rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.typo-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.typo-row.hidden {
+  display: none !important;
+}
+
+.typo-label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 700;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.typo-align-group {
+  display: flex;
+  border: 1px solid #27272a;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.typo-align-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0;
+  background: #18181b;
+  color: #71717a;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.typo-align-btn + .typo-align-btn {
+  border-left: 1px solid #27272a;
+}
+
+.typo-align-btn:hover {
+  color: #d4d4d8;
+  background: #27272a;
+}
+
+.typo-align-btn.active {
+  color: #60a5fa;
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.typo-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 28px;
+}
+
+.typo-switch-row .typo-label {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  white-space: normal;
+  line-height: 1.3;
+}
+
+.typo-switch-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+.typo-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: #3f3f46;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.typo-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #a1a1aa;
+  transition: left 0.15s ease, background 0.15s ease;
+}
+
+.typo-switch.on {
+  background: #2563eb;
+}
+
+.typo-switch.on::after {
+  left: 18px;
+  background: #ffffff;
+}
+
+.typo-pp-btn {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.35rem;
+  border: 1px solid #3f3f46;
+  background: #18181b;
+  color: #71717a;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.typo-pp-btn:hover {
+  color: #d4d4d8;
+  border-color: #52525b;
+}
+
+.typo-pp-btn.active {
+  color: #60a5fa;
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.typo-margin-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.typo-margin-side {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.typo-margin-letter {
+  flex-shrink: 0;
+  min-width: 1.6rem;
+  width: auto;
+  font-size: 10px;
+  font-weight: 800;
+  color: #71717a;
+}
+
+.typo-margin-val {
+  flex-shrink: 0;
+  min-width: 2.8rem;
+  text-align: right;
+  font-size: 10px;
+}
+
+.typo-heading-trigger {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #a1a1aa;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  cursor: pointer;
+}
+
+.typo-heading-trigger:hover,
+.typo-heading-trigger.open {
+  color: #ffffff;
+  border-color: #3b82f6;
+}
+
+.typo-heading-popup {
+  position: fixed;
+  z-index: 1200;
+  min-width: 7rem;
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 0.25rem;
+  display: none;
+}
+
+.typo-heading-popup.open {
+  display: block;
+}
+
+.typo-heading-popup button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #a1a1aa;
+  background: transparent;
+  border: none;
+  border-radius: 0.3rem;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+
+.typo-heading-popup button:hover {
+  background: #27272a;
+  color: #ffffff;
+}
+
+.typo-heading-popup button.active {
+  color: #60a5fa;
+  background: rgba(37, 99, 235, 0.18);
+}
+
+/* --- OVERLAP MERGE MODE (Activated by JS <= 1.45) --- */
+body.merge-highlights .chapter-text n.active-sentence,
+body.merge-highlights .chapter-text .sentence.active-sentence {
+  -webkit-box-decoration-break: slice !important;
+  box-decoration-break: slice !important;
+  border-radius: 4px !important;
+  /* Inflate padding to bridge tight gaps */
+  padding-top: calc(0.18 * var(--reader-font-size)) !important;
+  padding-bottom: calc(0.18 * var(--reader-font-size)) !important;
+}
+
+/* Opaque flat color strictly for default theme to prevent alpha intersection burn-in */
+body.merge-highlights:not([class*="theme-"]) .chapter-text n.active-sentence,
+body.merge-highlights:not([class*="theme-"]) .chapter-text .sentence.active-sentence {
+  background-color: #1b3252 !important;
+}
+
+/* =========================================================
+   CALIBRATED THEME TEXT GLOW HIGHLIGHTS (< 1.45 Line-Height)
+===IF used line space set < 145% it will change to glow highlights*/
+
+
+/* Default Dark */
+/* Default Dark - Dimmed Lavender / Violet Glow */
+body.tight-highlight-mode .chapter-text n.active-sentence,
+body.tight-highlight-mode .chapter-text .sentence.active-sentence {
+  background-color: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  color: #c4b5fd !important;
+  text-shadow: 0 0 3px rgba(168, 85, 247, 0.18) !important;
+}
+body.tight-highlight-mode .chapter-text n:hover,
+body.tight-highlight-mode .chapter-text .sentence:hover {
+  background-color: transparent !important;
+  text-shadow: 0 0 3px rgba(192, 132, 252, 0.1) !important;
+}
+
+/* Dark Soft (Subtle Silver Lift) */
+[data-theme="dark-soft"] body.tight-highlight-mode .chapter-text .active-sentence,
+[data-theme="dark-soft"] body.tight-highlight-mode .chapter-text n.active-sentence {
+  color: #b4b4b8 !important;
+  text-shadow: 0 0 4px rgba(255, 255, 255, 0.18) !important;
+}
+[data-theme="dark-soft"] body.tight-highlight-mode .chapter-text .sentence:hover,
+[data-theme="dark-soft"] body.tight-highlight-mode .chapter-text n:hover {
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Soft White (Charcoal Ink Depth - No Electric Blue) */
+[data-theme="soft-white"] body.tight-highlight-mode .chapter-text .active-sentence,
+[data-theme="soft-white"] body.tight-highlight-mode .chapter-text n.active-sentence {
+  color: #18181b !important;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.15) !important;
+}
+[data-theme="soft-white"] body.tight-highlight-mode .chapter-text .sentence:hover,
+[data-theme="soft-white"] body.tight-highlight-mode .chapter-text n:hover {
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Sepia Contrast (Muted Amber) */
+[data-theme="sepia-contrast"] body.tight-highlight-mode .chapter-text .active-sentence,
+[data-theme="sepia-contrast"] body.tight-highlight-mode .chapter-text n.active-sentence {
+  color: #1c150e !important;
+  text-shadow: 0 0 4px rgba(180, 83, 9, 0.25) !important;
+}
+[data-theme="sepia-contrast"] body.tight-highlight-mode .chapter-text .sentence:hover,
+[data-theme="sepia-contrast"] body.tight-highlight-mode .chapter-text n:hover {
+  text-shadow: 0 0 3px rgba(180, 83, 9, 0.1) !important;
+}
+
+/* Sepia Soft (Warm Espresso) */
+[data-theme="sepia-soft"] body.tight-highlight-mode .chapter-text .active-sentence,
+[data-theme="sepia-soft"] body.tight-highlight-mode .chapter-text n.active-sentence {
+  color: #382313 !important;
+  text-shadow: 0 0 4px rgba(120, 53, 15, 0.2) !important;
+}
+[data-theme="sepia-soft"] body.tight-highlight-mode .chapter-text .sentence:hover,
+[data-theme="sepia-soft"] body.tight-highlight-mode .chapter-text n:hover {
+  text-shadow: 0 0 3px rgba(120, 53, 15, 0.08) !important;
+}
+
+/* Twilight (Soft Periwinkle) */
+[data-theme="twilight"] body.tight-highlight-mode .chapter-text .active-sentence,
+[data-theme="twilight"] body.tight-highlight-mode .chapter-text n.active-sentence {
+  color: #cad1e7 !important;
+  text-shadow: 0 0 4px rgba(130, 170, 255, 0.35) !important;
+}
+[data-theme="twilight"] body.tight-highlight-mode .chapter-text .sentence:hover,
+[data-theme="twilight"] body.tight-highlight-mode .chapter-text n:hover {
+  text-shadow: 0 0 3px rgba(130, 170, 255, 0.12) !important;
+}
+
+/* ── Per-book BR disable ──────────────────────────────────────────── */
+
+/* 1. Nuke raw br tags (standalone or inline inside text) */
+.chapter-text.disable-br br {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  line-height: 0 !important;
+}
+
+/* 2. Nuke empty block wrappers (regardless of class, id, or attributes) */
+.chapter-text.disable-br :is(p, div):empty {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+}
+
+/* 3. Nuke wrappers containing only br tags (1 to 3 stacked br) */
+.chapter-text.disable-br :is(p, div):has(> br:only-child),
+.chapter-text.disable-br :is(p, div):has(> br:first-child:nth-last-child(2)),
+.chapter-text.disable-br :is(p, div):has(> br:first-child:nth-last-child(3)) {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+}
+
+/* BR toggle active state (muted dark red) */
+#brToggleBtn.on {
+  background: #7f1d1d !important;
+}
+#brToggleBtn.on::after {
+  left: 18px;
+  background: #fca5a5 !important;
+}
+#brToggleLabel.br-active {
+  color: #ef4444 !important;
+}

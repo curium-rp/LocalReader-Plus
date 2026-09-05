@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 import numpy as np
 import io
 import re
+import html
 import hashlib
 import soundfile as sf
 import concurrent.futures
@@ -41,6 +42,30 @@ from ..config import base_dir
 from kokoro_onnx import SAMPLE_RATE
 
 router = APIRouter()
+
+_RUBY_ANNOTATION_RE = re.compile(r"<(?:rt|rp)\b[^>]*>[\s\S]*?</(?:rt|rp)>", re.I)
+_STRUCTURAL_BREAK_RE = re.compile(
+    r"<(br|/p|/div|/h[1-6]|hr|/td|/th|/li|/tr)[^>]*>", re.I
+)
+_VALID_HTML_TAGS_RE = re.compile(
+    r"</?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|ins|del|strike|"
+    r"sub|sup|mark|small|big|abbr|cite|dfn|q|code|pre|ruby|rt|rp|"
+    r"figure|figcaption|blockquote|img|image|svg|picture|hr|br|"
+    r"li|ul|ol|table|caption|tr|td|th|tbody|thead|tfoot|"
+    r"section|article|aside|nav|main|header|footer|address|dd|dt|summary)"
+    r"\b[^>]*>",
+    re.I,
+)
+
+
+def strip_html_for_speech(text: str) -> str:
+    """Drop known markup; leftover <...> becomes spoken quotes (dialogue/system)."""
+    safe_text = html.unescape(text)
+    safe_text = _RUBY_ANNOTATION_RE.sub("", safe_text)
+    safe_text = _STRUCTURAL_BREAK_RE.sub(" \n ", safe_text)
+    safe_text = _VALID_HTML_TAGS_RE.sub(" ", safe_text)
+    return safe_text.replace("<", "“").replace(">", "”")
+
 
 def create_anti_skip_silence(duration_ms, sample_rate=24000):
     if duration_ms <= 0:
@@ -304,7 +329,7 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
             if clean_punc:
                 spam_count = len(re.findall(r'[\.。\?？!！]', clean_punc))
                 if spam_count >= 2:
-                    spam_multiplier = int(pause_settings.get("period", 0))
+                    spam_multiplier = int(pause_settings.get("spam", 0))
                     base_punc_pause = spam_multiplier * (spam_count - 1)
                 else:
                     last_char = clean_punc[-1]
@@ -456,28 +481,14 @@ async def synthesize(request: SynthesisRequest):
     if state_module.kokoro is None: raise HTTPException(status_code=503, detail="TTS Engine not initialized.")
 
     original_text = request.text
-    
-    import html
-    # 1. Unescape entities so &lt; and &gt; revert to < and >
-    safe_text = html.unescape(original_text)
-    
+
     structural_pause_ms = 0
-    pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", safe_text)
+    pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", original_text)
     if pause_match:
         structural_pause_ms = int(pause_match.group(1))
-        safe_text = safe_text.replace(pause_match.group(0), "")
+        original_text = original_text.replace(pause_match.group(0), "")
 
-    # 2. Extract structural breaks before vaporizing tags (ADDED hr, tr, li)
-    safe_text = re.sub(r'<(br|/p|/div|/h[1-6]|hr|/td|/th|/li|/tr)[^>]*>', ' \n ', safe_text, flags=re.IGNORECASE)
-    
-    # 3. The Ultimate CSS/Class Burner: Scan explicit HTML tags and burn them to ash.
-    # \b ensures it matches <hr class="transition"/> but safely ignores <And the winner...>
-    valid_tags = r'/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|del|figure|blockquote|img|image|svg|picture|hr|li|ul|ol|table|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer)'
-    safe_text = re.sub(rf'<{valid_tags}\b[^>]*>', ' ', safe_text, flags=re.IGNORECASE)
-    
-    # 4. Convert surviving dialogue brackets (Telepathy/System) into standard quotes
-    safe_text = safe_text.replace('<', '“').replace('>', '”')
-    
+    safe_text = strip_html_for_speech(original_text)
     safe_text = re.sub(r'\[(?:IMAGE|IMG|VIDEO).*?\]', '', safe_text, flags=re.IGNORECASE)
     
     safe_text = sanitize_typography_for_engine(safe_text)
@@ -494,9 +505,10 @@ async def synthesize(request: SynthesisRequest):
         main_voice_lang = "en-us"
 
     try:
-        text = fix_special_formats(request.text, main_voice_lang)
         rules_data = [r.model_dump() for r in request.rules] if request.rules else []
-        text = apply_custom_pronunciations(text, rules_data, request.ignore_list, main_voice_lang)
+        text = apply_custom_pronunciations(
+            request.text, rules_data, request.ignore_list, main_voice_lang
+        )
     except Exception:
         text = fix_special_formats(request.text, main_voice_lang)
 

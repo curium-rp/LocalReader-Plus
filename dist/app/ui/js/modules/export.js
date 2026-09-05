@@ -150,34 +150,56 @@ function selectExportFormat() {
 
         renderExportToc();
 
+        const isFirstTocOnPage = (idx) => {
+            if (idx === null || idx === undefined || idx <= 0) return true;
+            const prev = tocItems[idx - 1];
+            return !prev || prev.page_index !== tocItems[idx].page_index;
+        };
+
         // SURGICAL FIX: Task Generator (Converts logic into a queue)
         const getTasks = (format) => {
             let tasks = [];
             
             if (isSingleMode && selectedSingleIndex !== null) {
-                let startTtsId = tocItems[selectedSingleIndex].target_tts_id || null;
-                let endTtsId = tocItems[selectedSingleIndex + 1] ? (tocItems[selectedSingleIndex + 1].target_tts_id || null) : null;
-                tasks.push({ format, startPage, endPage, startTtsId, endTtsId, fileLabel: tocItems[selectedSingleIndex].title });
-            } else if (!isSingleMode && startIndex !== null && endIndex !== null) {
+                const sItem = tocItems[selectedSingleIndex];
+                const isFirstOnPage = isFirstTocOnPage(selectedSingleIndex);
+                let startTtsId = isFirstOnPage ? null : (sItem.target_tts_id || null);
+                const nextItem = tocItems[selectedSingleIndex + 1];
+                const isSamePage = nextItem && !nextItem.isVirtual && nextItem.page_index === sItem.page_index;
+                let endTtsId = isSamePage ? (nextItem.target_tts_id || null) : null;
+                tasks.push({ format, startPage, endPage, startTtsId, endTtsId, fileLabel: sItem.title });
+            } else if (!isSingleMode && startIndex !== null) {
+                const effectiveEndIndex = (endIndex !== null) ? endIndex : startIndex;
                 if (isSeparateMode) {
                     // SEPARATE MODE: Auto-slice the range into multiple individual tasks
-                    // 🌟 FIX: Changed < to <= to explicitly INCLUDE the final chapter in the loop
-                    for (let i = startIndex; i <= endIndex; i++) {
+                    for (let i = startIndex; i <= effectiveEndIndex; i++) {
                         let sPage = tocItems[i].page_index;
-                        let ePage = tocItems[i+1] ? tocItems[i+1].page_index : maxPage;
+                        let nextItem = tocItems[i+1];
+                        let isSamePage = nextItem && !nextItem.isVirtual && nextItem.page_index === sPage;
+                        let ePage = nextItem ? nextItem.page_index : maxPage;
                         if (sPage >= ePage) ePage = sPage + 1;
-                        let startTtsId = tocItems[i].target_tts_id || null;
-                        let endTtsId = tocItems[i+1] ? (tocItems[i+1].target_tts_id || null) : null;
+                        let isFirstOnPage = isFirstTocOnPage(i);
+                        let startTtsId = isFirstOnPage ? null : (tocItems[i].target_tts_id || null);
+                        let endTtsId = isSamePage ? (nextItem.target_tts_id || null) : null;
                         tasks.push({ format, startPage: sPage, endPage: ePage, startTtsId, endTtsId, fileLabel: tocItems[i].title });
                     }
                 } else {
                     // COMBINED MODE: One massive file
-                    // 🌟 FIX: Calculate the true end page by looking at the start of the chapter AFTER the selection
-                    let trueEndPage = tocItems[endIndex + 1] ? tocItems[endIndex + 1].page_index : maxPage;
-                    if (startPage >= trueEndPage) trueEndPage = startPage + 1;
-                    let startTtsId = tocItems[startIndex].target_tts_id || null;
-                    let endTtsId = tocItems[endIndex + 1] ? (tocItems[endIndex + 1].target_tts_id || null) : null;
-                    tasks.push({ format, startPage, endPage: trueEndPage, startTtsId, endTtsId, fileLabel: `${tocItems[startIndex].title} - ${tocItems[endIndex].title}` });
+                    let nextItem = tocItems[effectiveEndIndex + 1];
+                    let trueEndPage = nextItem ? nextItem.page_index : maxPage;
+                    let isSamePageAsEnd = nextItem && !nextItem.isVirtual && nextItem.page_index === tocItems[effectiveEndIndex].page_index;
+                    if (isSamePageAsEnd) {
+                        trueEndPage = nextItem.page_index + 1;
+                    } else if (startPage >= trueEndPage) {
+                        trueEndPage = startPage + 1;
+                    }
+                    let isFirstOnPage = isFirstTocOnPage(startIndex);
+                    let startTtsId = isFirstOnPage ? null : (tocItems[startIndex].target_tts_id || null);
+                    let endTtsId = isSamePageAsEnd ? (nextItem.target_tts_id || null) : null;
+                    const label = (startIndex === effectiveEndIndex) 
+                        ? tocItems[startIndex].title 
+                        : `${tocItems[startIndex].title} - ${tocItems[effectiveEndIndex].title}`;
+                    tasks.push({ format, startPage, endPage: trueEndPage, startTtsId, endTtsId, fileLabel: label });
                 }
             } else {
                 // FULL BOOK
@@ -190,7 +212,7 @@ function selectExportFormat() {
             let rangeStr = "";
             if (tasks.length > 1) {
                 rangeStr = `a queue of ${tasks.length} separate chapters`;
-            } else if (isSingleMode || (startIndex !== null && endIndex !== null)) {
+            } else if (isSingleMode || startIndex !== null) {
                 rangeStr = `selected chapter(s)`;
             } else {
                 rangeStr = `the entire document`;
@@ -288,6 +310,7 @@ export async function startExport() {
 
         const exportModal = document.getElementById('exportModal');
         exportModal.classList.remove('hidden');
+        initExportModalListeners();
         document.getElementById('playBtn').disabled = true;
 
         let lastOutputFile = "";
@@ -379,6 +402,7 @@ function runExportPolling(taskStatusLabel) {
                     document.getElementById('exportErrorMsg').textContent = status.error;
                     document.getElementById('exportStatus').textContent = 'Export failed';
                     document.getElementById('playBtn').disabled = false;
+                    renderIcons();
                     resolve({ error: true });
                     return;
                 }
@@ -424,12 +448,35 @@ function runExportPolling(taskStatusLabel) {
     });
 }
 
+export function closeExportModal() {
+    if (exportPollInterval) {
+        clearInterval(exportPollInterval);
+        exportPollInterval = null;
+    }
+    const modal = document.getElementById('exportModal');
+    if (modal) {
+        modal.classList.add('hidden');
+    }
+    const playBtn = document.getElementById('playBtn');
+    if (playBtn) {
+        playBtn.disabled = false;
+    }
+}
+
 export function cancelExport() {
-    if (exportPollInterval) clearInterval(exportPollInterval);
-    fetchJSON(`/api/export/cancel`, { method: 'POST' }).catch(console.error);
-    document.getElementById('exportModal').classList.add('hidden');
-    document.getElementById('playBtn').disabled = false;
-    // By clearing interval, the queue stops automatically. 
+    const isComplete = !document.getElementById('exportComplete')?.classList.contains('hidden');
+    const isError = !document.getElementById('exportError')?.classList.contains('hidden');
+
+    if (exportPollInterval) {
+        clearInterval(exportPollInterval);
+        exportPollInterval = null;
+    }
+
+    if (!isComplete && !isError) {
+        fetchJSON(`/api/export/cancel`, { method: 'POST' }).catch(console.error);
+    }
+
+    closeExportModal();
 }
 
 function showFFMPEGDownloadModal() {
@@ -491,7 +538,58 @@ export function openExportLocation() {
     fetchJSON(`/api/export/open-location`, { method: 'POST' })
         .then(() => {
             showToast("Opening Audio folder...");
-            setTimeout(() => document.getElementById('exportModal').classList.add('hidden'), 1000);
         })
-        .catch(e => showToast("Error: " + e.message));
+        .catch((e) => {
+            showToast("Error: " + (e.message || e));
+        })
+        .finally(() => {
+            setTimeout(() => {
+                closeExportModal();
+            }, 600);
+        });
+}
+
+export function initExportModalListeners() {
+    const modal = document.getElementById('exportModal');
+    if (!modal || modal.dataset.dismissBound) return;
+    modal.dataset.dismissBound = "true";
+
+    // Close on backdrop click (when finished or errored)
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            const isComplete = !document.getElementById('exportComplete')?.classList.contains('hidden');
+            const isError = !document.getElementById('exportError')?.classList.contains('hidden');
+            if (isComplete || isError) {
+                closeExportModal();
+            }
+        }
+    });
+
+    // Close on Escape key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const m = document.getElementById('exportModal');
+            if (m && !m.classList.contains('hidden')) {
+                const isComplete = !document.getElementById('exportComplete')?.classList.contains('hidden');
+                const isError = !document.getElementById('exportError')?.classList.contains('hidden');
+                if (isComplete || isError) {
+                    closeExportModal();
+                }
+            }
+        }
+    });
+
+    const closeBtn = document.getElementById('closeExportModalBtn');
+    if (closeBtn) closeBtn.onclick = closeExportModal;
+
+    const closeErrBtn = document.getElementById('closeExportErrorBtn');
+    if (closeErrBtn) closeErrBtn.onclick = closeExportModal;
+}
+
+if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initExportModalListeners);
+    } else {
+        initExportModalListeners();
+    }
 }

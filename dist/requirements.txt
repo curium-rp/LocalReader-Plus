@@ -18,12 +18,10 @@ pydub
 ## --- Text Processing & Utilities ---##
 requests
 pydantic
-beautifulsoup4
-lxml
 num2words
+selectolax
 
 ## --- Document Parsing ---##
-ebooklib
 PyMuPDF
 
 ## --- CJK Voice Support ---##
@@ -32,3 +30,5 @@ fugashi
 unidic-lite
 jaconv
 jamdict
+
+

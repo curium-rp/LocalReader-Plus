@@ -1,5 +1,5 @@
-import { state } from "./modules/state.js";
-import { fetchJSON, API_URL } from "./modules/api.js";
+import { state, applyDocumentUiLang } from "./modules/state.js";
+import { fetchJSON } from "./modules/api.js";
 import {
   renderIcons,
   showToast,
@@ -8,8 +8,10 @@ import {
   renderIgnoreList,
   updateEngineStatusUI,
   highlightSearchTerm,
-  escapeRegex,
   updateTranslations,
+  toggleSettingsDrawer,
+  closeAllDrawers,
+  syncBackToReadingButton,
 } from "./modules/ui.js";
 import {
   loadLibrary,
@@ -34,9 +36,24 @@ import {
   cancelExport,
   startFFMPEGDownload,
   openExportLocation,
+  closeExportModal,
 } from "./modules/export.js";
 import { initTimer } from "./modules/timer.js";
 import { initThemeSystem } from "./modules/themes.js";
+import { initTopBar } from "./modules/topbar.js";
+import { initProgress, jumpToDisplayedPage, updateProgressDisplay } from "./modules/progress.js";
+import { initResizeBorders } from "./modules/resize.js";
+import { initTypography, getRenderState, closeTypoMenu, applyReaderTypography } from "./modules/typography.js";
+import { initLayoutHooks, requestGeometrySync } from "./modules/reader-layout.js";
+import {
+  isHorizontalMode,
+  revealInSpread,
+  setHorizontalPageTurn,
+  layoutSpreads,
+  getSpreadIndex,
+} from "./modules/horizontal.js";
+import { initShortcuts } from "./shortcuts.js";
+import { initSearch, closeSearchMode, handleSearchPopupKeys } from "./search.js";
 
 window.state = state;
 
@@ -45,11 +62,11 @@ async function init() {
     const settings = await fetchJSON(`/api/settings`);
     state.rules = settings.pronunciationRules || [];
     state.ignoreList = settings.ignoreList || [];
-    state.headerFooterMode = settings.header_footer_mode || "off";
     state.engineMode = settings.engine_mode || "gpu";
     state.pauseSettings = settings.pause_settings || state.pauseSettings || {
-      comma: 1, period: 2, question: 2, exclamation: 2, colon: 1, semicolon: 1
+      comma: 0, period: 0, spam: 0, question: 600, exclamation: 600, colon: 400, semicolon: 400, newline: 0
     };
+    if (state.pauseSettings.spam === undefined) state.pauseSettings.spam = 0;
     state.behaviorSettings = settings.behavior_settings || { H: 2000, Img: 3000, S: 1000, N: 500 };
     ['H', 'Img', 'S', 'N'].forEach(k => {
         const input = document.getElementById(`behavior${k}`);
@@ -60,42 +77,37 @@ async function init() {
         }
     });
     state.uiLanguage = settings.ui_language || "en";
-    
-    // Load new visual states
-    state.autoHidePlayer = settings.autoHidePlayer || false;
-    state.manualHidePlayer = settings.manualHidePlayer || false;
-    state.sentenceIndicatorOn = settings.sentenceIndicatorOn || false;
-    updateSentenceBrightness(); // I reuse this later//
-    
-    const autoHideCheckbox = document.getElementById("toggleAutoHide");
-    if (autoHideCheckbox) {
-        autoHideCheckbox.checked = state.autoHidePlayer;
-        autoHideCheckbox.onchange = (e) => {
-            state.autoHidePlayer = e.target.checked;
-            
-            if (state.autoHidePlayer) {
-                // Priority Mode: Turning Auto ON strictly nullifies Manual
-                state.manualHidePlayer = false;
-                const restoreBtn = document.getElementById("playbarRestoreBtn");
-                if (restoreBtn) {
-                    restoreBtn.classList.replace("opacity-100", "opacity-0");
-                    restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
-                }
-                resetAutoHideTimer(); // Instantly trigger the first show/countdown cycle
-            } else {
-                // Turning Auto OFF resets the player to fully visible
-                clearTimeout(mouseHideTimeout);
-                document.getElementById("controls").classList.remove("minimized");
-            }
-            saveSettings();
-        };
-    }
+    applyDocumentUiLang(state.uiLanguage);
 
-    if (state.manualHidePlayer) {
-        document.getElementById("controls").classList.add("minimized");
-        document.getElementById("playbarRestoreBtn").classList.replace("opacity-0", "opacity-100");
-        document.getElementById("playbarRestoreBtn").classList.replace("pointer-events-none", "pointer-events-auto");
+    const validHideModes = ["always", "auto", "manual"];
+    let themeData = {};
+    try {
+      themeData = await fetchJSON(`/api/theme`);
+    } catch (e) {}
+    let hideMode = themeData?.player_hide_mode;
+    if (!validHideModes.includes(hideMode)) {
+      if (settings.manualHidePlayer) hideMode = "manual";
+      else if (settings.autoHidePlayer) hideMode = "auto";
+      else hideMode = "always";
+      try {
+        await fetchJSON(`/api/theme`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ player_hide_mode: hideMode }),
+        });
+      } catch (e) {}
     }
+    state.playerHideMode = hideMode;
+    state.sentenceDim = themeData?.sentence_dim === true;
+    updateSentenceBrightness();
+    applyPlayerHideUi({ minimized: hideMode === "manual" });
+    if (hideMode === "auto") resetAutoHideTimer();
+
+    document.querySelectorAll("[data-hide-mode]").forEach((btn) => {
+      btn.onclick = () => setPlayerHideMode(btn.dataset.hideMode);
+    });
+    const miniPlayBtn = document.getElementById("sidebarMiniPlayBtn");
+    if (miniPlayBtn) miniPlayBtn.onclick = () => togglePlayback();
 
     const speedRange = document.getElementById("speedRange");
     if (speedRange && settings.speed) {
@@ -103,31 +115,14 @@ async function init() {
       const sv = document.getElementById("speedVal");
       if (sv) sv.textContent = parseFloat(settings.speed).toFixed(2);
     }
-    const fontSizeSlider = document.getElementById("fontSizeSlider");
-    if (fontSizeSlider && settings.font_size) {
-      fontSizeSlider.value = settings.font_size;
-      const tv = document.getElementById("textSizeVal");
-      if (tv) tv.textContent = settings.font_size;
-      const preview = document.getElementById("currentSentencePreview");
-      if (preview) {
-        preview.style.fontSize = `${settings.font_size}px`;
-        preview.style.lineHeight = parseInt(settings.font_size) * 1.5 + "px";
-      }
-      const textContent = document.getElementById("textContent");
-      if (textContent) {
-        textContent.style.fontSize = `${settings.font_size}px`;
-        textContent.style.lineHeight =
-          parseInt(settings.font_size) * 1.6 + "px";
-      }
-    }
-    const headerSelect = document.getElementById("headerFooterMode");
-    if (headerSelect) headerSelect.value = state.headerFooterMode;
+    await initTypography(settings.font_size);
     const engineSelect = document.getElementById("engineMode");
     if (engineSelect) engineSelect.value = state.engineMode;
 
     [
       "comma",
       "period",
+      "spam",
       "question",
       "exclamation",
       "colon",
@@ -145,25 +140,32 @@ async function init() {
       }
     });
 
-    const langToggle = document.getElementById("languageToggle");
-    if (langToggle) langToggle.textContent = state.uiLanguage.toUpperCase();
+    syncLanguageChip(state.uiLanguage);
     await updateTranslations(state.uiLanguage);
+    applyPlayerHideUi();
 
     const voiceSelect = document.getElementById("voiceSelect");
-    if (settings.voice_id && voiceSelect) {
-      const opt = document.createElement("option");
-      opt.value = settings.voice_id;
-      opt.textContent = "Loading...";
-      voiceSelect.appendChild(opt);
-      voiceSelect.value = settings.voice_id;
+    if (settings.voice_id) {
+      state.voice = settings.voice_id;
+      if (voiceSelect) {
+        const opt = document.createElement("option");
+        opt.value = settings.voice_id;
+        opt.textContent = "Loading...";
+        voiceSelect.appendChild(opt);
+        voiceSelect.value = settings.voice_id;
+      }
     }
   } catch (e) {
     console.error("Settings load error", e);
-    showToast("Settings failed to load: " + e.message);
   }
 
+  initLayoutHooks();
+
   renderIcons();
-  initThemeSystem(); 
+  await initThemeSystem();
+  initTopBar();
+  initProgress();
+  initResizeBorders(); 
 
   try { await loadVoices(); } catch (e) { console.error(e); }
   try { await loadLibrary(); } catch (e) { console.error(e); }
@@ -171,55 +173,56 @@ async function init() {
   renderRules();
   renderIgnoreList();
   startStatusPolling();
-  let mouseHideTimeout = null;
-window.isJumpingCamera = false;
+  window.isJumpingCamera = false;
 
   initTimer();
   
   let imgViewer = document.getElementById("imageViewerModal");
   if (!imgViewer) {
-      imgViewer = document.createElement("div");
-      imgViewer.id = "imageViewerModal";
-      imgViewer.innerHTML = `
-          <button id="imageViewerClose">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-          </button>
-          <img id="imageViewerImg" src="" alt="Fullscreen Image" />
-      `;
-      document.body.appendChild(imgViewer);
-      
-      imgViewer.onclick = (e) => {
-          if (e.target.id === "imageViewerModal" || e.target.id === "imageViewerClose") {
-              imgViewer.classList.remove("active");
-          }
-      };
+    imgViewer = document.createElement("div");
+    imgViewer.id = "imageViewerModal";
+    imgViewer.innerHTML = `
+      <button id="imageViewerClose">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+      <img id="imageViewerImg" src="" alt="Fullscreen Image" />
+    `;
+    document.body.appendChild(imgViewer);
+    
+    imgViewer.onclick = (e) => {
+      if (e.target.id === "imageViewerModal" || e.target.closest("#imageViewerClose")) {
+        imgViewer.classList.remove("active");
+      }
+    };
   }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-    init();
-    
-    // 🌟 INITIAL START SYNC FIX: Re-center camera and update TOC map indicator when images load or expand!
-    const scrollContainer = document.querySelector(".content-area");
-    if (scrollContainer) {
-        scrollContainer.addEventListener('load', (e) => {
-            if (e.target && e.target.tagName === 'IMG') {
-                const activeEl = document.querySelector('.active-sentence');
-                if (activeEl && state.autoScrollEnabled) {
-                    requestAnimationFrame(() => {
-                        const elRect = activeEl.getBoundingClientRect();
-                        const containerRect = scrollContainer.getBoundingClientRect();
-                        const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
-                        const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
-                        scrollContainer.scrollTop = Math.max(0, centerPosition);
-                        
-                        // Update TOC after physical layout stabilizes
-                        if (typeof updateActiveTOC === 'function') updateActiveTOC();
-                    });
-                }
+  init();
+  
+  const scrollContainer = document.querySelector(".content-area");
+  if (scrollContainer) {
+    scrollContainer.addEventListener('load', (e) => {
+      if (e.target && e.target.tagName === 'IMG') {
+        const activeEl = document.querySelector('.active-sentence');
+        if (activeEl && state.autoScrollEnabled) {
+          requestAnimationFrame(() => {
+            if (revealInSpread(activeEl)) {
+              if (typeof updateActiveTOC === "function") updateActiveTOC();
+              return;
             }
-        }, true); // Capture phase catches nested image loads globally
-    }
+            const elRect = activeEl.getBoundingClientRect();
+            const containerRect = scrollContainer.getBoundingClientRect();
+            const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
+            const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
+            scrollContainer.scrollTop = Math.max(0, centerPosition);
+            
+            if (typeof updateActiveTOC === 'function') updateActiveTOC();
+          });
+        }
+      }
+    }, true);
+  }
 });
 
 document.addEventListener("dblclick", (e) => {
@@ -237,36 +240,112 @@ document.addEventListener("dblclick", (e) => {
 let mouseHideTimeout = null;
 window.isJumpingCamera = false;
 
+function isManualPlaybarHidden() {
+  const controls = document.getElementById("controls");
+  return state.playerHideMode === "manual" && controls && controls.classList.contains("minimized");
+}
+
+function isSettingsDrawerOpen() {
+  return !!document.querySelector(".voice-settings-drawer.open");
+}
+
+function syncChromeFloatButtons(hidden) {
+  document.querySelectorAll(".voice-settings-button").forEach((btn) => {
+    btn.classList.toggle("chrome-hidden", hidden);
+  });
+}
+
+function freezePlayerAutoHide() {
+  clearTimeout(mouseHideTimeout);
+  applyPlayerHideUi({ minimized: false });
+}
+
+function resumePlayerAutoHide() {
+  if (isSettingsDrawerOpen()) return;
+  if (state.playerHideMode === "auto") resetAutoHideTimer();
+}
+
+async function saveThemeSettings(partial) {
+  try {
+    await fetchJSON(`/api/theme`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(partial),
+    });
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function savePlayerHideMode() {
+  await saveThemeSettings({ player_hide_mode: state.playerHideMode });
+}
+
+function applyPlayerHideUi({ minimized = null } = {}) {
+  const controls = document.getElementById("controls");
+  const restoreBtn = document.getElementById("playbarRestoreBtn");
+  const miniBtn = document.getElementById("sidebarMiniPlayBtn");
+  if (!controls) return;
+
+  if (minimized === true) controls.classList.add("minimized");
+  else if (minimized === false) controls.classList.remove("minimized");
+
+  const isMin = controls.classList.contains("minimized");
+  const showRestore = state.playerHideMode === "manual" && isMin;
+  syncChromeFloatButtons(isMin && !isSettingsDrawerOpen());
+
+  if (restoreBtn) {
+    restoreBtn.classList.toggle("opacity-100", showRestore);
+    restoreBtn.classList.toggle("opacity-0", !showRestore);
+    restoreBtn.classList.toggle("pointer-events-auto", showRestore);
+    restoreBtn.classList.toggle("pointer-events-none", !showRestore);
+  }
+  if (miniBtn) {
+    miniBtn.classList.toggle("hidden", !showRestore);
+    if (showRestore) renderIcons();
+  }
+
+  document.querySelectorAll("[data-hide-mode]").forEach((btn) => {
+    const on = btn.dataset.hideMode === state.playerHideMode;
+    btn.classList.toggle("text-zinc-200", on);
+    btn.classList.toggle("bg-zinc-700", on);
+    btn.classList.toggle("text-zinc-500", !on);
+  });
+}
+
+function setPlayerHideMode(mode) {
+  if (!["always", "auto", "manual"].includes(mode)) return;
+  state.playerHideMode = mode;
+  clearTimeout(mouseHideTimeout);
+  if (mode === "always") {
+    applyPlayerHideUi({ minimized: false });
+  } else if (mode === "auto") {
+    applyPlayerHideUi({ minimized: false });
+    resetAutoHideTimer();
+  } else {
+    applyPlayerHideUi({ minimized: true });
+  }
+  savePlayerHideMode();
+}
+
 function resetAutoHideTimer() {
     if (window.isJumpingCamera) return; // Shield against phantom mouse movements when scrolling
+    if (isSettingsDrawerOpen()) return;
 
     const controls = document.getElementById("controls");
-    const restoreBtn = document.getElementById("playbarRestoreBtn");
-    
-    // The "Peek" Condition: Manual hide is ON, but the player has been temporarily un-minimized by the user
-    const isPeeking = state.manualHidePlayer && !controls.classList.contains("minimized");
+    if (!controls) return;
 
-    // Strict Manual Lock: Block ALL mouse tracking if manually hidden
-    if (state.manualHidePlayer && !isPeeking) return;
+    if (state.playerHideMode === "always") return;
+    if (state.playerHideMode === "manual" && controls.classList.contains("minimized")) return;
+    if (state.playerHideMode !== "auto" && state.playerHideMode !== "manual") return;
 
-    // Strict Auto Lock: Ignore mouse tracking if auto is turned off
-    if (!state.autoHidePlayer && !isPeeking) return;
-    
-    // Wake up the player
-    controls.classList.remove("minimized");
-    if (restoreBtn) {
-        restoreBtn.classList.replace("opacity-100", "opacity-0"); 
-        restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
-    }
-    
+    applyPlayerHideUi({ minimized: false });
+
     clearTimeout(mouseHideTimeout);
     mouseHideTimeout = setTimeout(() => {
-        controls.classList.add("minimized");
-        if (state.manualHidePlayer && restoreBtn) {
-            restoreBtn.classList.replace("opacity-0", "opacity-100"); 
-            restoreBtn.classList.replace("pointer-events-none", "pointer-events-auto");
-        }
-    }, 3000); 
+        if (isSettingsDrawerOpen()) return;
+        applyPlayerHideUi({ minimized: true });
+    }, 3000);
 }
 
 const contentArea = document.querySelector(".content-area");
@@ -278,63 +357,19 @@ if (controlsArea) controlsArea.addEventListener("mousemove", resetAutoHideTimer)
 // --- THE PLAY BUTTON ---
 document.getElementById("playBtn").onclick = togglePlayback;
 
-// --- THE HIDE BUTTONS ---
-document.getElementById("hidePlaybarBtn").onclick = () => {
-    const controls = document.getElementById("controls");
-    const restoreBtn = document.getElementById("playbarRestoreBtn");
+document.querySelectorAll(".voice-settings-button").forEach((btn) => {
+  btn.addEventListener("mousemove", resetAutoHideTimer);
+  btn.addEventListener("mouseenter", resetAutoHideTimer);
+});
 
-    if (state.autoHidePlayer) {
-        clearTimeout(mouseHideTimeout);
-        controls.classList.add("minimized");
-    } else {
-        state.manualHidePlayer = true;
-        saveSettings();
-        controls.classList.add("minimized");
-        restoreBtn.classList.replace("opacity-0", "opacity-100");
-        restoreBtn.classList.replace("pointer-events-none", "pointer-events-auto");
-    }
-    
-    //  ONLY swap to the Center Pill if we are in Manual Hide!
-    if (!state.autoScrollEnabled && state.manualHidePlayer) {
-        const backBtn = document.getElementById("backToReadingBtn");
-        if (backBtn) {
-            backBtn.classList.add("hidden");
-            backBtn.classList.remove("flex");
-        }
-        const hiddenBtn = document.getElementById("hiddenModeBackBtn");
-        if (hiddenBtn) {
-            hiddenBtn.classList.replace("opacity-0", "opacity-100");
-            hiddenBtn.classList.replace("pointer-events-none", "pointer-events-auto");
-        }
-    }
-};
+document.addEventListener("settings-drawer-change", (e) => {
+  if (e.detail?.open) freezePlayerAutoHide();
+  else resumePlayerAutoHide();
+});
 
 document.getElementById("playbarRestoreBtn").onclick = () => {
-    state.manualHidePlayer = false;
-    saveSettings();
-    
-    const controls = document.getElementById("controls");
-    const restoreBtn = document.getElementById("playbarRestoreBtn");
-    controls.classList.remove("minimized");
-    
-    restoreBtn.classList.replace("opacity-100", "opacity-0");
-    restoreBtn.classList.replace("pointer-events-auto", "pointer-events-none");
-    
-    // ALWAYS restore the normal top button when leaving Manual Hide!
-    if (!state.autoScrollEnabled) {
-        const backBtn = document.getElementById("backToReadingBtn");
-        if (backBtn) {
-            backBtn.classList.remove("hidden");
-            backBtn.classList.add("flex");
-        }
-        const hiddenBtn = document.getElementById("hiddenModeBackBtn");
-        if (hiddenBtn) {
-            hiddenBtn.classList.replace("opacity-100", "opacity-0");
-            hiddenBtn.classList.replace("pointer-events-auto", "pointer-events-none");
-        }
-    }
-    
-    if (state.autoHidePlayer) resetAutoHideTimer();
+    setPlayerHideMode("always");
+    syncBackToReadingButton();
 };
 
 // --- THE UNIFIED BACK TO READING ENGINE ---
@@ -344,20 +379,15 @@ const performSafeJump = async () => {
     state.viewPageIndex = state.readingPageIndex;
     state.autoScrollEnabled = true;
 
-    // Hide BOTH button variants, unifying the UI layout
-    const btnNormal = document.getElementById("backToReadingBtn");
-    if (btnNormal) {
-        btnNormal.classList.add("hidden");
-        btnNormal.classList.remove("flex");
-    }
-    const btnHidden = document.getElementById("hiddenModeBackBtn");
-    if (btnHidden) {
-        btnHidden.classList.replace("opacity-100", "opacity-0");
-        btnHidden.classList.replace("pointer-events-auto", "pointer-events-none");
-    }
+    syncBackToReadingButton();
 
-    // Notice we do NOT touch state.manualHidePlayer. If it is hidden, it stays hidden!
+    // Notice we do NOT change playerHideMode. If it is hidden, it stays hidden!
     await renderPage();
+
+    if (isHorizontalMode()) {
+        const activeEl = document.querySelector("#textContent .active-sentence");
+        if (activeEl) revealInSpread(activeEl);
+    }
 
     // Release the mouse tracker lock 500ms after the jump finishes
     setTimeout(() => { window.isJumpingCamera = false; }, 500);
@@ -385,6 +415,8 @@ document.getElementById("skipBack").onclick = async () => {
         state.readingPageIndex = targetPage;
         state.viewPageIndex = targetPage; 
         state.readingSentences = foundSentences;
+        state.autoScrollEnabled = true;
+        await renderPage();
         safeJumpToSentence(foundSentences.length - 1);
     }
   }
@@ -405,80 +437,56 @@ document.getElementById("skipForward").onclick = async () => {
         state.readingPageIndex = targetPage;
         state.viewPageIndex = targetPage; 
         state.readingSentences = foundSentences;
+        state.autoScrollEnabled = true;
+        await renderPage();
         safeJumpToSentence(0);
     }
   }
 };
 
-window.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
-  
-  if (e.code === "Space") {
-    e.preventDefault();
-    togglePlayback();
-  } else if (e.code === "ArrowLeft") {
-    e.preventDefault();
-    document.getElementById("skipBack").click();
-  } else if (e.code === "ArrowRight") {
-    e.preventDefault();
-    document.getElementById("skipForward").click();
-  } else if ((e.ctrlKey || e.metaKey) && e.key === "f" && state.currentDoc) {
-    e.preventDefault();
-    document.getElementById("searchBtn").click();
-  } else if (e.key === "Escape") {
-    e.preventDefault();
-    document.getElementById("searchModal").classList.add("hidden");
-    const tocModal = document.getElementById("tocModal");
-    if (tocModal) tocModal.classList.add("hidden");
-    document.querySelectorAll(".voice-settings-drawer").forEach(d => d.classList.remove("open"));
-    document.getElementById("drawerOverlay").classList.remove("active");
-    
-    const imgViewer = document.getElementById("imageViewerModal");
-    if (imgViewer) imgViewer.classList.remove("active");
-  }
-});
-
-// Bind hardware media keys directly to the OS Media Session
-if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('play', () => {
-    togglePlayback();
-  });
-  
-  navigator.mediaSession.setActionHandler('pause', () => {
-    togglePlayback();
-  });
-  
-  navigator.mediaSession.setActionHandler('previoustrack', () => {
-    const skipBackBtn = document.getElementById("skipBack");
-    if (skipBackBtn) skipBackBtn.click();
-  });
-  
-  navigator.mediaSession.setActionHandler('nexttrack', () => {
-    const skipForwardBtn = document.getElementById("skipForward");
-    if (skipForwardBtn) skipForwardBtn.click();
-  });
-}
+initShortcuts({ closeSearchMode, handleSearchPopupKeys, closeSidebarMiniPopups });
 
 document.getElementById("prevPage").onclick = async () => {
   if (state.viewPageIndex > 0) {
     state.viewPageIndex--;
-    state.autoScrollEnabled = false;
+    state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
   }
 };
 document.getElementById("nextPage").onclick = async () => {
   if (state.viewPageIndex < state.currentPages.length - 1) {
     state.viewPageIndex++;
-    state.autoScrollEnabled = false;
+    state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
   }
 };
-document.getElementById("pageInput").onchange = async (e) => {
-  let v = parseInt(e.target.value) - 1;
-  if (v >= 0 && v < state.currentPages.length) {
-    state.viewPageIndex = v;
-    state.autoScrollEnabled = false;
+
+setHorizontalPageTurn(async (dir) => {
+  if (dir < 0) {
+    if (state.viewPageIndex > 0) {
+      state.viewPageIndex--;
+      state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
+      await renderPage();
+      return true;
+    }
+    return false;
+  }
+  if (state.viewPageIndex < state.currentPages.length - 1) {
+    state.viewPageIndex++;
+    state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
+    return true;
+  }
+  return false;
+});
+document.getElementById("pageInput").onchange = async (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (!Number.isFinite(v)) return;
+  if (jumpToDisplayedPage(v)) {
+    state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
+    await renderPage();
+  } else {
+    updateProgressDisplay();
   }
 };
 
@@ -495,45 +503,60 @@ if (appScroller) {
       }
   }, { passive: true });
 
+  const readerScrollMetrics = () => {
+    const inner = document.getElementById("readerContent");
+    const candidates = [appScroller, inner].filter(Boolean);
+    let scroller = appScroller;
+    let maxOverflow = -1;
+    for (const el of candidates) {
+      const overflow = el.scrollHeight - el.clientHeight;
+      if (overflow > maxOverflow) {
+        maxOverflow = overflow;
+        scroller = el;
+      }
+    }
+    const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    return {
+      scroller,
+      maxScroll,
+      canScroll: maxScroll > 10,
+      top: scroller.scrollTop <= 10,
+      bottom: scroller.scrollTop >= maxScroll - 10,
+    };
+  };
+
+  const pageImagesStillExpanding = () => Array.from(
+    document.querySelectorAll("#textContent img.epub-image:not(.epub-icon)")
+  ).some(img => !img.complete || img.naturalHeight === 0);
+
   appScroller.addEventListener(
     "wheel",
     async (e) => {
+      if (isHorizontalMode()) return;
       if (isAutoFlipping) return;
-      const bottom = appScroller.scrollTop + appScroller.clientHeight >= appScroller.scrollHeight - 10;
-      const top = appScroller.scrollTop <= 10;
+      const metrics = readerScrollMetrics();
 
       // When the user breaks auto-scroll, spawn the correct button
       if (state.autoScrollEnabled) {
         state.autoScrollEnabled = false;
-        
-        //  If the player is hidden, the normal button is dragged off-screen.
-        // We MUST use the floating center pill instead!
-        if (state.manualHidePlayer) {
-            const hiddenBtn = document.getElementById("hiddenModeBackBtn");
-            if (hiddenBtn) {
-                hiddenBtn.classList.replace("opacity-0", "opacity-100");
-                hiddenBtn.classList.replace("pointer-events-none", "pointer-events-auto");
-            }
-        } else {
-            const backBtn = document.getElementById("backToReadingBtn");
-            if (backBtn) {
-                backBtn.classList.remove("hidden");
-                backBtn.classList.add("flex");
-            }
-        }
+        syncBackToReadingButton();
       }
 
-      if (e.deltaY > 0 && bottom && state.viewPageIndex < state.currentPages.length - 1) {
+      // Short page with unloaded mixed images: wait for layout, don't skip HTML pages.
+      if (!metrics.canScroll && pageImagesStillExpanding()) return;
+
+      if (e.deltaY > 0 && metrics.bottom && state.viewPageIndex < state.currentPages.length - 1) {
         isAutoFlipping = true;
         state.viewPageIndex++;
         await renderPage();
-        appScroller.scrollTop = 0;
+        readerScrollMetrics().scroller.scrollTop = 0;
         setTimeout(() => { isAutoFlipping = false; }, 700);
-      } else if (e.deltaY < 0 && top && state.viewPageIndex > 0) {
+      } else if (e.deltaY < 0 && metrics.top && state.viewPageIndex > 0) {
         isAutoFlipping = true;
         state.viewPageIndex--;
         await renderPage();
-        appScroller.scrollTop = appScroller.scrollHeight;
+        const after = readerScrollMetrics();
+        after.scroller.scrollTop = after.scroller.scrollHeight;
         setTimeout(() => { isAutoFlipping = false; }, 700);
       }
     },
@@ -562,7 +585,7 @@ if (pdfUpload) {
         const data = await res.json();
         
         // Pass everything safely
-        processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map);
+        processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map, data.language, data.bookType || "epub");
       } catch (err) {
         console.error(err);
         showToast("EPUB conversion failed: " + err.message);
@@ -600,15 +623,11 @@ async function saveSettings() {
         ignoreList: state.ignoreList,
         voice_id: document.getElementById("voiceSelect").value,
         speed: parseFloat(document.getElementById("speedRange").value),
-        font_size: parseInt(document.getElementById("fontSizeSlider").value),
-        header_footer_mode: state.headerFooterMode,
+        font_size: getRenderState().font_size,
         engine_mode: state.engineMode,
         pause_settings: state.pauseSettings,
         behavior_settings: state.behaviorSettings,
         ui_language: state.uiLanguage,
-        autoHidePlayer: state.autoHidePlayer,
-        manualHidePlayer: state.manualHidePlayer,
-        sentenceIndicatorOn: state.sentenceIndicatorOn,
       }),
     });
   } catch (e) {
@@ -621,23 +640,6 @@ document.getElementById("speedRange").oninput = (e) =>
   (document.getElementById("speedVal").textContent = parseFloat(
     e.target.value,
   ).toFixed(2));
-document.getElementById("fontSizeSlider").onchange = saveSettings;
-document.getElementById("fontSizeSlider").oninput = (e) => {
-  const newSize = e.target.value;
-  document.getElementById("textSizeVal").textContent = newSize;
-
-  const preview = document.getElementById("currentSentencePreview");
-  if (preview) {
-    preview.style.fontSize = `${newSize}px`;
-    preview.style.lineHeight = parseInt(newSize) * 1.5 + "px";
-  }
-
-  const textContent = document.getElementById("textContent");
-  if (textContent) {
-    textContent.style.fontSize = `${newSize}px`;
-    textContent.style.lineHeight = parseInt(newSize) * 1.6 + "px";
-  }
-};
 document.getElementById("voiceSelect").onchange = async () => {
   state.audioBufferCache.clear();
   try {
@@ -647,49 +649,26 @@ document.getElementById("voiceSelect").onchange = async () => {
   }
   await saveSettings();
 };
-document.getElementById("headerFooterMode").onchange = async (e) => {
-  state.headerFooterMode = e.target.value;
-  await saveSettings();
-  if (state.currentDoc) await renderPage();
-};
 document.getElementById("engineMode").onchange = async (e) => {
   state.engineMode = e.target.value;
   await saveSettings();
 };
-document.getElementById("setupBtn").onclick = async () => {
-  try {
-    await fetchJSON(`/api/system/setup?model_type=${state.engineMode}`, {
-      method: "POST",
-    });
-    showToast("Started downloading...");
-  } catch (e) {
-    showToast(e.message);
-  }
+document.getElementById("setupBtn").onclick = async (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const popup = document.getElementById("kokoroDownloadPopup");
+  if (!popup) return;
+  closeSidebarMiniPopups();
+  popup.classList.toggle("hidden");
 };
 
-const toggleDrawer = (open) => {
-  const d = document.getElementById("voiceSettingsDrawer");
-  const o = document.getElementById("drawerOverlay");
-  if (open) { o.classList.add("active"); d.classList.add("open"); } 
-  else { d.classList.remove("open"); }
-};
-const toggleBehaviorDrawer = (open) => {
-  const d = document.getElementById("behaviorSettingsDrawer");
-  const o = document.getElementById("drawerOverlay");
-  if (open) { o.classList.add("active"); d.classList.add("open"); } 
-  else { d.classList.remove("open"); }
-};
+document.getElementById("voiceSettingsBtn").onclick = () => toggleSettingsDrawer("voiceSettingsDrawer", true);
+document.getElementById("closeDrawerBtn").onclick = () => toggleSettingsDrawer("voiceSettingsDrawer", false);
 
-document.getElementById("voiceSettingsBtn").onclick = () => toggleDrawer(true);
-document.getElementById("closeDrawerBtn").onclick = () => toggleDrawer(false);
+document.getElementById("behaviorSettingsBtn").onclick = () => toggleSettingsDrawer("behaviorSettingsDrawer", true);
+document.getElementById("closeBehaviorDrawerBtn").onclick = () => toggleSettingsDrawer("behaviorSettingsDrawer", false);
 
-document.getElementById("behaviorSettingsBtn").onclick = () => toggleBehaviorDrawer(true);
-document.getElementById("closeBehaviorDrawerBtn").onclick = () => toggleBehaviorDrawer(false);
-
-document.getElementById("drawerOverlay").onclick = () => {
-  document.querySelectorAll(".voice-settings-drawer").forEach(d => d.classList.remove("open"));
-  document.getElementById("drawerOverlay").classList.remove("active");
-};
+document.getElementById("drawerOverlay").onclick = () => closeAllDrawers();
 
 const sidebar = document.querySelector(".sidebar");
 const dragHandle = document.getElementById("sidebarDragHandle");
@@ -703,7 +682,11 @@ if (dragHandle && sidebar) {
   window.addEventListener("mousemove", (e) => {
     if (!isResizing) return;
     const newWidth = e.clientX;
-    if (newWidth > 200 && newWidth < 600) sidebar.style.width = `${newWidth}px`;
+    if (newWidth > 200 && newWidth < 600) {
+      sidebar.style.width = `${newWidth}px`;
+      document.documentElement.style.setProperty("--sidebar-width", `${newWidth}px`);
+      requestGeometrySync();
+    }
   });
   window.addEventListener("mouseup", () => {
     isResizing = false;
@@ -712,23 +695,43 @@ if (dragHandle && sidebar) {
 }
 
 const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
-const sidebarExpandBtn = document.getElementById("sidebarExpandBtn");
-if (sidebarCollapseBtn && sidebarExpandBtn && sidebar) {
+if (sidebarCollapseBtn && sidebar) {
+  let pendingSpreadIndex = null;
+  let sidebarAnimTimer = null;
   const updateSidebarVar = (collapsed) => {
     document.documentElement.style.setProperty(
       "--sidebar-width",
       collapsed ? "0px" : sidebar.style.width || "320px",
     );
   };
-  sidebarCollapseBtn.onclick = () => {
-    sidebar.classList.add("collapsed");
-    sidebarExpandBtn.classList.add("visible");
-    updateSidebarVar(true);
+  const finishSidebarAnim = () => {
+    if (!sidebar.classList.contains("animating")) return;
+    clearTimeout(sidebarAnimTimer);
+    sidebar.classList.remove("animating");
+    const k = pendingSpreadIndex;
+    pendingSpreadIndex = null;
+    void layoutSpreads({ spreadIndex: k });
   };
-  sidebarExpandBtn.onclick = () => {
-    sidebar.classList.remove("collapsed");
-    sidebarExpandBtn.classList.remove("visible");
-    updateSidebarVar(false);
+  const beginSidebarWidthAnim = () => {
+    pendingSpreadIndex = getSpreadIndex();
+    sidebar.classList.add("animating");
+    clearTimeout(sidebarAnimTimer);
+    sidebarAnimTimer = setTimeout(finishSidebarAnim, 350);
+  };
+  sidebar.addEventListener("transitionend", (e) => {
+    if (e.target !== sidebar) return;
+    if (e.propertyName !== "width") return;
+    requestGeometrySync();
+    finishSidebarAnim();
+  });
+  sidebarCollapseBtn.onclick = () => {
+    const collapsing = !sidebar.classList.contains("collapsed");
+    closeSidebarMiniPopups();
+    beginSidebarWidthAnim();
+    sidebar.classList.toggle("collapsed", collapsing);
+    updateSidebarVar(collapsing);
+    requestGeometrySync();
+    if (collapsing) closeTypoMenu();
   };
 }
 
@@ -776,7 +779,7 @@ document.body.addEventListener("drop", async (e) => {
       if (!res.ok) throw new Error("Conversion failed");
       const data = await res.json();
       
-      processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map);
+      processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map, data.language, data.bookType || "epub");
     } catch (err) {
       console.error(err);
       showToast("EPUB conversion failed: " + err.message);
@@ -786,123 +789,74 @@ document.body.addEventListener("drop", async (e) => {
   }
 });
 
-document.getElementById("languageToggle").onclick = async () => {
-  const langs = ["en", "es", "fr", "zh"];
-  let cur = langs.includes(state.uiLanguage) ? state.uiLanguage : "en";
-  const next = langs[(langs.indexOf(cur) + 1) % langs.length];
+function closeSidebarMiniPopups() {
+  document.getElementById("languagePopup")?.classList.add("hidden");
+  document.getElementById("engineStatusPopup")?.classList.add("hidden");
+}
 
+function syncLanguageChip(lang) {
+  const langToggle = document.getElementById("languageToggle");
+  if (langToggle) langToggle.textContent = (lang || "en").toUpperCase();
+  document.querySelectorAll("#languagePopup [data-lang]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.lang === lang);
+  });
+}
+
+async function applyUiLanguage(next) {
+  if (!next || next === state.uiLanguage) {
+    closeSidebarMiniPopups();
+    if (next) syncLanguageChip(next);
+    return;
+  }
   state.uiLanguage = next;
-  document.getElementById("languageToggle").textContent = next.toUpperCase();
-
+  syncLanguageChip(next);
+  closeSidebarMiniPopups();
   await updateTranslations(next);
+  applyReaderTypography();
+  applyPlayerHideUi();
   renderIcons();
   saveSettings();
   loadVoices();
   showToast(`Language set to ${next.toUpperCase()}`);
-};
+}
 
-document.getElementById("searchBtn").onclick = () => {
-  if (!state.currentDoc) {
-    showToast("No document loaded");
-    return;
-  }
-  document.getElementById("searchModal").classList.remove("hidden");
-  document.getElementById("searchInput").focus();
-};
-document.getElementById("closeSearchBtn").onclick = () =>
-  document.getElementById("searchModal").classList.add("hidden");
+function toggleSidebarMiniPopup(popup) {
+  if (!popup) return;
+  const willOpen = popup.classList.contains("hidden");
+  closeSidebarMiniPopups();
+  if (willOpen) popup.classList.remove("hidden");
+}
 
-let searchMatchCase = false;
-let searchWholeWord = false;
+const languageToggle = document.getElementById("languageToggle");
+const languagePopup = document.getElementById("languagePopup");
+if (languageToggle && languagePopup) {
+  languageToggle.onclick = (e) => {
+    e.stopPropagation();
+    toggleSidebarMiniPopup(languagePopup);
+  };
+  languagePopup.querySelectorAll("[data-lang]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      applyUiLanguage(btn.dataset.lang);
+    };
+  });
+}
 
-document.getElementById("btnMatchCase").onclick = (e) => {
-  searchMatchCase = !searchMatchCase;
-  const btn = e.currentTarget;
-  btn.classList.toggle("bg-blue-600/20", searchMatchCase);
-  btn.classList.toggle("text-blue-400", searchMatchCase);
-  btn.classList.toggle("border-blue-500/50", searchMatchCase);
-  document.getElementById("searchInput").dispatchEvent(new Event("input"));
-};
+const engineStatusBtn = document.getElementById("engineStatusBtn");
+const engineStatusPopup = document.getElementById("engineStatusPopup");
+if (engineStatusBtn && engineStatusPopup) {
+  engineStatusBtn.onclick = (e) => {
+    e.stopPropagation();
+    toggleSidebarMiniPopup(engineStatusPopup);
+  };
+}
 
-document.getElementById("btnWholeWord").onclick = (e) => {
-  searchWholeWord = !searchWholeWord;
-  const btn = e.currentTarget;
-  btn.classList.toggle("bg-blue-600/20", searchWholeWord);
-  btn.classList.toggle("text-blue-400", searchWholeWord);
-  btn.classList.toggle("border-blue-500/50", searchWholeWord);
-  document.getElementById("searchInput").dispatchEvent(new Event("input"));
-};
+document.addEventListener("click", (e) => {
+  if (e.target.closest(".sidebar-tray-wrap, #setupArea, #engineStatusPopup, #kokoroDownloadPopup")) return;
+  closeSidebarMiniPopups();
+});
 
-let searchDebounce = null;
-document.getElementById("searchInput").oninput = (e) => {
-  clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(async () => {
-    const query = e.target.value.trim();
-    const resultsList = document.getElementById("searchResultsList");
-    if (!query || query.length < 2) {
-      resultsList.innerHTML = "";
-      document.getElementById("searchEmpty").classList.add("hidden");
-      return;
-    }
-    try {
-      // Pass the new filters to the backend
-      const data = await fetchJSON(
-        `/api/library/search/${state.currentDoc.id}?q=${encodeURIComponent(query)}&match_case=${searchMatchCase}&whole_word=${searchWholeWord}`
-      );
-      resultsList.innerHTML = "";
-      if (data.results.length === 0) {
-        document.getElementById("searchEmpty").classList.remove("hidden");
-        return;
-      }
-      document.getElementById("searchEmpty").classList.add("hidden");
-      const fragment = document.createDocumentFragment();
-      
-      let snippetPattern = escapeRegex(query);
-      if (searchWholeWord) snippetPattern = `\\b${snippetPattern}\\b`;
-      const hlRegex = new RegExp(`(${snippetPattern})`, searchMatchCase ? 'g' : 'gi');
-      
-      data.results.forEach((result) => {
-        result.matches.forEach((match) => {
-          const div = document.createElement("div");
-          div.className = "search-result-item";
-          div.innerHTML = `<div class="flex justify-between mb-2"><span class="text-xs font-bold text-blue-400">Page ${result.page_index + 1}</span></div><div class="search-result-snippet">${match.snippet.replace(hlRegex, '<mark>$1</mark>')}</div>`;
-          div.onclick = async () => {
-            state.currentSearchQuery = query; 
-            state.searchMatchCase = searchMatchCase;
-            state.searchWholeWord = searchWholeWord;
-            state.searchTargetSnippet = match.snippet; 
-            
-            //  Tell the app exactly which page this highlight belongs to
-            state.searchTargetPage = result.page_index; 
-            
-            //  EXPLORER MODE: Only move the camera, do not change reading position!
-            state.viewPageIndex = result.page_index;
-            state.autoScrollEnabled = false;
-            
-            document.getElementById("searchModal").classList.add("hidden");
-            
-            await renderPage();
-            
-            // Robust scrolling: Wait for DOM to finish rendering
-            let checkCount = 0;
-            const scrollInterval = setInterval(() => {
-                const finalHl = document.querySelector('.search-highlight');
-                if (finalHl) {
-                    clearInterval(scrollInterval);
-                    finalHl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                } else if (checkCount > 20) {
-                    clearInterval(scrollInterval);
-                }
-                checkCount++;
-            }, 100);
-          };
-          fragment.appendChild(div);
-        });
-      });
-      resultsList.appendChild(fragment);
-    } catch (e) {}
-  }, 300);
-};
+initSearch();
 
 document.getElementById("exportBtn").onclick = startExport;
 document.getElementById("cancelExportBtn").onclick = cancelExport;
@@ -910,6 +864,10 @@ document.getElementById("startFFMPEGDownload").onclick = startFFMPEGDownload;
 document.getElementById("cancelFFMPEGBtn").onclick = () =>
   document.getElementById("ffmpegModal").classList.add("hidden");
 document.getElementById("openFileLocationBtn").onclick = openExportLocation;
+const closeExportModalBtn = document.getElementById("closeExportModalBtn");
+if (closeExportModalBtn) closeExportModalBtn.onclick = closeExportModal;
+const closeExportErrorBtn = document.getElementById("closeExportErrorBtn");
+if (closeExportErrorBtn) closeExportErrorBtn.onclick = closeExportModal;
 
 document.getElementById("rulesList").addEventListener("input", (e) => {
   if (e.target.dataset.action === "update-rule") {
@@ -1009,7 +967,7 @@ window.selectDocById = async (id) => {
   if (item) selectDocument(item);
 };
 
-["Comma", "Period", "Question", "Exclamation", "Colon", "Semicolon"].forEach(
+["Comma", "Period", "Spam", "Question", "Exclamation", "Colon", "Semicolon"].forEach(
   (k) => {
     const el = document.getElementById(`pause${k}`);
     if (el) {
@@ -1053,6 +1011,7 @@ if (pauseToggleBtn) {
 }
 
 function safeJumpToSentence(index) {
+    state.autoScrollEnabled = true;
     const wasPlaying = state.isPlaying;
     if (wasPlaying) {
         stopPlayback();
@@ -1103,7 +1062,7 @@ async function startStatusPolling() {
       
       const selModel = state.engineMode === "gpu" ? status.available_models?.gpu : status.available_models?.cpu;
       
-      const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${selModel}-${state.engineMode}-${state.activeHardware}`;
+      const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${selModel}-${status.available_models?.gpu}-${status.available_models?.cpu}-${status.available_models?.voices}-${state.engineMode}-${state.activeHardware}`;
       if (curState !== lastSysState) {
         lastSysState = curState;
         updateEngineStatusUI(status, selModel);
@@ -1159,45 +1118,39 @@ if (tocModalElement) {
 const brightnessBtn = document.getElementById("toggleBrightnessBtn");
 if (brightnessBtn) {
     brightnessBtn.onclick = () => {
-        state.sentenceIndicatorOn = !state.sentenceIndicatorOn;
+        state.sentenceDim = !state.sentenceDim;
         updateSentenceBrightness();
-        saveSettings();
+        saveThemeSettings({ sentence_dim: state.sentenceDim });
     };
 }
 
 function updateSentenceBrightness() {
-    const preview = document.getElementById("currentSentencePreview");
-    const btn = document.getElementById("toggleBrightnessBtn");
-    
-    if (!preview || !btn) return;
+  const preview = document.getElementById("currentSentencePreview");
+  const btn = document.getElementById("toggleBrightnessBtn");
 
-    // Restore original colors + 40% fade for dim state
-    if (state.sentenceIndicatorOn) {
-        preview.classList.remove("text-zinc-600", "opacity-40");
-        preview.classList.add("text-zinc-200");
-    } else {
-        preview.classList.remove("text-zinc-200");
-        preview.classList.add("text-zinc-600", "opacity-40");
-    }
-    
-    // Safe Memory Management (prevents the Lucide SVG crash)
-    while (btn.firstChild) {
-        btn.removeChild(btn.firstChild);
-    }
-    
-    const newIcon = document.createElement("i");
-    
-    if (state.sentenceIndicatorOn) {
-        newIcon.setAttribute("data-lucide", "sun");
-        newIcon.className = "w-4 h-4 text-zinc-400"; 
-    } else {
-        newIcon.setAttribute("data-lucide", "moon");
-        newIcon.className = "w-4 h-4 text-zinc-500"; 
-    }
-    
-    btn.appendChild(newIcon);
-    
-    if (typeof renderIcons === "function") {
-        renderIcons();
-    }
+  if (!preview || !btn) return;
+
+  if (state.sentenceDim) {
+    preview.classList.remove("text-zinc-100");
+    preview.classList.add("text-zinc-400", "opacity-60");
+  } else {
+    preview.classList.remove("text-zinc-400", "opacity-60");
+    preview.classList.add("text-zinc-100");
+  }
+
+  while (btn.firstChild) {
+    btn.removeChild(btn.firstChild);
+  }
+
+  const newIcon = document.createElement("i");
+  if (state.sentenceDim) {
+    newIcon.setAttribute("data-lucide", "moon");
+    newIcon.className = "w-4 h-4 text-zinc-500";
+  } else {
+    newIcon.setAttribute("data-lucide", "sun");
+    newIcon.className = "w-4 h-4 text-zinc-400";
+  }
+
+  btn.appendChild(newIcon);
+  if (typeof renderIcons === "function") renderIcons();
 }

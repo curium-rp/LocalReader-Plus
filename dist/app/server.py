@@ -27,7 +27,7 @@ state_module.providers = [p for p in ort_env.split(",") if p]
 
 from .models import AppSettings
 
-from .routers import settings, library, tts, system, export, timer, theme
+from .routers import settings, library, tts, system, export, timer, theme, render, view
 
 # --- Lifespan Manager ---
 @asynccontextmanager
@@ -66,19 +66,20 @@ async def lifespan(app: FastAPI):
     safe_init_json(library_file, [])
 
     from .routers.system import load_engine_logic
-    
+    from .state import system_status
+
     def perform_boot():
         try:
-            print("[BOOT] Loading Kokoro Engine (Blocking until ready)...")
+            print("[BOOT] Loading Kokoro Engine in background...")
             load_engine_logic()
             print(f"[BOOT] Kokoro Engine loaded in {time.time() - start_time:.2f}s")
         except Exception as e:
-            # Bypass to app if engine fails to load or models are missing
             print(f"[WARNING] Engine load bypassed (missing models or error): {e}")
+            system_status["is_loading"] = False
 
-    # Core Logic: Always try to load synchronously. 
-    # If it fails, the except block catches it and the app continues opening.
-    perform_boot()
+    # Do not block FastAPI/window on model RAM load. Status dot stays yellow then green/red.
+    system_status["is_loading"] = True
+    threading.Thread(target=perform_boot, daemon=True, name="kokoro-boot").start()
 
     yield
 
@@ -108,6 +109,8 @@ app.include_router(system.router)
 app.include_router(export.router)
 app.include_router(timer.router)
 app.include_router(theme.router)
+app.include_router(render.router)
+app.include_router(view.router)
 
 # --- Static Files ---
 ui_dir = base_dir / "ui"

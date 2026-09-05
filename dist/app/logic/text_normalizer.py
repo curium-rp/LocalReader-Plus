@@ -38,23 +38,23 @@ STUTTER_MAP = {
 CONTEXT_MAP = {
     'a': {
         'ipa': {'eɪ': 'ay', 'æ': 'ah', 'ə': 'uhh', 'ɑ': 'ah', 'a': 'ah'},
-        'text': lambda w: 'ay' if w.startswith(('ac', 'ap', 'av', 'ag', 'at', 'al')) and len(w) > 3 and w.endswith('e') else 'ah'
+        'text': lambda w: 'ay' if w.startswith(('ac', 'ap', 'av', 'ag', 'at', 'al')) and len(w) >= 3 and w.endswith('e') else 'ah'
     },
     'e': {
         'ipa': {'i': 'ee', 'iː': 'ee', 'ɛ': 'eh', 'e': 'eh'},
-        'text': lambda w: 'ee' if w.startswith(('ev', 'eq', 'ea', 'ee')) else 'eh'
+        'text': lambda w: 'ee' if w.startswith(('eve', 'equ', 'ea', 'ee')) and not w.startswith(('ever', 'every')) else 'eh'
     },
     'i': {
         'ipa': {'aɪ': 'eye', 'ɪ': 'ih'},
-        'text': lambda w: 'eye' if w.startswith(('ic', 'id', 'ir', 'is')) and len(w) > 3 and w.endswith('e') else 'ih'
+        'text': lambda w: 'eye' if w.startswith(('ic', 'id', 'ir', 'is')) and len(w) >= 3 and w.endswith('e') else 'ih'
     },
     'o': {
         'ipa': {'oʊ': 'oh', 'əʊ': 'oh', 'ɑ': 'aw', 'ɒ': 'aw', 'ɔ': 'aw'},
-        'text': lambda w: 'oh' if w.startswith(('ov', 'op', 'ol', 'oas', 'oat')) else 'oh'
+        'text': lambda w: 'aw' if w.startswith(('on', 'off', 'ox', 'odd', 'opt', 'oct')) else 'oh'
     },
     'u': {
         'ipa': {'u': 'oo', 'ju': 'yoo', 'ʌ': 'uhh', 'ə': 'uhh', 'ɐ': 'uhh'},
-        'text': lambda w: 'uhh' if w.startswith('un') else 'uhh'
+        'text': lambda w: 'yoo' if w.startswith(('uni', 'use', 'uta', 'uro')) else 'uhh'
     },
     'c': {
         'ipa': {'s': 'sih', 'k': 'kih', 'tʃ': 'chih', 'ʃ': 'shih'},
@@ -69,7 +69,7 @@ CONTEXT_MAP = {
         'text': lambda w: 'jih' if w.startswith(('ge', 'gi', 'gy')) and not w.startswith(HARD_G_WORDS) else 'guh'
     },
     'h': {
-        'text': lambda w: 'hu' if w == 'help' else None
+        'text': lambda w: 'huh'
     },
     's': {
         'ipa': {'ʃ': 'shih', 's': 'sih', 'z': 'zih'},
@@ -82,22 +82,22 @@ CONTEXT_MAP = {
 }
 
 IPA_MAP = {
-    'ð': 'the', 'θ': 'thih', 'k': 'kuh', 's': 'sih', 'dʒ': 'jih', 'tʃ': 'chih',
+    'ð': 'thih', 'θ': 'thih', 'k': 'kuh', 's': 'sih', 'dʒ': 'jih', 'tʃ': 'chih',
     'w': 'wuh', 'j': 'yuh', 'm': 'muh', 'n': 'nuh', 'b': 'buh', 'p': 'puh',
-    'd': 'duh', 't': 'tuh', 'g': 'guh', 'h': 'hu', 'ʃ': 'shih', 'v': 'vih',
-    'z': 'zih', 'f': 'fih', 'ɹ': 'rih', 'r': 'rih', 'l': 'lih',
+    'd': 'duh', 't': 'tuh', 'g': 'guh', 'ɡ': 'guh', 'h': 'huh', 'ʃ': 'shih', 'ʒ': 'zhuh',
+    'v': 'vih', 'z': 'zih', 'f': 'fih', 'ɹ': 'rih', 'r': 'rih', 'l': 'lih',
     'æ': 'ah', 'ɛ': 'eh', 'ɪ': 'ih', 'ʌ': 'uhh', 'ɒ': 'aw', 'ɔ': 'aw', 'ə': 'uhh',
-    'eɪ': 'ay', 'i': 'ee', 'iː': 'ee', 'aɪ': 'eye', 'oʊ': 'oh', 'u': 'oo', 'uː': 'oo', 
-    'ɑ': 'ar', 'ɑː': 'ar', 'ɔː': 'aw', 'ɜː': 'er'
+    'eɪ': 'ay', 'i': 'ee', 'iː': 'ee', 'aɪ': 'eye', 'aʊ': 'ow', 'ɔɪ': 'oy', 'oʊ': 'oh',
+    'u': 'oo', 'uː': 'oo', 'ju': 'yoo', 'ɑ': 'ah', 'ɑː': 'ah', 'ɔː': 'aw', 'ɜ': 'er', 'ɜː': 'er'
 }
 
 INTERJECTION_MAP = {
-    r'h+m+': 'hum', r'm{2,}': 'uhm', r'u+h+': 'uhh', r'rgh+': 'urgh', r'grr+': 'gurr',      
-    r'ugh+': 'uhg', r'tch': 'tisk', r'gah': 'gah', r'ngh+': 'ung', r'n+g+h+': 'ung',         
-    r'oof+': 'oof', r'ack': 'ack', r'urk': 'erk', r'hmph': 'humph', r'n{2,}h?': 'uhn',        
-    r'm+h+': 'um', r'm+[\-]?p+h+': 'umph', r'pff+t?': 'pufft', r'bah': 'bah', 
-    r'tsk(?:\-tsk)?': 'tisk, tisk', r'eep': 'eep', r'kyaa+': 'kya', r'hiii+e?': 'heee',   
-    r'phew': 'fyoo', r'whew': 'hweo', r'hngh+': 'hung', r'w+a+h+': 'wah',         
+    r'h+m+': 'hum', r'm{2,}': 'uhm', r'u+h+': 'um', r'rgh+': 'urgh', r'grr+': 'gurr',      
+    r'ugh+': 'uhg', r'tch': 'tisk', r'ngh+': 'ung', r'n+g+h+': 'ung', r'(?:u+h{2,}|u{2,}h+)': 'uhm',         
+    r'oof+': 'oof', r'urk': 'erk', r'hmph': 'humph', r'n{2,}h?': 'uhn',        
+    r'm+h+': 'um', r'm+[\-]?p+h+': 'umph', r'pff+t?': 'pufft', 
+    r'tsk(?:\-tsk)?': 'tisk, tisk', r'kyaa+': 'kya', r'hiii+e?': 'heee',   
+    r'phew': 'fyoo', r'whew': 'hyoo', r'hngh+': 'hung', r'w+a+h+': 'wah',         
     r'b+r{2,}': 'burr', r's+h{2,}': 'shush', r'p+s+t+': 'pist', r'z{2,}': 'zuh',          
     r'a+w{2,}': 'aw'          
 }
@@ -286,19 +286,20 @@ def fix_broken_words(text: str) -> str:
         
         prefixes = [p for p in re.split(r'[-—–]+', raw_prefixes) if p]
         
-        # 1. Reject invalid stutters (e.g. T-Rex)
+        # 1. Prefix match validation
         if not all(rem_low.startswith(p.lower()) for p in prefixes):
             return match.group(0)
             
-        # 2. Exception Shield for Compound Nouns (Bypass engine, keep hyphens for TTS)
-        full_stutter_key_first = f"{prefixes[0].lower()}-{rem_low}"
-        if full_stutter_key_first in STUTTER_EXCEPTIONS:
-            return match.group(0)
+        # 2. Exception shield for single-prefix compound nouns
+        if len(prefixes) == 1:
+            full_stutter_key_first = f"{prefixes[0].lower()}-{rem_low}"
+            if full_stutter_key_first in STUTTER_EXCEPTIONS:
+                return match.group(0)
             
         first_prefix = prefixes[0].lower()
         first_char = first_prefix[0]
         
-        # 3. Suppress disabled words and letters
+        # Suppress disabled words and collapse non-whitelisted letter stutters
         if rem_low in STUTTER_REMOVE:
             return f"{pre_punct}{remainder_of_word}"
             
@@ -362,7 +363,6 @@ def fix_broken_words(text: str) -> str:
         return f"{pre_punct}{' '.join(result)}"
 
     text = re.sub(r'(?<![a-zA-Z])([\'"“‘\[\(\{]*)((?:[a-zA-Z]{1,3}[-—–]+)+)([a-zA-Z]+(?:\'[a-zA-Z]+)?)', resolve_stutter, text)
-    
     text = re.sub(r"([A-Za-z])\1{2,}", r"\1\1", text)
 
     for pattern, phonetic_replacement in INTERJECTION_MAP.items():
@@ -375,12 +375,15 @@ def fix_broken_words(text: str) -> str:
 
 
 def fix_special_formats(text: str, lang: str = "en") -> str:
-    """Handles edge cases like time, dates, phone numbers, and currency."""
+    """Handles edge cases like time, dates, phone numbers, currency, and paper sizes."""
     if not text:
         return text
 
     text = re.sub(r'([\"\'\(\[\{\u201c\u2018])\s+', r'\1', text)
     text = re.sub(r'\s+([\"\'\)\}\]\u201d\u2019])', r'\1', text)
+
+    # Hyphenated capital forces Kokoro G2P to pronounce letter name /eI/ without pause
+    text = re.sub(r'\b[Aa](\d+)\b', r'A-\1', text)
 
     if not lang.startswith('en'):
         return text
@@ -394,9 +397,14 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
     
     text = re.sub(r'\$([0-9,]+)(?:\.(\d+))?', split_currency, text)
 
+    # Dot-separated time with AM/PM (e.g. 3.43 P.M. -> 3:43 pm) before decimal engine fires
+    text = re.sub(r'\b(\d{1,2})\.(\d{2})\s*(?i:a\.?m\.?)(?=\s|[.,!?]|$)', r'\1:\2 am', text)
+    text = re.sub(r'\b(\d{1,2})\.(\d{2})\s*(?i:p\.?m\.?)(?=\s|[.,!?]|$)', r'\1:\2 pm', text)
+
+    # Normalize standalone time markers to lowercase
     text = re.sub(r'\b(\d{1,2}):00\b', r'\1', text)
-    text = re.sub(r'(\d)\s*(?i:a\.?m\.?)(?=\s|[.,!?]|$)', r'\1 AM', text)
-    text = re.sub(r'(\d)\s*(?i:p\.?m\.?)(?=\s|[.,!?]|$)', r'\1 PM', text)
+    text = re.sub(r'(\d)\s*(?i:a\.?m\.?)(?=\s|[.,!?]|$)', r'\1 am', text)
+    text = re.sub(r'(\d)\s*(?i:p\.?m\.?)(?=\s|[.,!?]|$)', r'\1 pm', text)
 
     def split_decimal(match):
         whole_number = match.group(1)
@@ -545,14 +553,6 @@ def protect_japanese_mixed_latin(text: str, lang: str) -> str:
 def apply_custom_pronunciations(text: str, rules: List[Dict[str, Any]], ignore_list: List[str] = None, lang: str = "en") -> str:
     if ignore_list is None:
         ignore_list = []
-    """Applies custom user rules and ignore lists safely and robustly."""
-    text = fix_broken_words(text)
-    text = fix_special_formats(text, lang)
-    text = auto_translate_numbers(text, lang)
-    text = protect_japanese_mixed_latin(text, lang)
-
-    if not rules and not ignore_list:
-        return text
 
     text = normalize_unicode_quotes(text)
 
@@ -599,6 +599,11 @@ def apply_custom_pronunciations(text: str, rules: List[Dict[str, Any]], ignore_l
                 pat = escaped_orig
                 
             text = re.sub(pat, str(rep), text, flags=flags)
+
+    text = fix_broken_words(text)
+    text = fix_special_formats(text, lang)
+    text = auto_translate_numbers(text, lang)
+    text = protect_japanese_mixed_latin(text, lang)
 
     return re.sub(r'\s+', ' ', text).strip()
 

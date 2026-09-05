@@ -1,0 +1,3 @@
+[pip]
+exclude-newer = "10 days"
+exclude-newer-package = { huggingface-hub = "3 days" }

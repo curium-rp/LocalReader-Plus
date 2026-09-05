@@ -26,6 +26,8 @@ content_dir = userdata_dir / "content"
 # File paths
 settings_file = userdata_dir / "settings.json"
 library_file = userdata_dir / "library.json"
+render_file = userdata_dir / "render.json"
+view_file = userdata_dir / "view.json"
 
 # Ensure directories exist
 try:

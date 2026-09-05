@@ -9,7 +9,7 @@ from kokoro_onnx import Kokoro, MAX_PHONEME_LENGTH, SAMPLE_RATE
 # --- Global State Instances ---
 kokoro = None  # The TTS engine instance
 
-system_status = {"is_loading": False, "last_error": None, "is_downloading": False}
+system_status = {"is_loading": False, "last_error": None, "is_downloading": False, "downloading_model": None}
 
 export_status = {
     "is_exporting": False,
@@ -32,7 +32,7 @@ ffmpeg_status = {
 # --- PatchedKokoro Class ---
 class PatchedKokoro(Kokoro):
     """
-    Patched version for GPU (FP32) models only.
+    Patched version supporting both FP32 (GPU/CPU) and INT8 (CPU) models.
     """
 
     def get_voices(self):
@@ -50,15 +50,23 @@ class PatchedKokoro(Kokoro):
 
         style_idx = min(len(tokens), len(voice) - 1)
         voice_style = voice[style_idx]
-        tokens = [[0, *tokens, 0]]
+        tokens_batch = [[0, *tokens, 0]]
+
+        token_key = getattr(
+            self,
+            "_tokens_input",
+            "tokens" if "tokens" in [i.name for i in self.sess.get_inputs()] else "input_ids",
+        )
+        token_dtype = getattr(self, "_input_dtypes", {}).get(token_key, np.int64)
+        speed_val = self._speed_value(speed) if hasattr(self, "_speed_value") else speed
+
         inputs = {
-            "input_ids": tokens,
+            token_key: np.array(tokens_batch, dtype=token_dtype),
             "style": np.array(voice_style, dtype=np.float32),
-            "speed": np.array([speed], dtype=np.float32),
+            "speed": np.array([speed_val], dtype=np.float32),
         }
         audio = self.sess.run(None, inputs)[0]
-        if audio.ndim == 2:
-            audio = audio.squeeze()
+        audio = np.asarray(audio).squeeze()
         return audio, SAMPLE_RATE
 
     def phonemize(self, text: str, lang: str):
@@ -138,8 +146,9 @@ class SleepTimer:
         self.duration_seconds = 0
 
     def trigger_shutdown(self):
-        print("[TIMER] Time's up! Shutting down application...")
-        os._exit(0)
+        print("[TIMER] Time's up! (Sleep timer expired)")
+        with self._lock:
+            self.active = False
 
     def get_status(self):
         with self._lock:

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from ..state import kokoro, system_status, PatchedKokoro
-from ..utils import safe_save_json
+from ..utils import safe_save_json, has_onnxruntime_gpu
 from ..config import base_dir, settings_file, get_app_anchored_path
 import json
 import sys
@@ -32,6 +32,7 @@ router = APIRouter()
 def load_engine_logic(requested_mode=None):
     global kokoro
     system_status["is_loading"] = True
+    ort_gpu = has_onnxruntime_gpu()
 
     if requested_mode is None:
         try:
@@ -40,6 +41,10 @@ def load_engine_logic(requested_mode=None):
             requested_mode = settings.get("engine_mode", "gpu")
         except Exception:
             requested_mode = "gpu"
+
+    if requested_mode == "gpu" and not ort_gpu:
+        print("[ORT] onnxruntime-gpu not found (CPU package), skip GPU execution providers")
+        requested_mode = "cpu"
 
     models_dir = base_dir / "models"
     voices_path = models_dir / "voices.bin"
@@ -79,6 +84,9 @@ def load_engine_logic(requested_mode=None):
         system_status["is_loading"] = False
         return
 
+    if not ort_gpu:
+        actual_mode = "cpu"
+
     try:
         import app.state as state_module
         import os
@@ -99,19 +107,19 @@ def load_engine_logic(requested_mode=None):
             print("[ENGINE] Unloading previous model...")
             state_module.kokoro = None  # GC old model
 
-        # Clean fallback check: Route to pure CPU branch if no valid GPU providers exist
-        if actual_mode == "gpu":
+        if not ort_gpu:
+            actual_mode = "cpu"
+        elif actual_mode == "gpu":
             available_ort_providers = ort.get_available_providers()
             valid_gpus = [p for p in getattr(state_module, "providers", []) if p in available_ort_providers and p != "CPUExecutionProvider"]
             if not valid_gpus:
                 print(" -> [WARNING] No active GPU execution provider available. Fallback to CPU path.")
                 actual_mode = "cpu"
 
-        # Record EXACTLY what hardware we ended up on (CUDA vs RAM)
-        system_status["active_hardware"] = actual_mode 
+        system_status["active_hardware"] = actual_mode
         print(f"[ENGINE] Initializing on Hardware: {actual_mode.upper()}...")
 
-        if actual_mode == "gpu":
+        if actual_mode == "gpu" and ort_gpu:
             available_ort_providers = ort.get_available_providers()
             custom_providers = []
             
@@ -203,6 +211,7 @@ async def get_status():
         "model_loaded": state_module.kokoro is not None,
         "is_loading": system_status["is_loading"],
         "is_downloading": system_status["is_downloading"],
+        "downloading_model": system_status.get("downloading_model"),
         "last_error": system_status["last_error"],
         "voices": state_module.kokoro.get_voices() if state_module.kokoro else [],
         "engine_mode": current_engine_mode, # The selected model (FP32/INT8)
@@ -232,6 +241,7 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None):
             if target_model not in ["gpu", "cpu"]:
                 target_model = "gpu"
 
+            system_status["downloading_model"] = target_model
             print(f"[SETUP] Starting download for {target_model} model...")
             download_kokoro_model(target_model)
             print("[SETUP] Download complete, loading engine...")
@@ -243,6 +253,7 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: str = None):
             print(f"[SETUP ERROR] {msg}")
         finally:
             system_status["is_downloading"] = False
+            system_status["downloading_model"] = None
 
     background_tasks.add_task(setup_task)
     return {"status": "started"}
@@ -281,7 +292,7 @@ async def switch_engine(background_tasks: BackgroundTasks, target_mode: str):
             return
         system_status["is_loading"] = True
         try:
-            load_engine_logic(target_mode)
+            load_engine_logic("cpu" if not has_onnxruntime_gpu() else target_mode)
         except Exception as e:
             system_status["last_error"] = str(e)
         finally:

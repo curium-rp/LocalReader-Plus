@@ -1,16 +1,20 @@
 import { state } from './state.js';
+import { toggleSettingsDrawer, showToast, renderIcons } from './ui.js';
+import { stopPlayback, saveProgress } from './tts.js';
+
+let timerInterval = null;
+let timerEndTime = null;
+let timerTotalSec = 0;
+let timerAction = 'stop'; // 'stop' | 'close'
 
 export function initTimer() {
     console.log("[TIMER] Initializing sleep timer...");
 
-    // Helper function to safely grab elements
     const getEl = (id) => document.getElementById(id);
 
     // Core Elements
     const btn = getEl("timerSettingsBtn");
-    const drawer = getEl("timerSettingsDrawer");
     const closeBtn = getEl("closeTimerDrawerBtn");
-    const overlay = getEl("drawerOverlay");
 
     // Controls
     const hoursInput = getEl("timerHours");
@@ -19,81 +23,49 @@ export function initTimer() {
     const stopBtn = getEl("stopTimerBtn");
     const statusText = getEl("timerStatusText");
     const countdownDisplay = getEl("timerCountdown");
+    const actionStopBtn = getEl("timerActionStop");
+    const actionCloseBtn = getEl("timerActionClose");
 
     // Button Display
     const btnIcon = btn?.querySelector("i");
     const btnText = getEl("timerBtnText");
 
-    let statusInterval = null;
-
-    function toggleDrawer(show) {
-        if (show) {
-            drawer?.classList.add("open");
-            overlay?.classList.add("active");
-        } else {
-            drawer?.classList.remove("open");
-            overlay?.classList.remove("active");
-        }
-    }
-
     btn?.addEventListener("click", () => {
-        toggleDrawer(true);
-        fetchStatus();
+        toggleSettingsDrawer("timerSettingsDrawer", true);
     });
 
-    closeBtn?.addEventListener("click", () => toggleDrawer(false));
-    overlay?.addEventListener("click", () => toggleDrawer(false));
+    closeBtn?.addEventListener("click", () => toggleSettingsDrawer("timerSettingsDrawer", false));
 
-    async function startTimer() {
-        const hours = parseInt(hoursInput?.value) || 0;
-        const minutes = parseInt(minutesInput?.value) || 0;
-        const totalMinutes = (hours * 60) + minutes;
-
-        if (totalMinutes <= 0) {
-            alert("Please set a time greater than 1 minute.");
-            return;
-        }
-
-        try {
-            const res = await fetch("/api/timer/set", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ minutes: totalMinutes }),
-            });
-            const data = await res.json();
-            updateUI(data);
-        } catch (e) {
-            console.error("[TIMER] Failed to set timer", e);
+    // Action toggle handling
+    function setTimerAction(action) {
+        timerAction = action;
+        if (action === 'stop') {
+            actionStopBtn?.classList.add("bg-blue-600", "text-white", "shadow");
+            actionStopBtn?.classList.remove("text-zinc-400");
+            actionCloseBtn?.classList.remove("bg-blue-600", "text-white", "shadow");
+            actionCloseBtn?.classList.add("text-zinc-400");
+        } else {
+            actionCloseBtn?.classList.add("bg-blue-600", "text-white", "shadow");
+            actionCloseBtn?.classList.remove("text-zinc-400");
+            actionStopBtn?.classList.remove("bg-blue-600", "text-white", "shadow");
+            actionStopBtn?.classList.add("text-zinc-400");
         }
     }
 
-    async function stopTimer() {
-        try {
-            const res = await fetch("/api/timer/stop", { method: "POST" });
-            const data = await res.json();
-            updateUI(data);
-        } catch (e) {
-            console.error("[TIMER] Failed to stop timer", e);
-        }
-    }
-
-    async function fetchStatus() {
-        try {
-            const res = await fetch("/api/timer/status");
-            if (!res.ok) {
-                throw new Error(`HTTP error! status: ${res.status}`);
-            }
-            const data = await res.json();
-            updateUI(data);
-        } catch (e) {
-            console.error("[TIMER] Failed to fetch status", e);
-        }
-    }
+    actionStopBtn?.addEventListener("click", () => setTimerAction('stop'));
+    actionCloseBtn?.addEventListener("click", () => setTimerAction('close'));
 
     function formatTime(seconds) {
         const h = Math.floor(seconds / 3600);
         const m = Math.floor((seconds % 3600) / 60);
         return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+
+    function formatButtonTime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        if (h > 0) return `${h}h`;
+        const m = Math.ceil(seconds / 60);
+        return `${Math.max(1, m)}m`;
     }
 
     function formatTimeFull(seconds) {
@@ -103,96 +75,150 @@ export function initTimer() {
         return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
     }
 
-    function updateUI(data) {
-        if (!data) return;
-
-        if (data.active) {
-            // Drawer UI Updates
+    function updateUI(active, remainingSeconds = 0) {
+        if (active) {
             stopBtn?.classList.remove("hidden");
             startBtn?.classList.add("hidden");
-            
+
             if (statusText) {
-                statusText.textContent = state.translations?.timer?.running || "Timer Running";
+                const actionLabel = timerAction === 'close' ? " · Close App" : " · Stop Reading";
+                statusText.textContent = (state.translations?.timer?.running || "Timer Running") + actionLabel;
                 statusText.className = "text-green-400 font-bold text-sm mb-2";
             }
-            
+
             if (countdownDisplay) {
-                countdownDisplay.textContent = formatTimeFull(data.remaining_seconds);
+                countdownDisplay.textContent = formatTimeFull(remainingSeconds);
             }
 
-            // Button UI Updates
+            // Keep the exact same circular button shape (no stretching/resizing)
             if (btn) {
-                btn.classList.add("active"); 
-                btn.style.background = "#27272a"; 
-                btn.style.width = "auto";
-                btn.style.padding = "0 12px";
-                btn.style.borderRadius = "24px";
-                btn.style.borderColor = "#3f3f46";
-            }
-            
-            if (btnIcon) {
-                btnIcon.style.display = "none";
-            }
-            
-            if (btnText) {
-                btnText.style.display = "block";
-                btnText.textContent = formatTime(data.remaining_seconds);
-                btnText.className = "text-xs font-bold font-mono text-zinc-300";
+                btn.classList.add("active");
             }
 
-            // Lock Inputs
+            // Replace the timer symbol with the short countdown text (e.g. 1h or 30m)
+            if (btnIcon) btnIcon.style.display = "none";
+
+            if (btnText) {
+                btnText.style.display = "inline-flex";
+                btnText.style.alignItems = "center";
+                btnText.style.justifyContent = "center";
+                btnText.textContent = formatButtonTime(remainingSeconds);
+                btnText.className = "text-[11px] font-bold font-mono text-zinc-100 leading-none select-none";
+            }
+
             if (hoursInput) hoursInput.disabled = true;
             if (minutesInput) minutesInput.disabled = true;
-            
+            if (actionStopBtn) actionStopBtn.disabled = true;
+            if (actionCloseBtn) actionCloseBtn.disabled = true;
         } else {
-            // Drawer UI Updates
             stopBtn?.classList.add("hidden");
             startBtn?.classList.remove("hidden");
-            
+
             if (statusText) {
                 statusText.textContent = state.translations?.timer?.inactive || "Timer Inactive";
                 statusText.className = "text-zinc-500 font-bold text-sm mb-2";
             }
-            
+
             if (countdownDisplay) {
                 countdownDisplay.textContent = "--:--:--";
             }
 
-            // Button UI Updates
+            // Restore idle circular state
             if (btn) {
                 btn.classList.remove("active");
-                btn.style.background = ""; 
-                btn.style.width = "";
-                btn.style.padding = "";
-                btn.style.borderRadius = "";
-                btn.style.borderColor = "";
             }
 
-            if (btnIcon) {
-                btnIcon.style.display = "block";
-            }
-            
+            // Restore the timer symbol and hide the text
+            if (btnIcon) btnIcon.style.display = "block";
             if (btnText) {
                 btnText.style.display = "none";
+                btnText.textContent = "";
             }
 
-            // Unlock Inputs
             if (hoursInput) hoursInput.disabled = false;
             if (minutesInput) minutesInput.disabled = false;
+            if (actionStopBtn) actionStopBtn.disabled = false;
+            if (actionCloseBtn) actionCloseBtn.disabled = false;
         }
     }
 
-    // Bind Actions safely
+    async function onTimerExpired() {
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
+        timerEndTime = null;
+        updateUI(false);
+
+        // Smoothly stop playback and save reading progress bookmark
+        try {
+            stopPlayback();
+            saveProgress();
+        } catch (e) {
+            console.error("[TIMER] Error during playback stop/save", e);
+        }
+
+        if (timerAction === 'close') {
+            showToast("Sleep timer finished: Closing app...");
+            setTimeout(() => {
+                try {
+                    if (window.pywebview?.api?.close) {
+                        window.pywebview.api.close();
+                    } else {
+                        window.close();
+                    }
+                } catch (err) {
+                    console.error("[TIMER] Window close failed:", err);
+                }
+            }, 800);
+        } else {
+            showToast("Sleep timer finished: Playback paused.");
+        }
+    }
+
+    function startTimer() {
+        const hours = parseInt(hoursInput?.value) || 0;
+        const minutes = parseInt(minutesInput?.value) || 0;
+        const totalMinutes = (hours * 60) + minutes;
+
+        if (totalMinutes <= 0) {
+            alert("Please set a time greater than 1 minute.");
+            return;
+        }
+
+        timerTotalSec = totalMinutes * 60;
+        timerEndTime = Date.now() + (timerTotalSec * 1000);
+
+        if (timerInterval) clearInterval(timerInterval);
+
+        updateUI(true, timerTotalSec);
+
+        timerInterval = setInterval(() => {
+            const now = Date.now();
+            const remaining = Math.max(0, Math.ceil((timerEndTime - now) / 1000));
+
+            if (remaining <= 0) {
+                onTimerExpired();
+            } else {
+                updateUI(true, remaining);
+            }
+        }, 1000);
+
+        showToast(`Sleep timer started: ${formatTime(timerTotalSec)}`);
+    }
+
+    function stopTimer() {
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
+        timerEndTime = null;
+        updateUI(false);
+        showToast("Sleep timer stopped.");
+    }
+
     startBtn?.addEventListener("click", startTimer);
     stopBtn?.addEventListener("click", stopTimer);
 
-    // Initial check
-    fetchStatus();
-
-    // Prevent duplicate intervals if initTimer is called multiple times
-    if (statusInterval) {
-        clearInterval(statusInterval);
-    }
-    
-    statusInterval = setInterval(fetchStatus, 1000);
+    renderIcons();
 }

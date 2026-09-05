@@ -1,9 +1,12 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
-from fastapi.responses import JSONResponse, FileResponse
-from ..state import export_status, ffmpeg_status, kokoro
-from ..config import content_dir, library_file, userdata_dir, base_dir
-from ..models import ExportRequest
-from ..utils import get_language_from_voice
+from typing import Optional
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
+from ..state import export_status, ffmpeg_status
+from ..config import content_dir, library_file, userdata_dir
+from ..models import ExportRequest, SynthesisRequest
+from ..utils import has_onnxruntime_gpu
+from .tts import synthesize
+from selectolax.parser import HTMLParser, Node
 import json
 import re
 import numpy as np
@@ -13,6 +16,8 @@ import subprocess
 import shutil
 import soundfile as sf
 import sys
+import asyncio
+import io
 from pathlib import Path
 
 # Fix paths for logic imports
@@ -22,16 +27,96 @@ if str(base_dir_parent) not in sys.path:
 
 try:
     from logic.dependency_manager import FFMPEGInstaller, get_ffmpeg_path
-    from logic.smart_content_detector import filter_text_for_tts
-    from logic.text_normalizer import apply_custom_pronunciations
 except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from dependency_manager import FFMPEGInstaller, get_ffmpeg_path
-    from smart_content_detector import filter_text_for_tts
-    from text_normalizer import apply_custom_pronunciations
 
 router = APIRouter()
 ffmpeg_installer = None
+
+EXPORT_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+SKIP_SPEECH_TAGS = frozenset({"script", "style", "rt", "rp"})
+
+
+def _attr(node, key, default=""):
+    return (node.attributes or {}).get(key, default) if node else default
+
+
+def _find_parent(node, tags):
+    wanted, p = set(tags), (node.parent if node else None)
+    while p:
+        if p.tag in wanted: return p
+        p = p.parent
+    return None
+
+
+def _element_matches_target_id(node, target_id: Optional[str]) -> bool:
+    if not target_id or node is None:
+        return False
+    if _attr(node, "id") == target_id or _attr(node, "data-orig-id") == target_id:
+        return True
+    safe = target_id.replace("\\", "\\\\").replace('"', '\\"')
+    try:
+        return bool(node.css_first(f'#{safe}, [data-orig-id="{safe}"]'))
+    except Exception:
+        return False
+
+
+def find_export_elements(tree):
+    """Return direct-ID reader blocks and headings/scene-breaks in document order."""
+    root = (tree.body or tree.root) if isinstance(tree, HTMLParser) else tree
+    if root is None:
+        return []
+    ordered = []
+
+    def visit(parent: Node) -> None:
+        child = parent.child
+        while child is not None:
+            nxt = child.next
+            tag, el_id = child.tag, str(_attr(child, "id"))
+            is_reader = el_id.startswith("s_")
+            is_head = tag in EXPORT_HEADING_TAGS
+            is_scene = tag == "s"
+            is_img = tag == "img" and not _find_parent(child, ("p", *EXPORT_HEADING_TAGS))
+
+            if is_reader or is_head or is_scene or is_img:
+                ordered.append(child)
+            else:
+                visit(child)
+            child = nxt
+
+    visit(root)
+    return ordered
+
+
+def extract_export_text(element) -> str:
+    """Extract narration text while omitting ruby annotations and footnote callouts."""
+    if element is None:
+        return ""
+    parts = []
+
+    def walk(parent: Node) -> None:
+        child = parent.child
+        while child is not None:
+            nxt, tag = child.next, child.tag
+            if tag == "-text":
+                parts.append(child.text(strip=False) or "")
+            elif tag == "br":
+                parts.append(" ")
+            elif tag in SKIP_SPEECH_TAGS:
+                pass
+            elif tag == "a":
+                epub_type = str(_attr(child, "epub:type")).lower()
+                classes = {c.lower() for c in str(_attr(child, "class")).split()}
+                href = str(_attr(child, "href"))
+                if not ("noteref" in epub_type or "epub-noteref" in classes or href.startswith("#R_")):
+                    walk(child)
+            else:
+                walk(child)
+            child = nxt
+
+    walk(element)
+    return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
 @router.get("/api/ffmpeg/status")
@@ -94,14 +179,13 @@ async def cancel_ffmpeg_download():
 
 
 @router.post("/api/export/audio")
-async def export_audio(request: ExportRequest, raw_request: Request, background_tasks: BackgroundTasks):
+async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks):
     global export_status
     if export_status["is_exporting"]:
         return JSONResponse({"error": "Export already in progress"}, status_code=409)
         
-    raw_data = await raw_request.json()
-    start_tts_id = raw_data.get("start_tts_id")
-    end_tts_id = raw_data.get("end_tts_id")
+    start_tts_id = request.start_tts_id
+    end_tts_id = request.end_tts_id
 
     import app.state as state_module
     if state_module.kokoro is None:
@@ -160,32 +244,52 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
             target_pages = pages_list[s_page:e_page]
 
             # 3. HTML Parsing & Structural Chunking
-            from bs4 import BeautifulSoup
             elements_to_process = []
             
-            is_recording = not bool(start_tts_id)
+            # Check if start_tts_id corresponds to the first TOC entry on s_page
+            is_first_toc_on_page = True
+            if start_tts_id:
+                for idx, t in enumerate(toc_map):
+                    t_target = t.get("target_tts_id")
+                    t_anchor = (t.get("anchor_id") or "").split("#")[-1]
+                    if t_target == start_tts_id or t_anchor == start_tts_id or t.get("id") == start_tts_id:
+                        if idx > 0 and toc_map[idx - 1].get("page_index") == s_page:
+                            is_first_toc_on_page = False
+                        break
+                        
+            is_recording = not bool(start_tts_id) or is_first_toc_on_page
             
-            for page in target_pages:
-                soup = BeautifulSoup(page, 'html.parser')
+            for page_offset, page in enumerate(target_pages):
+                curr_page_idx = s_page + page_offset
+                is_first_page = (curr_page_idx == s_page)
+                is_last_page = (curr_page_idx == e_page - 1)
+
+                tree = HTMLParser(page)
                 reached_end = False
                 
-                # Handle new structured HTML format
-                structured_elements = soup.find_all(['n', 's', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+                # Handle structured HTML format
+                structured_elements = find_export_elements(tree)
                 if structured_elements:
-                    for el in structured_elements:
+                    for idx_el, el in enumerate(structured_elements):
                         # 🌟 TOC ID MATCHING: Start and Stop recording dynamically
-                        el_id = el.get('id')
-                        orig_id = el.get('data-orig-id')
-                        if not el_id:
-                            child_n = el.find('n', id=True)
-                            if child_n: 
-                                el_id = child_n.get('id')
-                                if not orig_id: orig_id = child_n.get('data-orig-id')
+                        el_id = _attr(el, "id") or None
+                        orig_id = _attr(el, "data-orig-id") or None
                             
-                        if not is_recording and start_tts_id and el_id == start_tts_id:
-                            is_recording = True
+                        # start_tts_id only activates on the first page of the range
+                        if not is_recording and is_first_page:
+                            if _element_matches_target_id(el, start_tts_id):
+                                is_recording = True
+                            elif el.tag in EXPORT_HEADING_TAGS:
+                                # Rescue preceding heading when TOC target is first paragraph after heading
+                                if (
+                                    idx_el + 1 < len(structured_elements)
+                                    and structured_elements[idx_el + 1].tag not in EXPORT_HEADING_TAGS
+                                    and _element_matches_target_id(structured_elements[idx_el + 1], start_tts_id)
+                                ):
+                                    is_recording = True
                             
-                        if is_recording and end_tts_id and el_id == end_tts_id:
+                        # end_tts_id only stops recording on the last page of the range
+                        if is_recording and is_last_page and end_tts_id and _element_matches_target_id(el, end_tts_id):
                             reached_end = True
                             break
                             
@@ -195,12 +299,9 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
                         b_type = "N"
                         clean_text = ""
                         
-                        # 🌟 FIX: Safely route H tags without double-processing <n> children
-                        if el.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                            if el.find('n'):
-                                continue # Skip, let the child <n> tag handle it
-                            b_type = el.name.upper()
-                            clean_text = el.get_text(strip=True)
+                        if el.tag in EXPORT_HEADING_TAGS:
+                            b_type = el.tag.upper()
+                            clean_text = extract_export_text(el)
                             
                             # 🌟 THE EXPORT HEADER RESCUE INTERCEPTOR 🌟
                             if not clean_text:
@@ -209,85 +310,35 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
                                 if matched_toc and matched_toc.get("title"):
                                     clean_text = matched_toc["title"]
                                     
-                        elif el.name == 'img':
-                            # 🌟 THE EXPORT PHANTOM SKIP: Ignore duplicate images inside headers
-                            if el.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                                continue
-                                
-                            if 'epub-image' in el.get('class', []):
+                        elif el.tag == 'img':
+                            b_type = "Img"
+                            clean_text = "Image."
+                        elif el.tag == 's':
+                            b_type = "S"
+                            clean_text = extract_export_text(el) or "..."
+                        else:
+                            # Standard block (p, blockquote, li, etc.)
+                            # Detect standalone media blocks wrapped in <p>
+                            has_img = bool(el.css_first("img, picture, svg"))
+                            clean_text = extract_export_text(el)
+                            if not clean_text and has_img:
                                 b_type = "Img"
                                 clean_text = "Image."
                             else:
-                                continue
-                        elif el.name == 's':
-                            b_type = "S"
-                            clean_text = el.get_text(strip=True) or "..."
-                        elif el.name == 'n':
-                            h_parent = el.find_parent(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-                            if h_parent:
-                                b_type = h_parent.name.upper()
-                            raw_text = el.get_text(strip=True)
-                            clean_text = re.sub(r'<[^>]+>', '', raw_text).strip()
-                            
-                            # 🌟 THE EXPORT HEADER RESCUE INTERCEPTOR (FOR N TAGS) 🌟
-                            if not clean_text and h_parent:
-                                h_id = h_parent.get('id')
-                                h_orig = h_parent.get('data-orig-id')
-                                search_ids = [x for x in [el_id, orig_id, h_id, h_orig] if x]
-                                matched_toc = next((t for t in toc_map if (t.get("target_tts_id") and t.get("target_tts_id") in search_ids) or (t.get("id") and t.get("id") in search_ids)), None)
-                                if matched_toc and matched_toc.get("title"):
-                                    clean_text = matched_toc["title"]
-                        
-                        if clean_text or b_type in ["Img", "S"]:
-                            elements_to_process.append({"text": clean_text, "b_type": b_type})
-                else:
-                    # Strict Raw Fallback in case of formatting failure
-                    lines = [p.strip() for p in page.split("\n") if p.strip()]
-                    for line in lines:
-                        match_id = re.search(r'id=["\']([^"\']+)["\']', line)
-                        el_id = match_id.group(1) if match_id else None
-                        match_orig = re.search(r'data-orig-id=["\']([^"\']+)["\']', line)
-                        orig_id = match_orig.group(1) if match_orig else None
-                        
-                        if not is_recording and start_tts_id and el_id == start_tts_id:
-                            is_recording = True
-                            
-                        if is_recording and end_tts_id and el_id == end_tts_id:
-                            reached_end = True
-                            break
-                            
-                        if not is_recording:
-                            continue
-                            
-                        b_type = "N"
-                        if line.startswith("<h") and re.search(r'<h([1-6])', line, re.IGNORECASE):
-                            match = re.search(r'<h([1-6])', line, re.IGNORECASE)
-                            b_type = f"H{match.group(1)}"
-                            clean_text = re.sub(r'<[^>]+>', '', line).strip()
-                            
-                            # 🌟 FALLBACK EXPORT HEADER RESCUE 🌟
-                            if not clean_text:
-                                search_ids = [x for x in [el_id, orig_id] if x]
-                                matched_toc = next((t for t in toc_map if (t.get("target_tts_id") and t.get("target_tts_id") in search_ids) or (t.get("id") and t.get("id") in search_ids)), None)
-                                if matched_toc and matched_toc.get("title"):
-                                    clean_text = matched_toc["title"]
-                        elif "<img" in line.lower():
-                            # 🌟 FALLBACK EXPORT PHANTOM SKIP 🌟
-                            if re.search(r'<h[1-6][^>]*>.*?<img', line, re.IGNORECASE):
-                                continue
-                            b_type = "Img"
-                            clean_text = "Image."
-                        elif "<s>" in line.lower() or "scene-break" in line.lower():
-                            b_type = "S"
-                            clean_text = "..."
-                        else:
-                            clean_text = re.sub(r'<[^>]+>', '', line).strip()
+                                b_type = "N"
                         
                         if clean_text or b_type in ["Img", "S"]:
                             elements_to_process.append({"text": clean_text, "b_type": b_type})
 
+                # Failsafe: ensure recording is active for all subsequent pages after the start page
+                if not is_recording:
+                    is_recording = True
+
                 if reached_end:
                     break
+
+            if elements_to_process:
+                elements_to_process[0]["is_first_element"] = True
 
             export_status["total"] = len(elements_to_process)
             print(f"[Export] Successfully extracted {len(elements_to_process)} elements to process.")
@@ -297,19 +348,6 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
                 export_status["is_exporting"] = False
                 return
 
-            # 4. Core Audio Engineering Import
-            from .tts import synthesize_with_pauses, create_anti_skip_silence, graceful_chunk_for_tts, generate_locked_audio, sanitize_typography_for_engine
-            from logic.text_normalizer import apply_custom_pronunciations, fix_special_formats
-            from logic.language_switcher import smart_polyglot_split
-            from logic.japanese_g2p import pure_japanese_to_romaji
-            from logic.chinese_g2p import cleanse_chinese_text
-            from logic.syllable import estimate_phonemes
-
-            rules_data = [r.model_dump() for r in request.rules] if request.rules else []
-            main_voice_lang = get_language_from_voice(request.voice)
-            
-            pause_settings = request.pause_settings or {}
-            behavior_settings = request.behavior_settings or {"H": 2000, "Img": 3000, "S": 1000, "N": 500}
 
             # 🌟 SURGICAL FIX: Create the isolated "Audio files/[Book Name]" directory
             audio_dir = userdata_dir.parent / "Audio files"
@@ -327,7 +365,7 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
 
             temp_wav_path = book_audio_dir / f"temp_export_{request.doc_id}.wav"
             
-            # Format: "Chapter 1 - Chapter 3 (af_heart).mp3"
+           
             output_filename = f"{safe_label} ({request.voice}).{request.format}"
             output_path = book_audio_dir / output_filename
             
@@ -337,185 +375,54 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
             # 5. Pipeline Execution Loop
             import concurrent.futures
 
-            def process_export_element(el_data):
-                if not export_status["is_exporting"]:
-                    return np.array([], dtype=np.float32), 24000
-                
-                # Import state locally so worker threads don't lose the memory reference
-                import app.state as state_module
-                    
-                b_type = el_data["b_type"]
-                raw_text = el_data["text"]
-                sample_rate = 24000
-                
-                try:
-                    export_engine = getattr(state_module, "kokoro_export", state_module.kokoro)
-                    
-                    # ==========================================
-                    # 🌟 SHIELD & STRUCTURAL EXTRACTOR
-                    # ==========================================
-                    structural_pause_ms = 0
-                    pause_match = re.search(r"\[PAUSE_(\d+)\]\s*", raw_text)
-                    if pause_match:
-                        structural_pause_ms = int(pause_match.group(1))
-                        raw_text = raw_text.replace(pause_match.group(0), "")
+            # 4. Core Audio Synthesis Manager (Reuses tts.py engine directly)
+            class ExportSynthesisManager:
+                """Manages audio generation for export elements by reusing tts.py:synthesize."""
+                def __init__(self, req: ExportRequest):
+                    self.req = req
 
-                    # Apply TTS typographic shielding BEFORE normalizers
-                    raw_text = sanitize_typography_for_engine(raw_text)
+                def process_element(self, el_data: dict) -> tuple[np.ndarray, int]:
+                    if not export_status["is_exporting"]:
+                        return np.array([], dtype=np.float32), 24000
 
-                    # Apply pronunciation fixes
                     try:
-                        text_norm = fix_special_formats(raw_text, main_voice_lang)
-                        text_norm = apply_custom_pronunciations(text_norm, rules_data, request.ignore_list, main_voice_lang)
-                    except Exception:
-                        text_norm = raw_text
+                        synth_req = SynthesisRequest(
+                            text=el_data["text"],
+                            voice=self.req.voice,
+                            speed=float(self.req.speed),
+                            rules=self.req.rules,
+                            ignore_list=self.req.ignore_list,
+                            pause_settings=self.req.pause_settings,
+                            behavior_type=el_data["b_type"],
+                            behavior_settings=dict(self.req.behavior_settings) if self.req.behavior_settings else None,
+                        )
+                        async def _get_audio():
+                            response = await synthesize(synth_req)
+                            chunks = [chunk async for chunk in response.body_iterator]
+                            return b"".join(chunks)
 
-                    # Apply Polyglot Routing
-                    polyglot_segments = smart_polyglot_split(text_norm, request.voice, get_language_from_voice)
+                        audio_bytes = asyncio.run(_get_audio())
+                        if not audio_bytes:
+                            return np.array([], dtype=np.float32), 24000
 
-                    # ==========================================
-                    # 🌟 GOLDEN RATIO BEHAVIOR ENGINE
-                    # ==========================================
-                    behavior_front_pause_ms = 0
-                    behavior_end_pause_ms = 0
-                    
-                    # 🌟 FIX: Local copy to prevent dictionary poisoning in the loop
-                    local_b_settings = behavior_settings.copy()
-                    
-                    if b_type.startswith("H"):
-                        h_base = local_b_settings.get("H", 2000)
-                        if h_base > 0:
-                            if b_type == "H1": base_calc = h_base
-                            elif b_type == "H2": base_calc = h_base / 2.0
-                            elif b_type == "H3": base_calc = (h_base / 2.0) / 1.5
-                            else: base_calc = ((h_base / 2.0) / 1.5) / 1.5
-                            
-                            behavior_front_pause_ms = min(int(base_calc), 10000) 
-                            behavior_end_pause_ms = min(int(base_calc * 0.30), 10000)
-                        local_b_settings["N"] = 0
-                        
-                    elif b_type in ["Img", "S"]:
-                        behavior_end_pause_ms = int(local_b_settings.get(b_type, 1000))
-                        local_b_settings["N"] = 0
-                        
-                    else:
-                        behavior_end_pause_ms = int(local_b_settings.get("N", 500))
+                        samples, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+                        # 🌟 LEAD-IN NORMALIZATION: Normalize front pause on the very first element of the file
+                        if el_data.get("is_first_element") and len(samples) > 0:
+                            lead_in_frames = int(0.25 * sr)
+                            active_indices = np.where(np.abs(samples) > 0.005)[0]
+                            if len(active_indices) > 0:
+                                first_active = active_indices[0]
+                                if first_active > lead_in_frames:
+                                    samples = samples[first_active - lead_in_frames:]
+                        final_output = np.array(samples, copy=True)
+                        del samples
+                        return final_output, sr
 
-                    # 'newline' in pause_settings since it moved to behavior_settings['N']
-                    has_pause_settings = any(val > 0 for k, val in pause_settings.items() if k != "newline")
-                    punctuation_chars = [",", ".", "!", "?", ":", ";", "\n", "。", "，", "！", "？", "：", "；", "、"]
-                    
-                    # 🌟 FIX: Guarantee micro-pauses trigger the formatting block
-                    has_punctuation = any(p in text_norm for p in punctuation_chars) or "<CAP_COM>" in text_norm
+                    except Exception as e:
+                        print(f"[Export] Warning: Failed to process element '{el_data.get('text', '')[:20]}': {e}")
+                        return np.array([], dtype=np.float32), 24000
 
-                    chunk_audios = []
-                    
-                    # Shield against non-narrative components
-                    if not re.search(r"[a-zA-Z0-9\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\u3400-\u4dbf]", text_norm):
-                        total_pause = structural_pause_ms + behavior_end_pause_ms + behavior_front_pause_ms
-                        if total_pause <= 0: total_pause = 100
-                        samples = create_anti_skip_silence(total_pause, 24000)
-                    else:
-                        for seg in polyglot_segments:
-                            seg_text = seg['text']
-                            seg_voice = seg['voice']
-                            detected_lang = seg['lang']
-                            native_voice_lang = get_language_from_voice(seg_voice)
-                            
-                            if not seg_text.strip(): continue
-                            
-                            final_text = seg_text
-                            final_engine_lang = native_voice_lang
-                            
-                            if detected_lang == 'ja' or native_voice_lang.startswith('ja'):
-                                final_text = pure_japanese_to_romaji(final_text)
-                                final_engine_lang = 'en-us'
-                            elif detected_lang == 'cmn' or native_voice_lang.startswith('cmn') or native_voice_lang.startswith('zh'):
-                                final_text = cleanse_chinese_text(final_text)
-                                if main_voice_lang.startswith('en') and seg_voice == request.voice:
-                                    final_engine_lang = 'en-us'
-                                else:
-                                    final_engine_lang = native_voice_lang
-                            else:
-                                if main_voice_lang.startswith('ja') or main_voice_lang.startswith('cmn'):
-                                    final_engine_lang = 'en-us'
-                                else:
-                                    final_engine_lang = native_voice_lang
-
-                            if not final_text.strip(): continue
-                            
-                            if has_pause_settings and has_punctuation:
-                                seg_samples, sr = synthesize_with_pauses(
-                                    text=final_text, voice=seg_voice, speed=float(request.speed), 
-                                    lang=final_engine_lang, pause_settings=pause_settings, behavior_settings=local_b_settings,
-                                    engine_override=export_engine, is_export=True
-                                )
-                                if seg_samples is not None and len(seg_samples.flatten()) > 0: 
-                                    # 🌟 POINTER LOCK BREAK: Clone array to system RAM and destroy ONNX C++ reference
-                                    chunk_audios.append(np.array(seg_samples.flatten(), copy=True))
-                                    del seg_samples
-                                sample_rate = sr
-                            else:
-                                # 🌟 FIX: UNSHIELD EVERYTHING for lines without structural pauses!
-                                final_text = final_text.replace('<NUM_COM>', ',').replace('<NUM_DOT>', '.').replace('<NUM_COL>', ':').replace('<BYP_COM>', ',').replace('<CAP_COM>', ',')
-                                sub_chunks = graceful_chunk_for_tts(final_text)
-                                full_len = estimate_phonemes(final_text)
-                                for chunk_dict in sub_chunks:
-                                    chunk_samples, sr = generate_locked_audio(
-                                        export_engine, chunk_dict["text"], seg_voice, 
-                                        float(request.speed), final_engine_lang, full_len, is_export=True
-                                    )
-                                    if chunk_samples is not None and len(chunk_samples.flatten()) > 0: 
-                                        # 🌟 POINTER LOCK BREAK: Clone array to system RAM and destroy ONNX C++ reference
-                                        chunk_audios.append(np.array(chunk_samples.flatten(), copy=True))
-                                        del chunk_samples
-                                    sample_rate = sr
-                                    
-                        samples = np.concatenate(chunk_audios) if chunk_audios else np.array([], dtype=np.float32)
-                        
-                        # 🌟 THE NULLIFIER (Match tts.py behavior exactly)
-                        if b_type == "N":
-                            stripped_text = text_norm.strip()
-                            has_hard_punc_at_end = False
-                            
-                            if stripped_text:
-                                # 🌟 FIX: The Quote Penetrator
-                                stripped_tail = re.sub(r'[\'"”’」』\s]+$', '', stripped_text).strip()
-                                if stripped_tail:
-                                    last_c = stripped_tail[-1]
-                                    if last_c in ["!", "?", "！", "？"]:
-                                        has_hard_punc_at_end = True
-                            
-                            if has_hard_punc_at_end or (has_pause_settings and has_punctuation and text_norm.endswith("\n")):
-                                behavior_end_pause_ms = 0
-
-                        total_front_pause_ms = behavior_front_pause_ms
-                        total_end_pause_ms = structural_pause_ms + behavior_end_pause_ms
-                        
-                        # 🌟 Apply Pre-Reading Delay (Front Pause)
-                        if total_front_pause_ms > 0:
-                            frames = int((total_front_pause_ms / 1000.0) * sample_rate)
-                            front_pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
-                            samples = np.concatenate([front_pause_arr, samples]) if len(samples) > 0 else front_pause_arr
-
-                        # 🌟 Apply Post-Reading Delay (End Pause)
-                        if total_end_pause_ms > 0:
-                            frames = int((total_end_pause_ms / 1000.0) * sample_rate)
-                            end_pause_arr = np.random.uniform(-1e-4, 1e-4, frames).astype(np.float32)
-                            samples = np.concatenate([samples, end_pause_arr]) if len(samples) > 0 else end_pause_arr
-                                
-                        if len(samples) == 0:
-                            samples = create_anti_skip_silence(100, sample_rate)
-
-                    # Final decoupling before returning to main thread
-                    final_output = np.array(samples, copy=True)
-                    del samples
-                    del chunk_audios
-                    return final_output, sample_rate
-
-                except Exception as e:
-                    print(f"[Export] Warning: Failed to process chunk: {e}")
-                    return np.array([], dtype=np.float32), 24000
+            synthesis_manager = ExportSynthesisManager(request)
 
             # 🌟 DYNAMIC HARDWARE-AWARE BATCH PROCESSOR 🌟
             import gc
@@ -528,13 +435,16 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
                 if settings_file.exists():
                     with open(settings_file, "r", encoding="utf-8") as sf_f:
                         user_settings = json.load(sf_f)
-                        engine_mode = user_settings.get("engine_mode", "gpu")
+                        engine_mode = user_settings.get("engined_mode", "gpu")
             except Exception:
                 pass
             
             # ---  HARDWARE VALIDATION LAYER ---
             # Prevents CPU choking if the system silently fell back to CPU mode
-            if engine_mode == "gpu":
+            if engine_mode == "gpu" and not has_onnxruntime_gpu():
+                print("[Export] onnxruntime-gpu not found, skip GPU providers")
+                engine_mode = "cpu"
+            elif engine_mode == "gpu":
                 try:
                     import onnxruntime as ort
                     available_providers = ort.get_available_providers()
@@ -585,11 +495,11 @@ async def export_audio(request: ExportRequest, raw_request: Request, background_
                 # 🌟 EXECUTION ROUTER: Prevent ThreadPool from duplicating memory in CPU mode
                 if safe_workers == 1:
                     # Sequential map on the main thread
-                    results = list(map(process_export_element, batch))
+                    results = list(map(synthesis_manager.process_element, batch))
                 else:
                     # GPU Multi-threading
                     with concurrent.futures.ThreadPoolExecutor(max_workers=safe_workers) as executor:
-                        results = list(executor.map(process_export_element, batch))
+                        results = list(executor.map(synthesis_manager.process_element, batch))
                     
                 # Write results sequentially to disk to preserve the audiobook timeline
                 for i, (samples, sample_rate) in enumerate(results):

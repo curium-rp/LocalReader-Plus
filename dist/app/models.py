@@ -9,6 +9,12 @@ class LibraryItem(BaseModel):
     lastSentenceId: Optional[str] = None
     lastSentenceIndex: int
     lastAccessed: float
+    language: Optional[str] = None
+    bookType: Optional[str] = None
+    current_page: Optional[int] = None
+    total_pages: Optional[int] = None
+    progress_percent: Optional[int] = None
+    disable_br: Optional[bool] = False
 
 class ContentItem(BaseModel):
     id: str
@@ -19,6 +25,8 @@ class ContentItem(BaseModel):
     lastSentenceId: Optional[str] = None
     lastSentenceIndex: Optional[int] = 0
     lastAccessed: Optional[float] = 0.0
+    language: Optional[str] = None
+    disable_br: Optional[bool] = False
 
 class PronunciationRule(BaseModel):
     id: str
@@ -34,12 +42,12 @@ class AppSettings(BaseModel):
     voice_id: Optional[str] = "af_heart"
     speed: Optional[float] = 1.0
     font_size: Optional[int] = 18
-    header_footer_mode: Optional[str] = "off"
     engine_mode: Optional[str] = "gpu"
     ui_language: Optional[str] = "en"
     pause_settings: Optional[Dict[str, int]] = {
         "comma": 0,
         "period": 0,
+        "spam": 0,
         "question": 600,
         "exclamation": 600,
         "colon": 400,
@@ -65,6 +73,8 @@ class ExportRequest(BaseModel):
     format: str = "wav"
     start_page: Optional[int] = None
     end_page: Optional[int] = None
+    start_tts_id: Optional[str] = None
+    end_tts_id: Optional[str] = None
     pause_settings: Optional[Dict[str, int]] = None
     behavior_settings: Optional[Dict[str, int]] = None
     file_label: Optional[str] = "Full Book"
@@ -82,6 +92,7 @@ class SynthesisRequest(BaseModel):
     pause_settings: Optional[Dict[str, int]] = {
         "comma": 0,
         "period": 0,
+        "spam": 0,
         "question": 600,
         "exclamation": 600,
         "colon": 400,

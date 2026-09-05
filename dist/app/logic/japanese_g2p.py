@@ -136,39 +136,11 @@ class UltimateJapaneseG2P:
     def _ensure_kanjium_database(self):
         try:
             base_dir = Path(__file__).resolve().parent.parent
-            kanjium_dir = base_dir / "models" / "Kanjium"
-            json_path = kanjium_dir / "kanjium_pitch.json"
+            json_path = base_dir / "models" / "Kanjium" / "kanjium_pitch.json"
 
-            if json_path.exists():
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    self.pitch_dict = json.load(f)
-                return
-
-            kanjium_dir.mkdir(parents=True, exist_ok=True)
-            url = "https://github.com/mifunetoshiro/kanjium/raw/refs/heads/master/data/source_files/raw/accents.txt"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            
-            with urllib.request.urlopen(req) as response:
-                raw_data = response.read().decode('utf-8')
-            
-            compiled_dict = {}
-            for line in raw_data.split('\n'):
-                if not line or line.startswith('#'): continue
-                
-                parts = line.split('\t')
-                if len(parts) >= 3:
-                    word = parts[0]
-                    pitch_str = parts[2]
-                    match = re.search(r'\d+', pitch_str)
-                    if match:
-                        compiled_dict[word] = int(match.group())
-
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(compiled_dict, f, ensure_ascii=False)
-
-            self.pitch_dict = compiled_dict
-
-        except Exception as e:
+            with open(json_path, "r", encoding="utf-8") as f:
+                self.pitch_dict = json.load(f)
+        except Exception:
             self.pitch_dict = {}
 
     def _normalize_and_cleanse(self, text: str) -> str:
