@@ -1,64 +1,25 @@
-
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-# *.spec
-
-# User data and generated content
-dist/userdata/
-dist/.cache/
-dist/bin/
-dist/app/models/
-dist/webview_data/
+*.pyc
+.venv/
+venv/
+models/
 *.onnx
 *.bin
-
-
-# Virtual environments
-venv/
-ENV/
-env/
-
-# IDE
+userdata/
+*.epub
+*.pdf
+webview_data/
+.cache/
+temp_*
+*.log
+.cursor/
 .vscode/
 .idea/
+.windsurf/
+.zed/
 *.swp
 *.swo
 *~
-
-# OS
+# OS junk
 .DS_Store
 Thumbs.db
-desktop.ini
-
-# Logs
-*.log*
-
-# Test files
-*.pdf
-*.epub
-
-# Backups
-*.bak
-
-# Project Index
-Summary.md
