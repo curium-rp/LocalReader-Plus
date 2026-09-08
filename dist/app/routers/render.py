@@ -11,6 +11,7 @@ DEFAULT_RENDER = {
     "font_family": "Georgia",
     "font_size": 18,
     "font_weight": 400,
+    "font_thickness": 0,
     "line_height": 1.8,
     "paragraph_spacing": 1.1,
     "text_align": "justify",
@@ -25,6 +26,9 @@ DEFAULT_RENDER = {
     "margin_left": 8,
     "margin_right": 8,
     "margins_linked": True,
+    "margin_left_open": 5,
+    "margin_right_open": 5,
+    "margins_linked_open": True,
     "center_gutter": 3.5,
     "landscape_outer_margin": 4,
     "measure_lock": True,
@@ -36,7 +40,7 @@ VALID_SIDEBAR_AUTO_COLLAPSE = {"auto", "show"}
 VALID_HEADING_ALIGN = {"left", "center", "right"}
 VALID_INDENT_MODE = {"follow", "all"}
 MARGIN_MIN = 0
-MARGIN_MAX = 20
+MARGIN_MAX = 35
 OUTER_MARGIN_MIN = 0
 OUTER_MARGIN_MAX = 15
 GUTTER_MIN = 3.0
@@ -72,6 +76,7 @@ class RenderSettings(BaseModel):
     font_family: Optional[str] = None
     font_size: Optional[int] = None
     font_weight: Optional[int] = None
+    font_thickness: Optional[int] = None
     line_height: Optional[float] = None
     paragraph_spacing: Optional[float] = None
     text_align: Optional[str] = None
@@ -86,6 +91,9 @@ class RenderSettings(BaseModel):
     margin_left: Optional[int] = None
     margin_right: Optional[int] = None
     margins_linked: Optional[bool] = None
+    margin_left_open: Optional[int] = None
+    margin_right_open: Optional[int] = None
+    margins_linked_open: Optional[bool] = None
     center_gutter: Optional[float] = None
     landscape_outer_margin: Optional[int] = None
     measure_lock: Optional[bool] = None
@@ -122,6 +130,13 @@ def _sanitize(data: dict) -> dict:
     out["margins_linked"] = out.get("margins_linked", True) is not False
     out["margin_left"] = _clamp_margin(out.get("margin_left"), DEFAULT_RENDER["margin_left"])
     out["margin_right"] = _clamp_margin(out.get("margin_right"), DEFAULT_RENDER["margin_right"])
+    if out["margins_linked"]:
+        out["margin_right"] = out["margin_left"]
+    out["margins_linked_open"] = out.get("margins_linked_open", True) is not False
+    out["margin_left_open"] = _clamp_margin(out.get("margin_left_open"), DEFAULT_RENDER["margin_left_open"])
+    out["margin_right_open"] = _clamp_margin(out.get("margin_right_open"), DEFAULT_RENDER["margin_right_open"])
+    if out["margins_linked_open"]:
+        out["margin_right_open"] = out["margin_left_open"]
     out["center_gutter"] = _clamp_center_gutter(out.get("center_gutter"), DEFAULT_RENDER["center_gutter"])
     out["landscape_outer_margin"] = _clamp_outer_margin(
         out.get("landscape_outer_margin"), DEFAULT_RENDER["landscape_outer_margin"]
@@ -129,8 +144,6 @@ def _sanitize(data: dict) -> dict:
     out["measure_lock"] = out.get("measure_lock", True) is not False
     if out.get("sidebar_auto_collapse") not in VALID_SIDEBAR_AUTO_COLLAPSE:
         out["sidebar_auto_collapse"] = DEFAULT_RENDER["sidebar_auto_collapse"]
-    if out["margins_linked"]:
-        out["margin_right"] = out["margin_left"]
     try:
         out["font_size"] = int(out.get("font_size") or DEFAULT_RENDER["font_size"])
     except (TypeError, ValueError):
@@ -139,6 +152,10 @@ def _sanitize(data: dict) -> dict:
         out["font_weight"] = int(out.get("font_weight") or DEFAULT_RENDER["font_weight"])
     except (TypeError, ValueError):
         out["font_weight"] = DEFAULT_RENDER["font_weight"]
+    try:
+        out["font_thickness"] = max(0, min(12, int(out.get("font_thickness", 0))))
+    except (TypeError, ValueError):
+        out["font_thickness"] = DEFAULT_RENDER["font_thickness"]
     try:
         out["line_height"] = float(out.get("line_height") or DEFAULT_RENDER["line_height"])
     except (TypeError, ValueError):

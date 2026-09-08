@@ -8,6 +8,7 @@ export const DEFAULT_RENDER = {
   font_family: "Georgia",
   font_size: 18,
   font_weight: 400,
+  font_thickness: 0,
   line_height: 1.8,
   paragraph_spacing: 1.1,
   text_align: "justify",
@@ -22,6 +23,9 @@ export const DEFAULT_RENDER = {
   margin_left: 8,
   margin_right: 8,
   margins_linked: true,
+  margin_left_open: 5,
+  margin_right_open: 5,
+  margins_linked_open: true,
   center_gutter: 3.5,
   landscape_outer_margin: 4,
   measure_lock: true,
@@ -155,9 +159,6 @@ const MONO_HINTS = new Set([
 let renderState = { ...DEFAULT_RENDER };
 let saveTimer = null;
 let fontsCache = null;
-let weightSyncGen = 0;
-
-const FALLBACK_WEIGHTS = [400, 700];
 
 export function getRenderState() {
   return renderState;
@@ -281,127 +282,64 @@ function fillFontSelect(preferred) {
   renderState.font_family = select.value;
 }
 
-function alphaSum(imgData) {
-  let sum = 0;
-  for (let i = 3; i < imgData.length; i += 4) {
-    sum += imgData[i];
-  }
-  return sum;
+let marginEditingMode = null;
+
+export function isSidebarCollapsed() {
+  const sidebar = document.querySelector(".sidebar");
+  return !sidebar || sidebar.classList.contains("collapsed");
 }
 
-export async function detectSupportedWeights(fontFamily) {
-  if (document.fonts && document.fonts.ready) {
-    await document.fonts.ready;
+export function getActiveMarginMode() {
+  if (marginEditingMode === "open" || marginEditingMode === "collapsed") {
+    return marginEditingMode;
   }
+  return isSidebarCollapsed() ? "collapsed" : "open";
+}
 
-  const canvas = document.createElement("canvas");
-  try {
-    canvas.width = 48;
-    canvas.height = 48;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return { isVariable: false, weights: [...FALLBACK_WEIGHTS] };
+export function setMarginEditingMode(mode) {
+  marginEditingMode = mode === "open" || mode === "collapsed" ? mode : null;
+  syncControlUi();
+}
 
-    const testChar = "B";
-    const weightsToTest = [400, 700, 100, 200, 300, 500, 600, 800, 900];
-    const renderedWeights = [];
-    const pixelSums = new Map();
-    const family = fontFamily || "serif";
-
-    for (const weight of weightsToTest) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.font = `${weight} 32px "${family}", monospace`;
-      ctx.fillText(testChar, 8, 36);
-
-      const sum = alphaSum(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
-      if (sum > 0 && !pixelSums.has(sum)) {
-        pixelSums.set(sum, weight);
-        renderedWeights.push(weight);
-      }
-    }
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.font = `450 32px "${family}", monospace`;
-    ctx.fillText(testChar, 8, 36);
-    const midSum = alphaSum(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
-    const isVariable = midSum > 0 && !pixelSums.has(midSum);
-
+export function getReadingMargins() {
+  const collapsed = isSidebarCollapsed();
+  if (collapsed) {
     return {
-      isVariable,
-      weights: renderedWeights.length > 1
-        ? renderedWeights.sort((a, b) => a - b)
-        : [...FALLBACK_WEIGHTS],
-    };
-  } finally {
-    canvas.width = canvas.height = 0;
-  }
-}
-
-function findNearestWeight(target, validWeights) {
-  const list = validWeights && validWeights.length ? validWeights : FALLBACK_WEIGHTS;
-  return list.reduce((prev, curr) =>
-    Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev
-  );
-}
-
-function applyWeightValue(weight) {
-  const val = Number(weight);
-  renderState.font_weight = val;
-  document.documentElement.style.setProperty("--reader-font-weight", String(val));
-}
-
-export async function syncWeightSlider(fontFamily) {
-  const slider = document.getElementById("fontWeightSlider");
-  const display = document.getElementById("fontWeightVal");
-  if (!slider) return;
-
-  const gen = ++weightSyncGen;
-  const { isVariable, weights } = await detectSupportedWeights(fontFamily);
-  if (gen !== weightSyncGen) return;
-
-  const currentVal = Number(slider.value) || renderState.font_weight || 400;
-  const prevWeight = renderState.font_weight;
-
-  if (isVariable) {
-    slider.min = "100";
-    slider.max = "900";
-    slider.step = "10";
-    slider.value = String(currentVal);
-    if (display) display.textContent = String(currentVal);
-    applyWeightValue(currentVal);
-
-    slider.oninput = (e) => {
-      const val = Number(e.target.value);
-      if (display) display.textContent = String(val);
-      applyWeightValue(val);
-      persistRender();
-    };
-  } else {
-    const minW = Math.min(...weights);
-    const maxW = Math.max(...weights);
-    slider.min = String(minW);
-    slider.max = String(maxW);
-    slider.step = "any";
-
-    const snappedVal = findNearestWeight(currentVal, weights);
-    slider.value = String(snappedVal);
-    if (display) display.textContent = String(snappedVal);
-    applyWeightValue(snappedVal);
-
-    slider.oninput = (e) => {
-      const snapped = findNearestWeight(Number(e.target.value), weights);
-      slider.value = String(snapped);
-      if (display) display.textContent = String(snapped);
-      applyWeightValue(snapped);
-      persistRender();
+      left: clampMargin(renderState.margin_left, DEFAULT_RENDER.margin_left),
+      right: clampMargin(renderState.margin_right, DEFAULT_RENDER.margin_right),
+      linked: !!renderState.margins_linked,
+      mode: "collapsed",
     };
   }
-
-  if (renderState.font_weight !== prevWeight) persistRender(true);
+  return {
+    left: clampMargin(renderState.margin_left_open, DEFAULT_RENDER.margin_left_open),
+    right: clampMargin(renderState.margin_right_open, DEFAULT_RENDER.margin_right_open),
+    linked: !!renderState.margins_linked_open,
+    mode: "open",
+  };
 }
 
-function clampMargin(value) {
+export function getActiveControlMargins() {
+  const mode = getActiveMarginMode();
+  if (mode === "collapsed") {
+    return {
+      left: clampMargin(renderState.margin_left, DEFAULT_RENDER.margin_left),
+      right: clampMargin(renderState.margin_right, DEFAULT_RENDER.margin_right),
+      linked: !!renderState.margins_linked,
+      mode: "collapsed",
+    };
+  }
+  return {
+    left: clampMargin(renderState.margin_left_open, DEFAULT_RENDER.margin_left_open),
+    right: clampMargin(renderState.margin_right_open, DEFAULT_RENDER.margin_right_open),
+    linked: !!renderState.margins_linked_open,
+    mode: "open",
+  };
+}
+
+function clampMargin(value, fallback = DEFAULT_RENDER.margin_left) {
   const n = parseInt(value, 10);
-  if (!Number.isFinite(n)) return DEFAULT_RENDER.margin_left;
+  if (!Number.isFinite(n)) return fallback;
   return Math.max(0, Math.min(35, n));
 }
 
@@ -467,11 +405,12 @@ function t(path, fallback) {
   return val || fallback;
 }
 
-export function applyReaderTypography() {
+export function applyReaderTypography({ skipLayout = false } = {}) {
   const root = document.documentElement;
   root.style.setProperty("--reader-font-family", fontStack(renderState.font_family));
   root.style.setProperty("--reader-font-size", `${renderState.font_size}px`);
-  root.style.setProperty("--reader-font-weight", String(renderState.font_weight));
+  root.style.setProperty("--reader-font-weight", String(renderState.font_weight || 400));
+  root.style.setProperty("--reader-font-thickness", String(renderState.font_thickness || 0));
   root.style.setProperty("--reader-line-height", String(renderState.line_height));
   document.body.classList.toggle("tight-lines", Number(renderState.line_height) < 1.45);
   root.style.setProperty("--reader-paragraph-spacing", `${renderState.paragraph_spacing}em`);
@@ -479,8 +418,9 @@ export function applyReaderTypography() {
   root.style.setProperty("--reader-h1-align", renderState.h1_align);
   root.style.setProperty("--reader-h2-align", renderState.h2_align);
   root.style.setProperty("--reader-h3-align", renderState.h3_align);
-  root.style.setProperty("--reader-margin-left", `${clampMargin(renderState.margin_left)}%`);
-  root.style.setProperty("--reader-margin-right", `${clampMargin(renderState.margin_right)}%`);
+  const readingMargins = getReadingMargins();
+  root.style.setProperty("--reader-margin-left", `${readingMargins.left}%`);
+  root.style.setProperty("--reader-margin-right", `${readingMargins.right}%`);
   root.style.setProperty("--reader-center-gutter", String(clampCenterGutter(renderState.center_gutter)));
   root.style.setProperty("--reader-landscape-outer", String(clampOuterMargin(renderState.landscape_outer_margin)));
   root.style.setProperty("--reader-landscape-margin", `${clampOuterMargin(renderState.landscape_outer_margin)}%`);
@@ -501,7 +441,7 @@ export function applyReaderTypography() {
     applyContentLang(textContent);
   }
 
-  layoutSpreads();
+  if (!skipLayout) layoutSpreads();
 
   const preview = document.getElementById("currentSentencePreview");
   if (preview) {
@@ -531,10 +471,11 @@ function syncControlUi() {
   if (textSizeVal) textSizeVal.textContent = String(renderState.font_size);
   if (textSizeBadge) textSizeBadge.textContent = String(renderState.font_size);
 
-  const weightSlider = document.getElementById("fontWeightSlider");
-  const weightVal = document.getElementById("fontWeightVal");
-  if (weightSlider) weightSlider.value = String(renderState.font_weight);
-  if (weightVal) weightVal.textContent = String(renderState.font_weight);
+  const thicknessSlider = document.getElementById("fontThicknessSlider");
+  const thicknessVal = document.getElementById("fontThicknessVal");
+  const thickness = renderState.font_thickness ?? 0;
+  if (thicknessSlider) thicknessSlider.value = String(thickness);
+  if (thicknessVal) thicknessVal.textContent = String(thickness);
 
   const lineSlider = document.getElementById("lineHeightSlider");
   const lineVal = document.getElementById("lineHeightVal");
@@ -557,6 +498,24 @@ function syncControlUi() {
   const outerPct = clampOuterMargin(renderState.landscape_outer_margin);
   const gutterRem = clampCenterGutter(renderState.center_gutter);
   const outerGapUi = usesOuterGapUi();
+  const activeMargins = getActiveControlMargins();
+
+  const marginsStateBadge = document.getElementById("marginsStateBadge");
+  if (marginsStateBadge) {
+    if (outerGapUi) {
+      marginsStateBadge.classList.add("hidden");
+    } else {
+      marginsStateBadge.classList.remove("hidden");
+      const mode = getActiveMarginMode();
+      marginsStateBadge.textContent = mode === "collapsed" ? "Collapsed" : "Open";
+      marginsStateBadge.setAttribute(
+        "title",
+        mode === "collapsed"
+          ? "Editing margins for collapsed sidebar (click to switch to Open)"
+          : "Editing margins for open sidebar (click to switch to Collapsed)"
+      );
+    }
+  }
 
   if (marginLeftSlider) {
     marginLeftSlider.disabled = false;
@@ -571,7 +530,7 @@ function syncControlUi() {
       marginLeftSlider.min = "0";
       marginLeftSlider.max = "35";
       marginLeftSlider.step = "1";
-      marginLeftSlider.value = String(renderState.margin_left);
+      marginLeftSlider.value = String(activeMargins.left);
     }
   }
   if (marginRightSlider) {
@@ -587,14 +546,14 @@ function syncControlUi() {
       marginRightSlider.min = "0";
       marginRightSlider.max = "35";
       marginRightSlider.step = "1";
-      marginRightSlider.value = String(renderState.margin_right);
+      marginRightSlider.value = String(activeMargins.right);
     }
   }
   if (marginLeftLetter) marginLeftLetter.textContent = outerGapUi ? t("sidebar.margin_out", "OUT") : "L";
   if (marginRightLetter) marginRightLetter.textContent = outerGapUi ? t("sidebar.margin_gap", "GAP") : "R";
-  if (marginLeftVal) marginLeftVal.textContent = outerGapUi ? `${outerPct}%` : `${renderState.margin_left}%`;
+  if (marginLeftVal) marginLeftVal.textContent = outerGapUi ? `${outerPct}%` : `${activeMargins.left}%`;
   if (marginRightVal) {
-    marginRightVal.textContent = outerGapUi ? formatGutterRem(gutterRem) : `${renderState.margin_right}%`;
+    marginRightVal.textContent = outerGapUi ? formatGutterRem(gutterRem) : `${activeMargins.right}%`;
     marginRightVal.style.opacity = "1";
   }
   const marginsLabel = document.getElementById("marginsLabel");
@@ -621,7 +580,7 @@ function syncControlUi() {
       marginsLinkBtn.title = t("sidebar.measure_lock", "Balance outer margin and center gap for this screen");
     } else {
       marginsLinkBtn.textContent = "L=R";
-      marginsLinkBtn.classList.toggle("active", !!renderState.margins_linked);
+      marginsLinkBtn.classList.toggle("active", !!activeMargins.linked);
       marginsLinkBtn.disabled = false;
       marginsLinkBtn.style.opacity = "1";
       marginsLinkBtn.style.cursor = "pointer";
@@ -774,6 +733,7 @@ export function closeTypoMenu() {
 }
 
 export function openTypoMenu() {
+  marginEditingMode = null;
   const menu = document.getElementById("typoFloatMenu");
   const btn = document.getElementById("typoMenuBtn");
   const topbarTrigger = document.getElementById("settingsMenuTrigger");
@@ -785,6 +745,7 @@ export function openTypoMenu() {
   } else if (btn) {
     btn.classList.add("active");
   }
+  syncControlUi();
   positionTypoMenu();
   requestAnimationFrame(positionTypoMenu);
   renderIcons();
@@ -825,11 +786,10 @@ function wireFloatMenu() {
 function wireControls() {
   const fontSelect = document.getElementById("fontFamilySelect");
   if (fontSelect) {
-    fontSelect.onchange = (e) => {
+    fontSelect.onchange = () => {
       renderState.font_family = fontSelect.value;
       applyReaderTypography();
       persistRender(true);
-      syncWeightSlider(e.target.value);
     };
   }
 
@@ -855,14 +815,14 @@ function wireControls() {
     fontSizeSlider.onchange = () => persistRender(true);
   }
 
-  const weightSlider = document.getElementById("fontWeightSlider");
-  if (weightSlider) {
-    weightSlider.oninput = (e) => {
-      renderState.font_weight = parseInt(e.target.value, 10);
+  const thicknessSlider = document.getElementById("fontThicknessSlider");
+  if (thicknessSlider) {
+    thicknessSlider.oninput = (e) => {
+      renderState.font_thickness = Math.max(0, Math.min(12, parseInt(e.target.value, 10) || 0));
       applyReaderTypography();
       persistRender();
     };
-    weightSlider.onchange = () => persistRender(true);
+    thicknessSlider.onchange = () => persistRender(true);
   }
 
   const lineSlider = document.getElementById("lineHeightSlider");
@@ -893,12 +853,25 @@ function wireControls() {
       persistRender();
       return;
     }
-    const value = clampMargin(raw);
-    if (side === "left") renderState.margin_left = value;
-    else renderState.margin_right = value;
-    if (renderState.margins_linked) {
-      renderState.margin_left = value;
-      renderState.margin_right = value;
+    const mode = getActiveMarginMode();
+    const isCollapsed = mode === "collapsed";
+    const defaultVal = isCollapsed ? DEFAULT_RENDER.margin_left : DEFAULT_RENDER.margin_left_open;
+    const value = clampMargin(raw, defaultVal);
+
+    if (isCollapsed) {
+      if (side === "left") renderState.margin_left = value;
+      else renderState.margin_right = value;
+      if (renderState.margins_linked) {
+        renderState.margin_left = value;
+        renderState.margin_right = value;
+      }
+    } else {
+      if (side === "left") renderState.margin_left_open = value;
+      else renderState.margin_right_open = value;
+      if (renderState.margins_linked_open) {
+        renderState.margin_left_open = value;
+        renderState.margin_right_open = value;
+      }
     }
     applyReaderTypography();
     persistRender();
@@ -936,13 +909,30 @@ function wireControls() {
         renderState.landscape_outer_margin = preset.outer;
         renderState.center_gutter = preset.gutter;
       } else {
-        renderState.margins_linked = !renderState.margins_linked;
-        if (renderState.margins_linked) {
-          renderState.margin_right = renderState.margin_left;
+        const mode = getActiveMarginMode();
+        if (mode === "collapsed") {
+          renderState.margins_linked = !renderState.margins_linked;
+          if (renderState.margins_linked) {
+            renderState.margin_right = renderState.margin_left;
+          }
+        } else {
+          renderState.margins_linked_open = !renderState.margins_linked_open;
+          if (renderState.margins_linked_open) {
+            renderState.margin_right_open = renderState.margin_left_open;
+          }
         }
       }
       applyReaderTypography();
       persistRender(true);
+    };
+  }
+
+  const marginsStateBadge = document.getElementById("marginsStateBadge");
+  if (marginsStateBadge) {
+    marginsStateBadge.onclick = (e) => {
+      e.stopPropagation();
+      const current = getActiveMarginMode();
+      setMarginEditingMode(current === "open" ? "collapsed" : "open");
     };
   }
 
@@ -1048,6 +1038,7 @@ function mergeRender(data) {
   const next = { ...DEFAULT_RENDER, ...(data || {}) };
   next.font_size = parseInt(next.font_size, 10) || DEFAULT_RENDER.font_size;
   next.font_weight = parseInt(next.font_weight, 10) || DEFAULT_RENDER.font_weight;
+  next.font_thickness = Math.max(0, Math.min(12, parseInt(next.font_thickness, 10) || 0));
   next.line_height = Number(next.line_height) || DEFAULT_RENDER.line_height;
   next.paragraph_spacing = Number(next.paragraph_spacing);
   if (!Number.isFinite(next.paragraph_spacing)) next.paragraph_spacing = DEFAULT_RENDER.paragraph_spacing;
@@ -1056,13 +1047,14 @@ function mergeRender(data) {
   next.indent_mode = next.indent_mode === "all" ? "all" : "follow";
   next.two_page_landscape = next.two_page_landscape === true;
   next.horizontal_mode = next.horizontal_mode === true;
-  next.margin_left = clampMargin(next.margin_left);
-  next.margin_right = clampMargin(next.margin_right);
-  next.center_gutter = clampCenterGutter(next.center_gutter);
-  next.landscape_outer_margin = clampOuterMargin(next.landscape_outer_margin);
-  next.measure_lock = next.measure_lock !== false;
+  next.margin_left = clampMargin(next.margin_left, DEFAULT_RENDER.margin_left);
+  next.margin_right = clampMargin(next.margin_right, DEFAULT_RENDER.margin_right);
   next.margins_linked = next.margins_linked !== false;
   if (next.margins_linked) next.margin_right = next.margin_left;
+  next.margin_left_open = clampMargin(next.margin_left_open, DEFAULT_RENDER.margin_left_open);
+  next.margin_right_open = clampMargin(next.margin_right_open, DEFAULT_RENDER.margin_right_open);
+  next.margins_linked_open = next.margins_linked_open !== false;
+  if (next.margins_linked_open) next.margin_right_open = next.margin_left_open;
   next.sidebar_auto_collapse = next.sidebar_auto_collapse === "show" ? "show" : "auto";
   const aligns = new Set(["left", "center", "right", "justify"]);
   if (!aligns.has(next.text_align)) next.text_align = "justify";
@@ -1091,9 +1083,6 @@ export async function initTypography(fallbackFontSize) {
   wireControls();
   wireFloatMenu();
   applyReaderTypography();
-  const activeFont =
-    document.getElementById("fontFamilySelect")?.value || renderState.font_family;
-  await syncWeightSlider(activeFont);
   renderIcons();
   persistRender(true);
 }

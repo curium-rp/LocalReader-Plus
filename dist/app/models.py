@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+import uuid
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 class LibraryItem(BaseModel):
@@ -29,16 +30,20 @@ class ContentItem(BaseModel):
     disable_br: Optional[bool] = False
 
 class PronunciationRule(BaseModel):
-    id: str
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     original: str
     replacement: str
-    match_case: bool
-    word_boundary: bool
+    match_case: bool = False
+    word_boundary: bool = True
     is_regex: Optional[bool] = False
 
 class AppSettings(BaseModel):
-    pronunciationRules: List[PronunciationRule]
-    ignoreList: List[str]
+    # TODO(deprecate): [BACKWARD COMPATIBILITY] Safe to remove in ~6 months.
+    # Rules now live in userdata/pronunciationrules.json. Kept as optional to allow smooth migration from legacy settings.json.
+    pronunciationRules: Optional[List[PronunciationRule]] = None
+    # TODO(deprecate): [BACKWARD COMPATIBILITY] Safe to remove in ~6 months.
+    # Ignore list now lives in userdata/ignore.json. Kept as optional to allow smooth migration from legacy settings.json.
+    ignoreList: Optional[List[str]] = None
     voice_id: Optional[str] = "af_heart"
     speed: Optional[float] = 1.0
     font_size: Optional[int] = 18

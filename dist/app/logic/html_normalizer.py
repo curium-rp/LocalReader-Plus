@@ -2,7 +2,7 @@ import html
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 
 try:
     from utils import normalize_bcp47
@@ -42,7 +42,7 @@ def iter_children(node: Optional[Node]) -> Iterable[Node]:
 def get_inner_html(node: Optional[Node]) -> str:
     if node is None:
         return ""
-    return "".join(child.html or "" for child in iter_children(node))
+    return node.inner_html or ""
 
 
 # Return node attributes dict, empty if None
@@ -221,243 +221,113 @@ def _has_formatting_hint(node: Node) -> bool:
     )
 
 
-# Footnote / translator-note id shapes seen across exporters:
-#   TN1, TN-1, fn1, note_1, return1, Return-1, tlnote2
-_NOTE_ANCHOR_ID_RE = re.compile(
-    r"^(tn|fn|tlnote|note|return|endnote)[-_]?\d+$", re.IGNORECASE
-)
-_NOTE_DEF_ID_RE = re.compile(
-    r"^(tn|fn|tlnote|note|endnote)[-_]?\d+$", re.IGNORECASE
-)
-_NOTE_REF_FRAG_RE = re.compile(
-    r"^(tn|fn|footnote|endnote|note)[-_]?\d+$", re.IGNORECASE
-)
-_RETURN_ID_RE = re.compile(r"^return[-_]?\d+$", re.IGNORECASE)
-# Calibre/InDesign block ids: footnote, footnote-1, endnote_2 — not "sdfootnote" or "footnotes"
-_FOOTNOTE_BLOCK_ID_RE = re.compile(
-    r"^(?:footnote|endnote)(?:[-_]?\d+)?$", re.IGNORECASE
-)
+def parse_prefix_num_suffix(s: str) -> tuple[str, str, str]:
+    """Split any identifier into (prefix, number, suffix) with zero keywords."""
+    m = re.match(r"^([a-zA-Z_\-]*?)(\d+)([a-zA-Z_\-]*)$", s)
+    if m:
+        return m.group(1).lower(), m.group(2), m.group(3).lower()
+    return s.lower(), "", ""
 
 
 def footnote_number_from_id(block_id: str) -> str:
     """Pull the visible note index out of ids like cite_note-3, sdfootnote1sym, TN1."""
     if not block_id:
         return ""
-    match = re.search(r"(\d+)(?:sym|anc)?$", block_id, flags=re.IGNORECASE)
-    return match.group(1) if match else ""
+    _, num, _ = parse_prefix_num_suffix(block_id)
+    return num
 
 
 def standardize_footnotes(tree: HTMLParser) -> None:
-    # ---------------------------------------------------------------------------
-    # Pass 1 – Propagate anchor IDs to their parent block so later passes can
-    #           look up blocks by ID.  Handles:
-    #             • sdfootnote / ftn / fnref / footnote / fn-def  (LibreOffice, generic)
-    #             • cite_note / cite_ref  (MediaWiki / WebToEpub)
-    #             • TN / tlnote / fnN / noteN / returnN  (fan TL, Pandoc, Calibre)
-    # ---------------------------------------------------------------------------
-    for anchor in list(tree.css("a")):
-        anchor_id = _get_attr(anchor, "id") or _get_attr(anchor, "name")
-        href = _get_attr(anchor, "href")
-        anchor_id_l = anchor_id.lower()
+    """Pure-logic footnote standardizer with zero hardcoded keywords or pattern lists.
 
-        is_target_anchor = any(
-            keyword in anchor_id_l
-            for keyword in (
-                "sdfootnote", "footnote", "endnote", "fn-def", "ftn", "fnref",
-                "cite_note", "cite_ref", "tlnote", "transnote",
-            )
-        ) or bool(_NOTE_ANCHOR_ID_RE.match(anchor_id_l))
-
-        if is_target_anchor:
-            parent = _find_parent(anchor, ("p", "div", "li", "aside", "section"))
-            if parent is not None and not _get_attr(parent, "id"):
-                _set_attr(parent, "id", anchor_id)
-        elif href.startswith("#"):
-            target = href[1:]
-            target_l = target.lower()
-            derived_id = ""
-            if "anc" in target_l:
-                derived_id = re.sub("anc", "sym", target, flags=re.IGNORECASE)
-            elif _RETURN_ID_RE.match(target_l):
-                # Fan-TL: backlink href="#Return1" → definition id "TN1"
-                derived_id = re.sub(
-                    r"return", "TN", target, flags=re.IGNORECASE
-                )
-            elif "ref" in target_l and not target_l.startswith("cite_note"):
-                # Only derive def-IDs for traditional ref→def patterns,
-                # not for cross-file cite_note targets.
-                derived_id = re.sub("ref", "def", target, flags=re.IGNORECASE)
-            if derived_id:
-                parent = _find_parent(anchor, ("p", "div", "li", "aside", "section"))
-                if parent is not None and not _get_attr(parent, "id"):
-                    _set_attr(parent, "id", derived_id)
-
-    # ---------------------------------------------------------------------------
-    # Pass 2 – Mark footnote definition blocks with epub:type="footnote".
-    #           Recognises:
-    #             • epub:type / role="doc-footnote|doc-endnote"  (EPUB3 / DPUB ARIA)
-    #             • class containing footnote / endnote / tlnote
-    #             • block id matching fn-def / sdfootnote / ftn / footnote / endnote
-    #             • block id matching cite_note  (MediaWiki)
-    #             • block id matching TN1 / fn1 / note-1 / tlnote2  (fan TL / Pandoc)
-    # ---------------------------------------------------------------------------
-    for block in _nodes_in_document_order(
-        tree, ("aside", "div", "p", "li", "section")
-    ):
-        block_id = _get_attr(block, "id").lower()
-        epub_type = _get_attr(block, "epub:type").lower()
-        classes = _get_attr(block, "class").lower()
-        role = _get_attr(block, "role").lower()
-        is_definition = (
-            ("footnote" in epub_type or "endnote" in epub_type
-             or role in ("doc-footnote", "doc-endnote"))
-            and "noteref" not in epub_type
-        )
-        if not is_definition:
-            is_definition = (
-                "footnote" in classes
-                or "endnote" in classes
-                or "tlnote" in classes
-                or bool(_FOOTNOTE_BLOCK_ID_RE.match(block_id))
-                or "fn-def" in block_id
-                or "sdfootnote" in block_id
-                or "ftn" in block_id
-                or "cite_note" in block_id          # MediaWiki: <li id="cite_note-N">
-                or "tlnote" in block_id
-                or "transnote" in block_id
-                or bool(_NOTE_DEF_ID_RE.match(block_id))
-            )
-        if is_definition:
-            _set_attr(block, "epub:type", "footnote")
-
-    # ---------------------------------------------------------------------------
-    # Pass 3 – Classify every href anchor as backlink / noteref / (nothing).
-    #
-    #   Key fix: scope backlink keyword matching to the URL *fragment* (the part
-    #   after "#") so that a chapter file name like "References.xhtml" never
-    #   falsely triggers "ref" detection.
-    # ---------------------------------------------------------------------------
-    for anchor in list(tree.css("a[href]")):
-        href = _get_attr(anchor, "href").lower()
-        text = anchor.text(strip=True)
-        epub_type = _get_attr(anchor, "epub:type").lower()
-        classes = _get_attr(anchor, "class").lower()
-        role = _get_attr(anchor, "role").lower()
-        anchor_id = (_get_attr(anchor, "id") or _get_attr(anchor, "name")).lower()
-
-        if any(
-            keyword in href
-            for keyword in ("toc.xhtml", "nav.xhtml", "contents", "tableofcontents")
-        ):
-            continue
-        if any(
-            keyword in text.lower()
-            for keyword in ("table of contents", "return to toc")
-        ):
+    Applies the three universal footnote graph topologies:
+      - Topology 1 (Direct Target): Callout points directly to an element id or name.
+      - Topology 2 (Mutual 2-Cycle Graph): Callout A -> B, and definition contains backlink B -> A.
+      - Topology 3 (Suffix Symmetry): Callout and definition anchors share (prefix, number)
+        with differing suffixes (e.g. sym vs anc) when exporter stripped id attributes.
+    """
+    callouts = []
+    for a in list(tree.css("a")):
+        href = _get_attr(a, "href")
+        if not href or "#" not in href:
             continue
 
-        # Never touch external links.
-        if href.startswith("http://") or href.startswith("https://"):
+        if href.startswith(("http://", "https://", "mailto:")):
             continue
 
-        # Extract URL fragment so keyword checks cannot collide with file paths.
-        frag = href.split("#")[-1] if "#" in href else ""
-
+        # Skip anchors inside existing footnote definition blocks
         in_footnote = (
-            _has_parent_attr(anchor, "epub:type", "footnote")
-            or _has_parent_attr(anchor, "role", "doc-footnote")
-            or _has_parent_attr(anchor, "role", "doc-endnote")
+            _has_parent_attr(a, "epub:type", "footnote")
+            or _has_parent_attr(a, "epub:type", "endnote")
+            or _has_parent_attr(a, "role", "doc-footnote")
+            or _has_parent_attr(a, "role", "doc-endnote")
+            or _find_parent(a, ("aside", "dd")) is not None
         )
-
-        # --- Backlink detection (must be inside a footnote block, or point back) ---
-        # Fragment-scoped keywords: "anc" (sdfootnote), "return" (fan TL),
-        # "cite_ref" / "fnref" (MediaWiki / Pandoc).  Explicitly exclude cite_note
-        # targets which are *callout* links pointing to a definition, not a backlink.
-        is_backlink_href = (
-            bool(frag)
-            and (
-                any(
-                    k in frag
-                    for k in ("anc", "return", "cite_ref", "fnref", "fn-ref", "ftnref")
-                )
-                or bool(_RETURN_ID_RE.match(frag))
-            )
-            and not frag.startswith("cite_note")
-        )
-        is_backlink = (
-            "backlink" in epub_type or role == "doc-backlink" or in_footnote
-        )
-        if not is_backlink:
-            is_backlink = (
-                is_backlink_href
-                or "footnote-back" in classes
-                or "↩" in text
-                or "↑" in text
-                or "return" in text.lower()
-            )
-
-        if is_backlink:
-            _set_attr(anchor, "epub:type", "backlink")
+        if in_footnote:
             continue
 
-        # --- Noteref (callout) detection ---
-        is_reference = (
-            "noteref" in epub_type
+        sup = _find_parent(a, ("sup",)) or a.css_first("sup")
+        epub_type = _get_attr(a, "epub:type").lower()
+        role = _get_attr(a, "role").lower()
+        classes = set(_class_list(a))
+
+        is_callout = (
+            sup is not None
+            or epub_type == "noteref"
             or role == "doc-noteref"
-            or any(
-                c in classes
-                for c in ("footnote-ref", "noteref", "footnote-link", "calibre_ref")
-            )
+            or bool(classes & {"noteref", "footnote-ref", "epub-noteref"})
         )
-        if not is_reference and not in_footnote:
-            # Callout anchor ids: cite_ref-N, fnref1, fn-ref-1
-            if anchor_id.startswith(("cite_ref", "fnref", "fn-ref", "ftnref")):
-                is_reference = True
-            # Direct href to a TN / fn / note definition: href="#TN1", "#fn1"
-            elif bool(_NOTE_REF_FRAG_RE.match(frag)):
-                is_reference = True
-            else:
-                sup_parent = _find_parent(anchor, ("sup",))
-                has_sup_child = anchor.css_first("sup") is not None
-                in_sup = sup_parent is not None or has_sup_child
 
-                if sup_parent is not None:
-                    sup_classes = _get_attr(sup_parent, "class").lower()
-                    # <sup class="reference"> is the MediaWiki callout wrapper.
-                    if "reference" in sup_classes:
-                        is_reference = True
+        if is_callout:
+            frag = href.split("#")[-1].strip()
+            cid = _get_attr(a, "id") or _get_attr(a, "name") or (_get_attr(sup, "id") if sup else "")
+            callouts.append((a, sup, frag, cid))
 
-                if not is_reference and in_sup and re.search(r"\d+", text):
-                    is_reference = True
+    for a, sup, tfrag, cid in callouts:
+        matched_block = None
+        matched_backlink = None
 
-            # Broad fallback: bracket/symbol reference with a fragment or
-            # cross-file href (e.g. "[1]", "†", "ii", "※").
-            if not is_reference and "#" in href:
-                if re.fullmatch(
-                    r"\s*\[?\s*(\d{1,4}|[*†‡§¶※]+|[ivxlcdm]{1,4})\s*\]?\s*",
-                    text,
-                    re.IGNORECASE,
-                ):
-                    is_reference = True
+        # Topology 1: Direct target in same tree
+        if tfrag:
+            direct_el = tree.css_first(f'[id="{tfrag}"], [name="{tfrag}"]')
+            if direct_el:
+                matched_block = _find_parent(direct_el, ("li", "p", "aside", "div", "section", "dd")) or direct_el
+                for a_back in matched_block.css("a"):
+                    if "#" in _get_attr(a_back, "href"):
+                        matched_backlink = a_back
+                        break
 
-        if is_reference:
-            _set_attr(anchor, "epub:type", "noteref")
+        # Topology 2: Mutual 2-cycle in same tree
+        if not matched_block and cid:
+            for a_back in tree.css("a"):
+                bhref = _get_attr(a_back, "href")
+                if bhref == f"#{cid}":
+                    matched_block = _find_parent(a_back, ("li", "p", "aside", "div", "section", "dd")) or a_back
+                    matched_backlink = a_back
+                    if not _get_attr(matched_block, "id"):
+                        _set_attr(matched_block, "id", tfrag)
+                    break
 
-    # ---------------------------------------------------------------------------
-    # Pass 4 – Any block that contains only a backlink anchor and is short
-    #           enough to be a footnote body gets promoted to epub:type="footnote".
-    # ---------------------------------------------------------------------------
-    for anchor in list(tree.css("a")):
-        if _get_attr(anchor, "epub:type") != "backlink":
-            continue
-        parent = _find_parent(anchor, ("aside", "div", "p", "li", "section"))
-        if parent is None or _get_attr(parent, "epub:type") == "footnote":
-            continue
-        if len(parent.text(strip=True)) > 800:
-            continue
-        if not _get_attr(parent, "id"):
-            _set_attr(parent, "id", f"fn_auto_{id(parent)}")
-        _set_attr(parent, "epub:type", "footnote")
+        # Topology 3: Suffix symmetry in same tree (broken exporter without ids)
+        if not matched_block and tfrag:
+            c_pref, c_num, c_suf = parse_prefix_num_suffix(tfrag)
+            if c_num:
+                for a_cand in tree.css("a"):
+                    cand_href = _get_attr(a_cand, "href")
+                    if cand_href.startswith("#"):
+                        cand_frag = cand_href[1:].strip()
+                        k_pref, k_num, k_suf = parse_prefix_num_suffix(cand_frag)
+                        if k_pref == c_pref and k_num == c_num and k_suf != c_suf:
+                            matched_block = _find_parent(a_cand, ("li", "p", "aside", "div", "section", "dd")) or a_cand
+                            matched_backlink = a_cand
+                            _set_attr(matched_block, "id", tfrag)
+                            break
+
+        if matched_block:
+            _set_attr(a, "epub:type", "noteref")
+            _set_attr(matched_block, "epub:type", "footnote")
+            if matched_backlink:
+                _set_attr(matched_backlink, "epub:type", "backlink")
 
 
 def pre_parse_clean(html_string: str) -> str:
@@ -830,8 +700,9 @@ def heavy_paragraph_cleanup(tree: HTMLParser) -> None:
         ) or bool(
             classes & {"epub-noteref", "epub-footnote", "epub-backlink"}
         )
+        is_sup = _find_parent(anchor, ("sup",)) is not None or anchor.css_first("sup") is not None
         has_image = anchor.css_first("img, svg, picture") is not None
-        if protected and not has_image:
+        if (protected or is_sup) and not has_image:
             continue
 
         anchor_id = _get_attr(anchor, "id") or _get_attr(anchor, "name")

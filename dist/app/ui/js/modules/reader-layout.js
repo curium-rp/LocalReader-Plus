@@ -31,8 +31,12 @@ export function syncReaderGeometry() {
   const W_win = window.innerWidth;
   const W_avail = isCollapsed ? W_win : Math.max(0, W_win - W_DRAWER);
 
-  const pct_L = clampPct(render?.margin_left, 8);
-  const pct_R = clampPct(render?.margin_right, 8);
+  const pct_L = isCollapsed
+    ? clampPct(render?.margin_left, 8)
+    : clampPct(render?.margin_left_open, 5);
+  const pct_R = isCollapsed
+    ? clampPct(render?.margin_right, 8)
+    : clampPct(render?.margin_right_open, 5);
 
   let M_active_L = 0;
   let M_active_R = 0;
@@ -42,7 +46,7 @@ export function syncReaderGeometry() {
     M_active_L = 0;
     M_active_R = 0;
     W_content = W_avail;
-  } else if (isCollapsed) {
+  } else {
     let M_L = Math.round((pct_L / 100) * W_avail);
     let M_R = Math.round((pct_R / 100) * W_avail);
     const maxMargin = Math.max(0, W_avail - (W_win < W_MIN ? 1 : W_MIN));
@@ -54,34 +58,6 @@ export function syncReaderGeometry() {
     M_active_L = M_L;
     M_active_R = M_R;
     W_content = Math.max(0, W_avail - M_active_L - M_active_R);
-  } else {
-    const M_usr_L = (pct_L / 100) * W_avail;
-    const M_usr_R = (pct_R / 100) * W_avail;
-    const usrSum = M_usr_L + M_usr_R;
-
-    const W_raw = W_avail - usrSum;
-    W_content = Math.max(Math.min(W_avail, W_MIN), W_raw);
-    let leftover = W_avail - W_content;
-
-    let M_open_L;
-    let M_open_R;
-    if (leftover <= 0) {
-      M_open_L = Math.min(M_SAFE, Math.floor(W_avail / 4));
-      M_open_R = Math.min(M_SAFE, Math.floor(W_avail / 4));
-    } else if (usrSum > 0) {
-      M_open_L = leftover * (M_usr_L / usrSum);
-      M_open_R = leftover * (M_usr_R / usrSum);
-    } else {
-      M_open_L = leftover / 2;
-      M_open_R = leftover / 2;
-    }
-
-    M_open_L = Math.max(Math.min(M_SAFE, Math.floor(W_avail / 4)), M_open_L);
-    M_open_R = Math.max(Math.min(M_SAFE, Math.floor(W_avail / 4)), M_open_R);
-    W_content = Math.max(0, W_avail - M_open_L - M_open_R);
-
-    M_active_L = Math.floor(M_open_L);
-    M_active_R = Math.ceil(M_open_R);
   }
 
   if (W_content + M_active_L + M_active_R > W_avail) {

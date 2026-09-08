@@ -3,6 +3,7 @@ import { fetchJSON } from "./modules/api.js";
 import {
   renderIcons,
   showToast,
+  initToast,
   switchTab,
   renderRules,
   renderIgnoreList,
@@ -39,6 +40,7 @@ import {
   closeExportModal,
 } from "./modules/export.js";
 import { initTimer } from "./modules/timer.js";
+import { initWakeLock } from "./modules/wakelock.js";
 import { initThemeSystem } from "./modules/themes.js";
 import { initTopBar } from "./modules/topbar.js";
 import { initProgress, jumpToDisplayedPage, updateProgressDisplay } from "./modules/progress.js";
@@ -59,9 +61,23 @@ window.state = state;
 
 async function init() {
   try {
-    const settings = await fetchJSON(`/api/settings`);
-    state.rules = settings.pronunciationRules || [];
-    state.ignoreList = settings.ignoreList || [];
+    const [settings, rules, ignore] = await Promise.all([
+      fetchJSON(`/api/settings`),
+      fetchJSON(`/api/rules`).catch(() => null),
+      fetchJSON(`/api/ignore`).catch(() => null),
+    ]);
+    // TODO(deprecate): [BACKWARD COMPATIBILITY] Fallback to settings.pronunciationRules if /api/rules returned null/empty. Safe to remove in ~6 months.
+    const initialRules = (Array.isArray(rules) && rules.length > 0)
+      ? rules
+      : (settings?.pronunciationRules || rules || []);
+    state.rules = initialRules.map((r) => ({
+      ...r,
+      id: r.id || crypto.randomUUID(),
+    }));
+    // TODO(deprecate): [BACKWARD COMPATIBILITY] Fallback to settings.ignoreList if /api/ignore returned null/empty. Safe to remove in ~6 months.
+    state.ignoreList = (Array.isArray(ignore) && ignore.length > 0)
+      ? ignore
+      : (settings?.ignoreList || ignore || []);
     state.engineMode = settings.engine_mode || "gpu";
     state.pauseSettings = settings.pause_settings || state.pauseSettings || {
       comma: 0, period: 0, spam: 0, question: 600, exclamation: 600, colon: 400, semicolon: 400, newline: 0
@@ -176,6 +192,8 @@ async function init() {
   window.isJumpingCamera = false;
 
   initTimer();
+  initToast();
+  await initWakeLock();
   
   let imgViewer = document.getElementById("imageViewerModal");
   if (!imgViewer) {
@@ -619,8 +637,6 @@ async function saveSettings() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        pronunciationRules: state.rules,
-        ignoreList: state.ignoreList,
         voice_id: document.getElementById("voiceSelect").value,
         speed: parseFloat(document.getElementById("speedRange").value),
         font_size: getRenderState().font_size,
@@ -632,6 +648,59 @@ async function saveSettings() {
     });
   } catch (e) {
     console.error(e);
+  }
+}
+
+let saveRulesTimeout = null;
+async function saveRules(immediate = false) {
+  if (saveRulesTimeout) clearTimeout(saveRulesTimeout);
+  const doSave = async () => {
+    try {
+      // Strip transient UI state (e.g. isExpanded) and ensure predictable format
+      const payload = state.rules.map((r) => ({
+        id: r.id,
+        original: r.original || "",
+        replacement: r.replacement || "",
+        match_case: Boolean(r.match_case),
+        word_boundary: r.word_boundary !== false,
+        is_regex: Boolean(r.is_regex),
+      }));
+      await fetchJSON(`/api/rules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      console.error("Failed to save pronunciation rules:", e);
+    }
+  };
+
+  if (immediate) {
+    await doSave();
+  } else {
+    saveRulesTimeout = setTimeout(doSave, 250);
+  }
+}
+
+let saveIgnoreTimeout = null;
+async function saveIgnore(immediate = false) {
+  if (saveIgnoreTimeout) clearTimeout(saveIgnoreTimeout);
+  const doSave = async () => {
+    try {
+      await fetchJSON(`/api/ignore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state.ignoreList),
+      });
+    } catch (e) {
+      console.error("Failed to save ignore list:", e);
+    }
+  };
+
+  if (immediate) {
+    await doSave();
+  } else {
+    saveIgnoreTimeout = setTimeout(doSave, 250);
   }
 }
 
@@ -671,28 +740,6 @@ document.getElementById("closeBehaviorDrawerBtn").onclick = () => toggleSettings
 document.getElementById("drawerOverlay").onclick = () => closeAllDrawers();
 
 const sidebar = document.querySelector(".sidebar");
-const dragHandle = document.getElementById("sidebarDragHandle");
-let isResizing = false;
-if (dragHandle && sidebar) {
-  dragHandle.addEventListener("mousedown", (e) => {
-    isResizing = true;
-    document.body.style.cursor = "col-resize";
-    e.preventDefault();
-  });
-  window.addEventListener("mousemove", (e) => {
-    if (!isResizing) return;
-    const newWidth = e.clientX;
-    if (newWidth > 200 && newWidth < 600) {
-      sidebar.style.width = `${newWidth}px`;
-      document.documentElement.style.setProperty("--sidebar-width", `${newWidth}px`);
-      requestGeometrySync();
-    }
-  });
-  window.addEventListener("mouseup", () => {
-    isResizing = false;
-    document.body.style.cursor = "";
-  });
-}
 
 const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
 if (sidebarCollapseBtn && sidebar) {
@@ -708,6 +755,7 @@ if (sidebarCollapseBtn && sidebar) {
     if (!sidebar.classList.contains("animating")) return;
     clearTimeout(sidebarAnimTimer);
     sidebar.classList.remove("animating");
+    applyReaderTypography();
     const k = pendingSpreadIndex;
     pendingSpreadIndex = null;
     void layoutSpreads({ spreadIndex: k });
@@ -721,6 +769,7 @@ if (sidebarCollapseBtn && sidebar) {
   sidebar.addEventListener("transitionend", (e) => {
     if (e.target !== sidebar) return;
     if (e.propertyName !== "width") return;
+    applyReaderTypography();
     requestGeometrySync();
     finishSidebarAnim();
   });
@@ -730,6 +779,7 @@ if (sidebarCollapseBtn && sidebar) {
     beginSidebarWidthAnim();
     sidebar.classList.toggle("collapsed", collapsing);
     updateSidebarVar(collapsing);
+    applyReaderTypography();
     requestGeometrySync();
     if (collapsing) closeTypoMenu();
   };
@@ -877,7 +927,7 @@ document.getElementById("rulesList").addEventListener("input", (e) => {
     state.rules = state.rules.map((r) =>
       r.id === id ? { ...r, [field]: val } : r,
     );
-    saveSettings();
+    saveRules(false);
   }
 });
 document.getElementById("rulesList").addEventListener("click", (e) => {
@@ -893,7 +943,7 @@ document.getElementById("rulesList").addEventListener("click", (e) => {
   } else if (action === "delete-rule") {
     state.rules = state.rules.filter((r) => r.id !== id);
     renderRules();
-    saveSettings();
+    saveRules(true);
   }
 });
 document.getElementById("addRuleBtn").onclick = () => {
@@ -907,18 +957,24 @@ document.getElementById("addRuleBtn").onclick = () => {
     isExpanded: true,
   });
   renderRules();
-  saveSettings();
+  saveRules(true);
 };
 
 document.getElementById("addIgnoreBtn").onclick = () => {
   state.ignoreList.push("");
   renderIgnoreList();
-  saveSettings();
+  saveIgnore(true);
 };
+document.getElementById("ignoreListUI").addEventListener("input", (e) => {
+  if (e.target.dataset.action === "update-ignore") {
+    state.ignoreList[parseInt(e.target.dataset.index)] = e.target.value;
+    saveIgnore(false);
+  }
+});
 document.getElementById("ignoreListUI").addEventListener("change", (e) => {
   if (e.target.dataset.action === "update-ignore") {
     state.ignoreList[parseInt(e.target.dataset.index)] = e.target.value;
-    saveSettings();
+    saveIgnore(true);
   }
 });
 document.getElementById("ignoreListUI").addEventListener("click", (e) => {
@@ -926,7 +982,7 @@ document.getElementById("ignoreListUI").addEventListener("click", (e) => {
   if (t) {
     state.ignoreList.splice(parseInt(t.dataset.index), 1);
     renderIgnoreList();
-    saveSettings();
+    saveIgnore(true);
   }
 });
 
@@ -962,6 +1018,7 @@ document.getElementById("libraryPanel").addEventListener("click", async (e) => {
 });
 
 window.selectDocById = async (id) => {
+  if (state.isPlaying) stopPlayback();
   const items = await fetchJSON(`/api/library`);
   const item = items.find((i) => i.id === id);
   if (item) selectDocument(item);

@@ -6,7 +6,7 @@ from ..config import content_dir, library_file, userdata_dir
 from ..models import ExportRequest, SynthesisRequest
 from ..utils import has_onnxruntime_gpu
 from .tts import synthesize
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 import json
 import re
 import numpy as np

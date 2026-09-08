@@ -44,14 +44,131 @@ export function setMonitorPreview(text, { center = false } = {}) {
 }
 
 // --- Toast ---
-export function showToast(msg) {
+let toastTimer = null;
+let toastAnimTimer = null;
+let toastInitialized = false;
+
+const TOAST_ICONS = {
+    info: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
+    error: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#f87171" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+    success: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
+    warning: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fbbf24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+};
+
+export function initToast() {
+    const toast = document.getElementById('toast');
+    if (!toast || toastInitialized) return;
+    toastInitialized = true;
+
+    // Click anywhere on toast or close button to dismiss immediately
+    toast.addEventListener('click', () => {
+        hideToast();
+    });
+
+    // Pause timer on hover so user can read without rush
+    toast.addEventListener('mouseenter', () => {
+        if (toastTimer) {
+            clearTimeout(toastTimer);
+            toastTimer = null;
+        }
+    });
+
+    // Resume dismiss countdown after mouse leaves
+    toast.addEventListener('mouseleave', () => {
+        if (toast.style.display !== 'none' && !toast.classList.contains('hidden') && !toast.classList.contains('toast-hiding')) {
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => {
+                hideToast();
+            }, 1500);
+        }
+    });
+}
+
+export function hideToast(immediate = false) {
+    const toast = document.getElementById('toast');
+    if (!toast) return;
+
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+        toastTimer = null;
+    }
+    if (toastAnimTimer) {
+        clearTimeout(toastAnimTimer);
+        toastAnimTimer = null;
+    }
+
+    if (immediate) {
+        toast.style.display = 'none';
+        toast.style.opacity = '0';
+        toast.className = 'hidden';
+        return;
+    }
+
+    // Trigger smooth fade out & slide up
+    toast.classList.add('toast-hiding');
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(-8px)';
+    toast.style.pointerEvents = 'none';
+
+    toastAnimTimer = setTimeout(() => {
+        toast.style.display = 'none';
+        toast.className = 'hidden';
+        toastAnimTimer = null;
+    }, 200);
+}
+
+export function showToast(msg, type = "info", duration = 3000) {
     const toast = document.getElementById('toast');
     const toastMsg = document.getElementById('toastMsg');
-    if (toast && toastMsg) {
-        toastMsg.textContent = msg;
-        toast.classList.remove('hidden');
-        setTimeout(() => toast.classList.add('hidden'), 5000);
+    const toastIcon = document.getElementById('toastIcon');
+    if (!toast || !toastMsg) return;
+
+    // Defensive auto-init
+    initToast();
+
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+        toastTimer = null;
     }
+    if (toastAnimTimer) {
+        clearTimeout(toastAnimTimer);
+        toastAnimTimer = null;
+    }
+
+    // Auto-detect type if default 'info' was passed
+    const lower = String(msg || "").toLowerCase();
+    let resolvedType = type;
+    if (resolvedType === "info") {
+        if (lower.includes("error") || lower.includes("failed") || lower.includes("not found")) {
+            resolvedType = "error";
+        } else if (lower.includes("success") || lower.includes("added to library") || lower.includes("completed")) {
+            resolvedType = "success";
+        } else if (lower.includes("warn") || lower.includes("not ready")) {
+            resolvedType = "warning";
+        }
+    }
+
+    toastMsg.textContent = msg;
+
+    // Apply semantic CSS class
+    toast.className = `toast-visible toast-${resolvedType}`;
+    if (toastIcon) {
+        toastIcon.innerHTML = TOAST_ICONS[resolvedType] || TOAST_ICONS.info;
+    }
+
+    // Force inline display & transition to visible
+    toast.style.display = 'flex';
+    requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+        toast.style.pointerEvents = 'auto';
+    });
+
+    // Auto-dismiss after timeout
+    const timeoutMs = resolvedType === "error" ? Math.max(duration, 4000) : duration;
+    toastTimer = setTimeout(() => {
+        hideToast();
+    }, timeoutMs);
 }
 
 // --- Drawer Management ---

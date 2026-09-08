@@ -281,7 +281,6 @@ export async function selectDocument(item) {
 
     state.pageLanguage = null;
     state.bookLanguage = normalizeBcp47(item.language) || null;
-    showToast(`Opening ${item.fileName}...`);
     const textContent = document.getElementById("textContent");
     if (textContent) {
         textContent.classList.toggle("disable-br", !!item.disable_br);
@@ -303,7 +302,6 @@ export async function selectDocument(item) {
             state.readingPageIndex = state.smartStartPage;
             state.viewPageIndex = state.smartStartPage;
             state.currentSentenceIndex = 0;
-            showToast(`Have a good day`);
         } else {
             state.readingPageIndex = item.currentPage || 0;
             state.viewPageIndex = item.currentPage || 0;
@@ -1043,19 +1041,19 @@ export async function renderPage() {
         }
     }
 
-    applyReaderTypography();
+    applyReaderTypography({ skipLayout: isHorizontalMode() });
     updateProgressDisplay();
 
     if (isHorizontalMode()) {
-        void layoutSpreads({ reset: true }).then(() => {
-            const activeEl = document.querySelector("#textContent .active-sentence");
-            if (activeEl && isReadingCurrentPage && state.autoScrollEnabled) {
-                revealInSpread(activeEl);
-            }
-            if (typeof updateActiveTOC === "function") updateActiveTOC();
-            updateProgressDisplay();
-            updateHorizontalSpreadFocus();
-        });
+        const shouldResetSpread = !isReadingCurrentPage || !state.autoScrollEnabled;
+        await layoutSpreads({ reset: shouldResetSpread });
+        const activeEl = document.querySelector("#textContent .active-sentence");
+        if (activeEl && isReadingCurrentPage && state.autoScrollEnabled) {
+            revealInSpread(activeEl);
+        }
+        if (typeof updateActiveTOC === "function") updateActiveTOC();
+        updateProgressDisplay();
+        updateHorizontalSpreadFocus();
     } else if (scrollContainer) {
         // 🌟 FIX: THE BULLETPROOF MATHEMATICAL FOCUS CAMERA
         if (!isReadingCurrentPage) {

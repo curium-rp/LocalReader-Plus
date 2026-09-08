@@ -2,6 +2,8 @@
   --reader-font-family: Georgia, serif;
   --reader-font-size: 18px;
   --reader-font-weight: 400;
+  --reader-font-thickness: 0;
+  --reader-font-stroke: calc(var(--reader-font-thickness, 0) * 0.0025em);
   --reader-line-height: 1.8;
   --reader-paragraph-spacing: 1.1em;
   --reader-text-align: justify;
@@ -32,6 +34,8 @@
   font-family: var(--reader-font-family, Georgia, serif);
   font-size: var(--reader-font-size, 18px);
   font-weight: var(--reader-font-weight, 400);
+  -webkit-text-stroke: var(--reader-font-stroke, 0px) currentColor;
+  paint-order: stroke fill;
   line-height: var(--reader-line-height, 1.8);
   color: var(--text-content);
   text-align: var(--reader-text-align, justify);
@@ -145,12 +149,23 @@
   color: var(--text-content, inherit) !important;
   font-weight: 700 !important;
   font-family: var(--reader-font-family, Georgia, serif);
-  margin-top: 1.618em !important;
-  margin-bottom: 0.618em !important;
-  line-height: 1.236;
+  margin-top: 1em !important;
+  margin-bottom: 0.4em !important;
+  line-height: 1.25;
   --highlight-pad-y: 0px;
   text-indent: 0 !important;
   text-align: left;
+}
+
+/* Multi-line consecutive headers: eliminate excessive spacing between title lines */
+.chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading):has(+ :is(h1, h2, h3, h4, h5, h6, .book-heading)) {
+  margin-bottom: 0.15em !important;
+  border-bottom: none !important;
+  padding-bottom: 0 !important;
+}
+
+.chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading) + :is(h1, h2, h3, h4, h5, h6, .book-heading) {
+  margin-top: 0.15em !important;
 }
 
 .chapter-text :is(h1, h2, h3, h4, h5, h6, .book-heading) n,

@@ -25,9 +25,12 @@ content_dir = userdata_dir / "content"
 
 # File paths
 settings_file = userdata_dir / "settings.json"
+rules_file = userdata_dir / "pronunciationrules.json"
+ignore_file = userdata_dir / "ignore.json"
 library_file = userdata_dir / "library.json"
 render_file = userdata_dir / "render.json"
 view_file = userdata_dir / "view.json"
+state_file = userdata_dir / "state.json"
 
 # Ensure directories exist
 try:

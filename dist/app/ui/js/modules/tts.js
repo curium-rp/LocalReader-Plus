@@ -10,6 +10,7 @@ import {
 } from "./library.js";
 import { revealInSpread } from "./horizontal.js";
 import { updateProgressDisplay, getProgressMetrics } from "./progress.js";
+import { updateWakeLock } from "./wakelock.js";
 
 let saveProgressTimeout = null;
 let currentSynthesisId = 0; // 🌟 ADDED: Bulletproof lock to prevent voice overlap
@@ -172,6 +173,7 @@ export function stopPlayback() {
     try { state.currentGainNode.disconnect(); } catch (e) {}
     state.currentGainNode = null;
   }
+  updateWakeLock();
 }
 
 export async function playNext() {
@@ -449,6 +451,7 @@ export function togglePlayback() {
     initAudioContext();
     state.isPlaying = true;
     syncPlayPauseIcons("pause");
+    updateWakeLock();
     playNext();
   }
 }
@@ -520,6 +523,7 @@ export async function jumpToSentence(i) {
   const playIcon = document.getElementById("playIcon");
   if (playIcon) void playIcon.offsetWidth;
   syncPlayPauseIcons("pause");
+  updateWakeLock();
 
   console.log(`[TTS] Instant jump to index ${i}...`);
   playNext();

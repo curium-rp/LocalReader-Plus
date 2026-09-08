@@ -24,11 +24,11 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="css/style.css" />
+    <link rel="stylesheet" href="css/style.css?v=1.2" />
     <link rel="stylesheet" href="css/reader-typography.css" />
   </head>
 
-  <body class="min-h-screen selection:bg-blue-500/30 overflow-hidden">
+  <body class="h-screen w-screen selection:bg-blue-500/30 overflow-hidden">
     <div class="app-root">
     <header id="appTopBar">
       <div id="titlebarDrag" class="pywebview-drag-region" aria-hidden="true"></div>
@@ -135,9 +135,7 @@
     <div class="main-container">
       <!-- Sidebar -->
       <aside class="sidebar bg-card flex flex-col">
-        <!-- Drag Handle -->
-        <div class="sidebar-drag-handle" id="sidebarDragHandle"></div>
-        <div class="sidebar-chrome">
+        <div class="sidebar-chrome shrink-0">
           <div class="sidebar-tray">
             <button
               type="button"
@@ -176,13 +174,15 @@
               </div>
             </div>
             <div class="sidebar-tray-wrap">
-              <button type="button" id="engineStatusBtn" class="sidebar-tray-btn" title="Engine status">
+              <!-- Engine status popup disabled: setup modal handles models anyway and popup gets clipped by content overflow.
+                   To re-enable: remove pointer-events-none/cursor-default/tabindex on btn, remove style on popup, and use style="right: 0; left: auto;" if clipping. -->
+              <button type="button" id="engineStatusBtn" class="sidebar-tray-btn pointer-events-none cursor-default" title="Engine status" tabindex="-1">
                 <span
                   id="engineStatusDot"
                   class="sidebar-status-dot w-2 h-2 rounded-full bg-zinc-700"
                 ></span>
               </button>
-              <div id="engineStatusPopup" class="sidebar-mini-popup hidden" role="dialog"></div>
+              <div id="engineStatusPopup" class="sidebar-mini-popup hidden" style="display: none !important;" role="dialog"></div>
             </div>
             <button
               id="sidebarCollapseBtn"
@@ -230,7 +230,7 @@
         </div>
 
         <!-- Tabs (Compact with Icons) -->
-        <div class="flex border-b border-border bg-black/10">
+        <div class="flex border-b border-border bg-black/10 shrink-0">
           <button
             id="tabLibrary"
             class="flex-1 py-2 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest border-b-2 border-blue-600 text-blue-500 bg-white/5 transition-colors"
@@ -263,7 +263,7 @@
         </div>
 
         <!-- Content -->
-        <div class="flex-1 overflow-hidden flex flex-col">
+        <div class="flex-1 min-h-0 overflow-hidden flex flex-col">
           <div
             id="libraryPanel"
             class="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1.5"
@@ -313,7 +313,7 @@
         </div>
 
         <!-- Settings -->
-        <div class="p-3 border-t border-border bg-black/20">
+        <div class="p-3 border-t border-border bg-black/20 shrink-0">
           <!-- Processing Mode (v1.9 - Dual-Engine) -->
           <div class="relative p-2 bg-blue-900/20 border border-blue-800/30 rounded-lg">
             <label
@@ -964,16 +964,60 @@
           <input type="range" id="behaviorN" min="0" max="2000" step="50" value="500" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600" />
         </div>
 
+        <div class="pt-4 border-t border-zinc-800/80">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-[10px] text-zinc-500 font-bold uppercase tracking-widest block" data-i18n="settings.wake_lock_title">
+                Keep Screen Awake
+              </label>
+              <p class="text-[11px] text-zinc-400 mt-0.5" data-i18n="settings.wake_lock_desc">
+                Prevent display sleep during playback
+              </p>
+            </div>
+            <div
+              id="wakeLockMode"
+              class="flex items-center bg-zinc-900/80 border border-zinc-800 rounded-md overflow-hidden shrink-0"
+              data-i18n-title="settings.wake_lock_title"
+              title="Keep Screen Awake"
+            >
+              <button
+                type="button"
+                data-wake-lock-mode="auto"
+                class="wake-lock-mode-btn px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-zinc-500 hover:text-zinc-300 transition-colors"
+                data-i18n="settings.wake_lock_auto"
+              >
+                Auto
+              </button>
+              <button
+                type="button"
+                data-wake-lock-mode="on"
+                class="wake-lock-mode-btn px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-zinc-500 hover:text-zinc-300 transition-colors"
+                data-i18n="settings.wake_lock_on"
+              >
+                On
+              </button>
+              <button
+                type="button"
+                data-wake-lock-mode="off"
+                class="wake-lock-mode-btn px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-zinc-500 hover:text-zinc-300 transition-colors"
+                data-i18n="settings.wake_lock_off"
+              >
+                Off
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
 
     <!-- Toast -->
-    <div
-      id="toast"
-      class="fixed top-4 right-4 bg-red-900/95 border border-red-700 text-white px-6 py-4 rounded-xl shadow-2xl hidden z-[9999]"
-    >
-      <div class="flex items-center gap-3">
-        <i data-lucide="alert-circle" class="w-5 h-5 text-red-300"></i>
-        <span id="toastMsg" class="text-sm font-semibold"></span>
-      </div>
+    <div id="toast" style="display: none;" class="hidden" role="status" aria-live="polite">
+      <span id="toastIcon" class="toast-icon"></span>
+      <span id="toastMsg" class="toast-msg"></span>
+      <button type="button" id="toastCloseBtn" class="toast-close" title="Dismiss">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
     </div>
 
     <div
@@ -1038,18 +1082,10 @@
            </div>
         </div>
 
-        <div id="exportTocList" class="flex-1 overflow-y-auto custom-scrollbar p-2 md:p-6 space-y-1">
-           </div>
-
-      </div>
-    </div>
-
-           <!-- TOC List Container -->
-           <div id="exportTocList" class="flex-1 overflow-y-auto custom-scrollbar p-2 md:p-4 space-y-1">
-              <!-- Dynamically populated -->
-           </div>
+        <!-- TOC List Container -->
+        <div id="exportTocList" class="flex-1 overflow-y-auto custom-scrollbar p-2 md:p-4 space-y-1">
+          <!-- Dynamically populated -->
         </div>
-
       </div>
     </div>
 
@@ -1372,15 +1408,15 @@
         <div class="typo-row">
           <label class="typo-label">
             <span data-i18n="sidebar.font_thickness">Font Thickness</span>
-            <span class="text-blue-400 font-mono" id="fontWeightVal">400</span>
+            <span class="text-blue-400 font-mono" id="fontThicknessVal">0</span>
           </label>
           <input
             type="range"
-            id="fontWeightSlider"
-            min="100"
-            max="900"
-            step="100"
-            value="400"
+            id="fontThicknessSlider"
+            min="0"
+            max="12"
+            step="1"
+            value="0"
             class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
           />
         </div>
@@ -1419,7 +1455,15 @@
 
         <div class="typo-row">
           <div class="typo-label">
-            <span data-i18n="sidebar.margins" id="marginsLabel">L/R Margins</span>
+            <span class="flex items-center gap-1.5">
+              <span data-i18n="sidebar.margins" id="marginsLabel">L/R Margins</span>
+              <button
+                type="button"
+                id="marginsStateBadge"
+                class="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors uppercase tracking-wider cursor-pointer"
+                title="Toggle between Open and Collapsed margins"
+              >Open</button>
+            </span>
             <button
               type="button"
               id="marginsLinkBtn"
@@ -1448,7 +1492,7 @@
                 type="range"
                 id="marginRightSlider"
                 min="0"
-                max="20"
+                max="35"
                 step="1"
                 value="8"
                 class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"

@@ -146,12 +146,23 @@ function getRenderConfig() {
   return null;
 }
 
+function isSidebarCollapsed() {
+  const sidebar = document.querySelector(".sidebar");
+  return !sidebar || sidebar.classList.contains("collapsed");
+}
+
 function userSingleColumnMargins() {
   const cfg = getRenderConfig();
-  let leftPct = cfg ? Number(cfg.margin_left) : NaN;
-  let rightPct = cfg ? Number(cfg.margin_right) : NaN;
-  if (!Number.isFinite(leftPct)) leftPct = 8;
-  if (!Number.isFinite(rightPct)) rightPct = 8;
+  const collapsed = isSidebarCollapsed();
+  let leftPct = cfg
+    ? Number(collapsed ? cfg.margin_left : (cfg.margin_left_open ?? 5))
+    : NaN;
+  let rightPct = cfg
+    ? Number(collapsed ? cfg.margin_right : (cfg.margin_right_open ?? 5))
+    : NaN;
+  const defaultVal = collapsed ? 8 : 5;
+  if (!Number.isFinite(leftPct)) leftPct = defaultVal;
+  if (!Number.isFinite(rightPct)) rightPct = defaultVal;
   leftPct = Math.max(0, Math.min(35, Math.round(leftPct)));
   rightPct = Math.max(0, Math.min(35, Math.round(rightPct)));
   return { leftPct, rightPct };
@@ -303,6 +314,7 @@ function setColumnMetrics() {
   text.style.maxWidth = "none";
 
   if (!m.twoPage) {
+    text.style.paddingRight = "";
     if (m.leftPx != null && m.rightPx != null) {
       if (m.leftPx === m.rightPx) {
         text.style.setProperty("margin", "0 auto", "important");
@@ -327,6 +339,16 @@ function setColumnMetrics() {
     text.style.marginLeft = "auto";
     text.style.marginRight = "auto";
     text.style.alignSelf = "center";
+
+    const colStride = m.colW + m.gap;
+    if (colStride > 0) {
+      const totalCols = Math.round((text.scrollWidth + m.gap) / colStride);
+      if (totalCols > 0 && totalCols % 2 !== 0) {
+        text.style.paddingRight = `${colStride}px`;
+      } else {
+        text.style.paddingRight = "";
+      }
+    }
   }
   void text.offsetWidth;
 }
@@ -340,6 +362,7 @@ function clearPaneHeight() {
   }
   if (!text) return;
   text.style.height = "";
+  text.style.paddingRight = "";
   text.style.removeProperty("width");
   text.style.width = "";
   text.style.maxWidth = "";
@@ -360,11 +383,13 @@ function afterLayout(cb) {
   requestAnimationFrame(cb);
 }
 
+let isProgrammaticScroll = false;
+
 export function layoutSpreads({ reset = false, spreadIndex = null } = {}) {
   bindListeners();
   if (layoutLock) {
     pendingLayout = {
-      reset: reset || (pendingLayout ? pendingLayout.reset : false),
+      reset: reset,
       spreadIndex: spreadIndex != null ? spreadIndex : (pendingLayout ? pendingLayout.spreadIndex : null),
     };
     return Promise.resolve();
@@ -411,14 +436,28 @@ export function layoutSpreads({ reset = false, spreadIndex = null } = {}) {
         const landing = pendingSpread;
         pendingSpread = null;
         const stride = spreadStride();
+
+        let targetLeft = 0;
         if (landing === "last") {
-          next.scrollLeft = maxScrollLeft(next);
+          targetLeft = maxScrollLeft(next);
         } else if (landing === "first" || wantReset) {
-          next.scrollLeft = 0;
+          targetLeft = 0;
         } else {
-          next.scrollLeft = oldPage * stride;
+          // If auto-scroll is enabled on the reading page, re-anchor to the active sentence after reflow
+          let activeAnchorSpread = null;
+          if (state.autoScrollEnabled && state.viewPageIndex === state.readingPageIndex) {
+            activeAnchorSpread = getActiveSentenceSpreadIndex();
+          }
+          if (activeAnchorSpread != null) {
+            targetLeft = activeAnchorSpread * stride;
+          } else {
+            targetLeft = oldPage * stride;
+          }
         }
+        isProgrammaticScroll = true;
+        next.scrollLeft = Math.max(0, Math.min(maxScrollLeft(next), targetLeft));
         snapScroll(next);
+        setTimeout(() => { isProgrammaticScroll = false; }, 150);
       } finally {
         layoutLock = false;
         if (pendingLayout) {
@@ -474,7 +513,8 @@ export function getElementSpreadIndex(el) {
   const left = er.left - ar.left + scroller.scrollLeft;
   const m = computeSpreadMetrics();
   const colStride = Math.max(1, m.colW + m.gap);
-  const colIndex = Math.max(0, Math.floor(left / colStride));
+  // Add a subpixel epsilon (+2px) to prevent boundary truncation
+  const colIndex = Math.max(0, Math.floor((left + 2) / colStride));
   return m.twoPage ? Math.floor(colIndex / 2) : colIndex;
 }
 
@@ -509,9 +549,15 @@ export function revealInSpread(el) {
     const left = er.left - ar.left + scroller.scrollLeft;
     const m = computeSpreadMetrics();
     const colStride = Math.max(1, m.colW + m.gap);
-    const colIndex = Math.max(0, Math.floor(left / colStride));
+    const colIndex = Math.max(0, Math.floor((left + 2) / colStride));
     const spreadIndex = m.twoPage ? Math.floor(colIndex / 2) : colIndex;
-    scroller.scrollLeft = Math.min(spreadIndex * m.stride, maxScrollLeft(scroller));
+    const targetLeft = Math.min(spreadIndex * m.stride, maxScrollLeft(scroller));
+    if (Math.abs(scroller.scrollLeft - targetLeft) > 1) {
+      isProgrammaticScroll = true;
+      scroller.scrollLeft = targetLeft;
+      setTimeout(() => { isProgrammaticScroll = false; }, 150);
+    }
+    updateHorizontalSpreadFocus();
   });
   return true;
 }
@@ -528,7 +574,7 @@ function onViewportChange() {
 let spreadScrollTimer = null;
 function onScrollerScroll() {
   if (!isHorizontalMode()) return;
-  if (window.isJumpingCamera) return;
+  if (window.isJumpingCamera || isProgrammaticScroll) return;
   clearTimeout(spreadScrollTimer);
   spreadScrollTimer = setTimeout(() => {
     updateHorizontalSpreadFocus();

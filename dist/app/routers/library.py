@@ -5,7 +5,7 @@ from typing import Optional, Dict, List, Any
 from collections import defaultdict
 import json, re, uuid, posixpath, urllib.parse, shutil, html, zipfile, sys, asyncio, io
 from pathlib import Path
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 import xml.etree.ElementTree as ET
 from ..config import library_file, content_dir, settings_file
 from ..models import LibraryItem
@@ -72,10 +72,7 @@ def nodes_in_document_order(tree, tags) -> List[Node]:
 def get_inner_html(node: Optional[Node]) -> str:
     if not node:
         return ""
-    return "".join(
-        child.html for child in iter_children(node, include_text=True)
-        if child.html is not None
-    )
+    return node.inner_html or ""
 
 # Replace a node with parsed markup, including multiple siblings
 def replace_with_html(node: Optional[Node], markup: str) -> None:
@@ -552,14 +549,25 @@ def force_formatting_markers(tree: HTMLParser, current_href: str = "") -> None:
     Force every formatting tag and style into indestructible markers.
     Runs on the live tree as early as possible.
     """
+    def normalize_paired_id(raw_id: str) -> str:
+        if not raw_id:
+            return ""
+        s = raw_id.strip()
+        m = re.match(r"^([a-zA-Z_\-]*?)(\d+)([a-zA-Z_\-]*)$", s)
+        if m:
+            pref, num, suf = m.group(1).lower(), m.group(2), m.group(3).lower()
+            return f"{pref}_{num}"
+        return s.lower()
+
     def make_det_id(target_file, target_id):
         if not target_file: target_file = current_href
         elif target_file != current_href and current_href:
             base_dir = posixpath.dirname(current_href)
             target_file = posixpath.normpath(posixpath.join(base_dir, target_file))
 
+        norm_id = normalize_paired_id(target_id)
         safe_file = re.sub(r'[^a-zA-Z0-9]', '_', target_file)
-        safe_id = re.sub(r'[^a-zA-Z0-9]', '_', target_id)
+        safe_id = re.sub(r'[^a-zA-Z0-9]', '_', norm_id)
         return f"R_{safe_file}_{safe_id}"
 
     # 🌟 EXTERNAL LINK SHIELD
@@ -574,23 +582,41 @@ def force_formatting_markers(tree: HTMLParser, current_href: str = "") -> None:
             safe_unwrap(anchor)
 
     # 🌟 FOOTNOTE EXTRACTION SHIELD
-    # Accepts epub:type from standardize_footnotes and DPUB ARIA roles as fallback.
+    # Automated <sup> footnote matching: No keyword reliance.
+    # Matches <sup> anchor tags, epub:type="noteref", or role="doc-noteref".
     for anchor in list(tree.css("a")):
         if anchor.parent is None:
             continue
+
+        # Skip anchors inside footnote definition blocks
+        p_check = anchor.parent
+        in_def = False
+        while p_check:
+            p_attrs = p_check.attributes or {}
+            if p_check.tag in ("aside", "dd") or (p_attrs.get("epub:type") or "").lower() in ("footnote", "endnote") or (p_attrs.get("role") or "").lower() in ("doc-footnote", "doc-endnote"):
+                in_def = True
+                break
+            p_check = p_check.parent
+        if in_def:
+            continue
+
         attrs = anchor.attributes or {}
         epub_type = (attrs.get("epub:type") or "").lower()
         role = (attrs.get("role") or "").lower()
-        if epub_type != "noteref" and role != "doc-noteref":
-            continue
-        href = attrs.get("href", "")
-        if "#" not in href:
+        sup_tag = find_parent(anchor, "sup") or anchor.css_first("sup")
+        href = (attrs.get("href") or "").strip()
+
+        is_callout = (
+            epub_type == "noteref"
+            or role == "doc-noteref"
+            or (sup_tag is not None and "#" in href)
+        )
+        if not is_callout or "#" not in href:
             continue
 
         parts = href.split("#")
-        if len(parts) > 1:
-            det_id = make_det_id(parts[0], parts[1])
-            sup_tag = find_parent(anchor, "sup") or anchor.css_first("sup")
+        if len(parts) > 1 and parts[1].strip():
+            det_id = make_det_id(parts[0], parts[1].strip())
             tag_type = "SUP" if sup_tag else "A"
 
             prepend_text(anchor, f"@@F_ON@@ @@F_S|{det_id}|{tag_type}@@ ")
@@ -606,23 +632,41 @@ def force_formatting_markers(tree: HTMLParser, current_href: str = "") -> None:
         attrs = block.attributes or {}
         epub_type = (attrs.get("epub:type") or "").lower()
         role = (attrs.get("role") or "").lower()
-        if epub_type != "footnote" and role not in ("doc-footnote", "doc-endnote"):
-            continue
         block_id = attrs.get("id", "")
-        if "@@F_ON@@" in block.text():
-            continue
+        classes = (attrs.get("class") or "").lower()
 
+        # Check for backlink inside block
         backlink = next(
             (
                 anchor for anchor in block.css("a")
                 if (anchor.attributes or {}).get("epub:type") == "backlink"
                 or (anchor.attributes or {}).get("role") == "doc-backlink"
+                or "↑" in anchor.text()
+                or "↩" in anchor.text()
+                or "^" in anchor.text()
+                or (block_id and "#" in ((anchor.attributes or {}).get("href") or ""))
             ),
             None,
         )
+
+        is_def_block = (
+            epub_type in ("footnote", "endnote")
+            or role in ("doc-footnote", "doc-endnote")
+            or "footnote" in classes
+            or (block.tag in ("li", "p", "aside", "dd") and backlink is not None and (
+                normalize_paired_id(block_id) != block_id or bool(block_id)
+            ))
+        )
+        if not is_def_block:
+            continue
+        if "@@F_ON@@" in block.text():
+            continue
+
         if not block_id and backlink:
             backlink_attrs = backlink.attributes or {}
             block_id = backlink_attrs.get("id") or backlink_attrs.get("name") or ""
+            if not block_id and "#" in (backlink_attrs.get("href") or ""):
+                block_id = backlink_attrs.get("href").split("#")[-1]
         if not block_id:
             continue
 

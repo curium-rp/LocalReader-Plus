@@ -23,6 +23,7 @@ export const state = {
 
     // Settings
     playerHideMode: 'always', // always | auto | manual
+    wakeLockMode: 'auto', // auto | on | off
     sentenceDim: false, // false = full brightness (not dimmed)
     rules: [],
     ignoreList: [],

@@ -16,6 +16,8 @@ from .config import (
     userdata_dir,
     content_dir,
     settings_file,
+    rules_file,
+    ignore_file,
     library_file,
 )
 from .utils import safe_save_json, safe_init_json
@@ -44,25 +46,44 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
-    # 🌟 SURGICAL FIX: Use models.py as the absolute source of truth for defaults
+    # 🌟 SURGICAL FIX: Separate pronunciation rules and ignore list into dedicated files with backward compatibility
     try:
         current_data = {}
         if settings_file.exists():
             with open(settings_file, "r", encoding="utf-8") as f:
                 current_data = json.load(f)
-                
-        # Satisfy mandatory Pydantic fields
-        if "pronunciationRules" not in current_data: current_data["pronunciationRules"] = []
-        if "ignoreList" not in current_data: current_data["ignoreList"] = []
-            
+
+        # TODO(deprecate): [BACKWARD COMPATIBILITY] Safe to remove in ~6 months.
+        # Migrate legacy pronunciationRules from settings.json to pronunciationrules.json if not migrated yet
+        if not rules_file.exists() and "pronunciationRules" in current_data:
+            legacy_rules = current_data.get("pronunciationRules", [])
+            safe_save_json(rules_file, legacy_rules, indent=2)
+            print(f"[MIGRATION] Successfully migrated {len(legacy_rules)} pronunciation rules to {rules_file.name}")
+
+        # TODO(deprecate): [BACKWARD COMPATIBILITY] Safe to remove in ~6 months.
+        # Migrate legacy ignoreList from settings.json to ignore.json if not migrated yet
+        if not ignore_file.exists() and "ignoreList" in current_data:
+            legacy_ignore = current_data.get("ignoreList", [])
+            safe_save_json(ignore_file, legacy_ignore, indent=2)
+            print(f"[MIGRATION] Successfully migrated {len(legacy_ignore)} ignore items to {ignore_file.name}")
+
+        # Clean legacy decoupled fields out of settings.json
+        if "pronunciationRules" in current_data:
+            current_data.pop("pronunciationRules", None)
+        if "ignoreList" in current_data:
+            current_data.pop("ignoreList", None)
+
         # Pydantic safely merges user data with models.py defaults
         merged_settings = AppSettings(**current_data)
-        safe_save_json(settings_file, merged_settings.model_dump())
-    except Exception:
+        safe_save_json(settings_file, merged_settings.model_dump(exclude_none=True), indent=2)
+    except Exception as e:
+        print(f"[WARNING] Settings initialization error: {e}")
         # Fallback if file is completely corrupted: Generate fresh from models.py
-        fallback_settings = AppSettings(pronunciationRules=[], ignoreList=[])
-        safe_save_json(settings_file, fallback_settings.model_dump())
+        fallback_settings = AppSettings()
+        safe_save_json(settings_file, fallback_settings.model_dump(exclude_none=True), indent=2)
 
+    safe_init_json(rules_file, [], indent=2)
+    safe_init_json(ignore_file, [], indent=2)
     safe_init_json(library_file, [])
 
     from .routers.system import load_engine_logic
@@ -100,6 +121,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_no_cache_header(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith(("/css", "/js")) or path.endswith((".html", ".css", ".js")):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 # --- Routers ---
 app.include_router(settings.router)

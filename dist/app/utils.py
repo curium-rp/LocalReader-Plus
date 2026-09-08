@@ -205,19 +205,19 @@ def language_from_text_heuristic(text: str) -> Optional[str]:
     return None
 
 
-def safe_save_json(path: Path, data: Any):
+def safe_save_json(path: Path, data: Any, indent: Optional[int] = None):
     """Atomic write to prevent corruption"""
     temp_path = path.with_suffix(".tmp")
-    with open(temp_path, "w") as f:
-        json.dump(data, f)
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=indent)
     temp_path.replace(path)
 
 
-def safe_init_json(path: Path, default_data: Any):
+def safe_init_json(path: Path, default_data: Any, indent: Optional[int] = None):
     """Initialize JSON file if it doesn't exist"""
     if not path.exists():
-        with open(path, "w") as f:
-            json.dump(default_data, f)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default_data, f, ensure_ascii=False, indent=indent)
 
 
 def get_language_from_voice(voice: str) -> str:
