@@ -2,9 +2,9 @@
   <h1>LocalReader Plus</h1>
 </div>
 
-**A modern, rebuilt offline reader: fixed, optimized, and significantly improved.**
+**A modern app that used Kokoro TTS, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-### 🚨Update Aug 16, 2026 ##
+### 🚨Update september 8, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -18,19 +18,15 @@
 
 **Python versions support**:
 - Python 3.10 - 3.13 (Tested on windows: 3.10 to 3.13 run without any issue)
-- For python 3.14 it can run but may have memory leak when run model on CPU, be carefull, no issue with GPU.
+- For python 3.14 can run and seem memories leak it gone.
 
-### Engine Modes
+### Models
 
-*   **High Quality (FP32)**: Load `kokoro.onnx`.
-    *   **Priority**: Load CUDA Execution Provider (GPU).
-    *   **Fallback**: If CUDA fail or missing, run CPU Execution Provider (RAM).
-    *   **Performance**: CPU fallback run near real-time (tested on AMD Ryzen 4800HS, Initial load slower before play start, nearly run in realtime). Recommended for maximum audio quality.
-*   **High Performance (INT8)**: Load `kokoro.int8.onnx`.
-    *   **Priority**: Load CPU Execution Provider (RAM).
-    *   **Performance**: Quantized format. Fast load. High speed.
-
->Exe. setup if choose ONNXRUNTIME CPU, High Quality mode will run on CPU
+*   **High Quality (FP32)**: Load `kokoro.onnx`. (Recommended)
+    *   **Priority**: Load CUDA Execution Provider (GPU). 
+    *   **Fallback**: CPU 
+    *   **Performance**: CPU run near real-time (tested on AMD Ryzen 4800HS, Initial load slower then GPU load). Recommended for maximum audio quality.
+ 
 
 >For manual install, default dependencies it ONNXRUNTIME CPU it will run on CPU
 </br>
@@ -40,6 +36,8 @@
 ### use executable files tool (.exe) - Recommended
 
 &emsp;It will install UV if you don't have yet through PowerShell and you can select onnxruntime CPU/GPU version with .exe or select optional CMD GUI shortcut for change onnxruntime version later.
+
+&emsp;&emsp;-Recommended to used CPU VERSION (Standard) in page ONNX Engine Configuration on Installer (.exe). it mean run Kokoro model on CPU
   
 &emsp;&emsp;-It will install all dependencies, automatically.
    
@@ -47,7 +45,6 @@
 
 
     
-
 
 
 </br>
@@ -131,9 +128,9 @@ uv pip install --no-cache pycairo PyGObject pywebview[gtk]
 </br>
 
 If use manual install, first navigate to folder `dist` and open Terminal
-If use .exe go to program or folder that you install and click folder `LocalReader plus` > open Powershell
+If use .exe go to program or folder that you install and click folder `LocalReader plus` > open PowerShell/CMD
 
->Can use `engine_setup.CMD` use CMD to change onnxruntime versions.
+>if used installer to install app used shortcut `engine_setup.CMD` or used command line to change it
 
 
 
@@ -196,7 +193,7 @@ For use .exe you can go to settings "installed apps" and uninstall LocalReader P
    - **Colon (:)** - Default: 500ms
    - **Semicolon (;)** - Default: 500ms
 
- **!Behavior settings:**
+ **!Playback Behavior :**
    - `Header Pause (H)` Gives the user breathing room between a Chapter Title and the story text (0ms to 10s). default 2 second
          -It will apply in front of header 100% and close H 30% 
          -It will apply less settings ms by H2/2, H3/1.5 - apply H2 half of H1 tag
@@ -206,7 +203,7 @@ For use .exe you can go to settings "installed apps" and uninstall LocalReader P
    - `Segment Pause (N)` Controls the tiny micro-pauses between standard text blocks/sentences will have 0-2000ms. default 500ms
 
    
-3. Settings save automatically
+> Settings save automatically
 
   </br>
 ---
@@ -232,41 +229,110 @@ For use .exe you can go to settings "installed apps" and uninstall LocalReader P
 | ------------------- | --------------------------------- |
 | **Frontend**        | Vanilla JavaScript + Tailwind CSS |
 | **Backend**         | FastAPI (Python)                  |
-| **TTS Engine**      | Kokoro-82M (ONNX Runtime)         |
-| **Desktop Wrapper** | pywebview                         |
-| **Audio Export**    | pydub + FFMPEG                    |
-| **EPUB Support**    | EbookLib + BeautifulSoup4         |
-| **PDF Support**     | PyMuPDF (fitz)                    |
 
-### File Structure
+<br/>
+
+<details>
+<summary><b>Click to expand the full File Tree)</b></summary>
+
+```text
+│   .gitattributes
+│   .gitignore
+│   COPYING
+│   INSTALL.txt
+│   README.md
+│
+└───dist
+    │   main.py                           # App entry point (FastAPI + WebView)
+    │   window_manager.py                 # Native frameless window & event controls
+    │   requirements.txt                  # Locked Python dependencies
+    │   uv.toml                           # UV tool configuration
+    │
+    ├───app
+    │   │   config.py                     # Anchored paths and system configuration
+    │   │   models.py                     # Pydantic data schemas & state models
+    │   │   server.py                     # Lifespan startup & route registration
+    │   │   state.py                      # Global State Instances 
+    │   │   utils.py                      # JSON storage and helper utilities
+    │   │
+    │   ├───locales/                      # UI translations (en, es, fr, zh)
+    │   │
+    │   ├───logic/                       
+    │   │       html_normalizer.py        # Fast C-based DOM & footnote normalizer
+    │   │       smart_content_detector.py  
+    │   │       text_normalizer.py        # Sentence & pronunciation rules
+    │   │       chinese_g2p.py            # Chinese Grapheme-to-Phoneme converter
+    │   │       japanese_g2p.py           # Japanese Grapheme-to-Phoneme converter
+    │   │       language_switcher.py      # Dynamic TTS voice routing
+    │   │       dependency_manager.py     
+    │   │       downloader.py             # Model fetcher & downloader
+    │   │       syllable.py               # helper calculator for tts.py
+    │   │
+    │   ├───models/                       # Local AI models & phonetic data
+    │   │   │   kokoro.onnx               # Kokoro-82M TTS neural model
+    │   │   │   voices.bin                # Voice embedding vectors
+    │   │   │
+    │   │   └───Kanjium/
+    │   │           kanjium_pitch.json    # Japanese pitch accent dictionary
+    │   │
+    │   ├───routers/                      # REST API Endpoints
+    │   │       library.py                # Book upload, extraction, and TOC
+    │   │       tts.py                    # Audio synthesis & pause controls
+    │   │       render.py                 # HTML & document settings
+    │   │       view.py                   # Usage Documentation Models 
+    │   │       settings.py               
+    │   │       theme.py                  # Theme color & styling routes
+    │   │       timer.py                  # Background sleep timer
+    │   │       export.py                 # MP3 & audio export engine
+    │   │       system.py                 # Hardware status & engine loader
+    │   │
+    │   └───ui/                           
+    │       │   index.html                # Main Reader Single Page Application
+    │       │
+    │       ├───css/
+    │       │       reader-typography.css # Font & multi-column page styles
+    │       │       style.css             # Base application & drawer theme
+    │       │
+    │       ├───js/
+    │       │   │   app.js                # Core UI coordinator
+    │       │   │   shortcuts.js          # Keyboard navigation
+    │       │   │   search.js             # In-book search engine
+    │       │   │
+    │       │   └───modules/              # Dedicated ES6 feature controllers
+    │       │           topbar.js         # VS Code-style draggable header
+    │       │           recent.js         # Sigil-style 1-9 recent files
+    │       │           reader-layout.js  # margin control
+    │       │           horizontal.js     # Horizontal scroll & layout mode
+    │       │           typography.js     # Center control settings(topbar)
+    │       │           progress.js       # reading position sync
+    │       │           themes.js         # Theme switching & palette hooks
+    │       │           tts.js            # WebAudio playback & highlight sync
+    │       │           library.js        # Bookshelf & document selector
+    │       │           timer.js          # Sleep countdown HUD
+    │       │           export.js         # Audio export 
+    │       │           resize.js         # Panel & sidebar drag handles
+    │       │           api.js            # Backend fetch client
+    │       │           state.js          # Frontend reactive state store
+    │       │           ui.js             # Toast notifications & DOM utilities
+    |       |           wakelock.js       # Api: control sleep screen
+    │       │
+    │       └───lib/
+    │               tailwindcss-with-all-plugins.js # Local offline Tailwind CSS
+    │               lucide.min.js                   # Local vector icons
+    │
+    └───userdata/                         # Local database & user book content
 
 ```
-LocalReader-Plus
-├── README.md
-├── CHANGELOG.md
-└── dist/
-    ├── main.py                  # App entry point (FastAPI + WebView)
-    │
-    ├── app/
-    │   ├── server.py            # FastAPI initialization
-    │   ├── state.py             # Global engine/status singleton
-    │   ├── routers/             # API Controllers (TTS, Library, Export, etc.)
-    │   ├── logic/               # Core logic (Normalize, Detector, Cache)
-    │   ├── locales/             # UI Translations (EN, ES, FR, ZH, JA)
-    │   └── ui/
-    │       ├── index.html       # Main SPA
-    │       ├── css/style.css    # Premium styling
-    │       └── js/modules/      # ES6 Logic modules
-    │
-    └── userdata/                # User settings and book database
-```
+</details>
+
+<br/>
+
 
 **Additional folders created during use:**
 
-- `dist/bin/` - FFMPEG binaries  ~~(auto-downloaded on first export)~~
+- `dist/bin/` - FFMPEG binaries  (auto import it has in system)
 - `app/models/` - TTS engine models (auto-downloaded based on your choice)
-- `dist/userdata/audio_cache.db` - SQLite Audio Cache (audio cache has been disable, if you needed open back in tts.py> `ENABLE_AUDIO_CACHE = False` change to `True` )
-- `dist/audio files`- for files that Export will live inside this folder
+- `dist/audio files`- for files that Export is inside this folder
 
 ### Storage & Installation Estimates
 
@@ -274,10 +340,9 @@ LocalReader-Plus
 | :---                        | :---               | :---                                              |
 | **App ZIP & Source**        | ~4 MB              | Core application logic and UI                     |
 | **Python Environment**      | ~800 MB            | ONNX Runtime, FastAPI, etc. *(PyTorch removed)*   |
-| **TTS Engine (GPU)**        | ~309 MB            | Standard FP32 model                               |
-| **TTS Engine (CPU)**        | ~87 MB             | Quantized INT8 model                              |
+| **TTS Engine (FP32)**        | ~309 MB            | Standard FP32 model  (Recommended)                |
+| **TTS Engine (INT8)**        | ~87 MB             | Quantized INT8 model                              |
 | **Voice Pack**              | ~30 MB             | Shared acoustic data for voices                   |
-| **Audio Cache (SQLite)**    | ~200 MB            | Auto-managed (Maximum limit)                      |
 | **Document Cache**          | ~~~~               | A little bit larger then original files                               |
 | **FFmpeg**                  | ~100 MB            | *Optional* - Downloaded on-demand for MP3 exports |
 | **Exported Audio**          | Varies             | ~1 MB (MP3) / ~2.7 MB (WAV) per minute of audio   |
@@ -295,30 +360,17 @@ LocalReader-Plus
 
 
 #### Estimated Installation Totals
-*Calculated using the Base App + Python Environment + Models. Excludes optional CUDA/cuDNN installations, user document caches, and exported audio files.*
+*Calculated using the Base App + Python Environment + Models. Excludes optional CUDA/cuDNN installations, user document caches, and exported audio files.* 
 
-* **Total (CPU Mode):** ~450 MB *(Lightweight & Low RAM)*
-* **Total (GPU Mode):** ~1000 MB *(Standard Quality)*
+* **Total (FP32 model):** ~900 MB 
+* **Total (INT8 model):** ~1000 MB *(Standard Quality)*
 * **Total (Both Engines):** ~1100 MB *(Maximum Flexibility)*
-
-### System Requirements
-
-| Component      | Minimum                     | Recommended                    |
-| -------------- | --------------------------- | ------------------------------ |
-| **OS**         | Windows 10+ / Ubuntu 20.04+ | Windows 11 / Ubuntu 22.04+     |
-| **Python**     | 3.10 - 3.13                 | 3.12                           |
-| **RAM**        | 4 GB                        | 8 GB+                          |
-| **Disk Space** | 3 GB free                   | 20 GB+ free                    |
-| **CPU**        | Dual-core 2.0 GHz           | Quad-core 2.5 GHz+    GPU      |
-| **Internet**   | Required for setup only     | Offline after setup            |
 
 ---
 
-## 🔘 Privacy & Security
-
 ### Data Storage
 
-- **100% Local:** All documents, settings, and exports stored on your machine
+- **100% Local:** All documents, settings, and exports stored on your machine, only used internet when install or download voice models
 - **No Cloud:** Zero data sent to external servers
 - **No Accounts:** No login, no sign-up, no user tracking
 
@@ -336,7 +388,7 @@ LocalReader-Plus
 
 ---
 
-## 🔳 License
+
 
 ### LocalReader Plus (Fork of LocalReader Pro)
 
@@ -355,8 +407,7 @@ This project is made possible thanks to the following open-source libraries and 
 | **[Kokoro-ONNX](https://github.com/thewh1teagle/kokoro-onnx)**         | MIT          | Core TTS Engine wrapper                |
 | **[ONNX Runtime](https://onnxruntime.ai/)**                            | MIT          | Hardware-accelerated AI inference      |
 | **[PyMuPDF](https://pymupdf.readthedocs.io/)**                         | GNU AGPL     | Native PDF text and image extraction   |
-| **[EbookLib](https://github.com/aerkalov/ebooklib)**                   | AGPL         | EPUB document parsing and unpacking    |
-| **[BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/)**   | MIT          | HTML sanitization and TOC generation   |
+| **[Selectolax](https://github.com/rushter/selectolax)**                | MIT          | HTML sanitization, TOC generation   |
 | **[Fugashi](https://github.com/polm/fugashi)**                         | MIT          | Japanese morphological analysis        |
 | **[jaconv](https://github.com/ikegami-yukino/jaconv)**                 | MIT          | Jp/zh character width normalization    |
 | **[num2words](https://github.com/savoirfairelinux/num2words)**         |  LGPL        |Handle reading number             |
@@ -377,13 +428,15 @@ This project is made possible thanks to the following open-source libraries and 
 
 ### Found a Bug? Support ###
 
-  0.  check error massage in terminal (If use .exe it will have `crash.log` report )
+  0.  check error massage in terminal (If use .exe it will have `error.log` report )
   1. Open ticket with:
       - Python version (`python --version`)
       - OS
       - Error message or screenshot
 
-  _New feature? ticket or help me and pull request_
+      
+
+  _New feature? ticket, request, or help me and pull request_
       
 
  
@@ -391,7 +444,7 @@ This project is made possible thanks to the following open-source libraries and 
 ---
 </br>
 
-**Engine:** Kokoro onnx-82M (Dual-Mode: CPU/GPU)
+**Engine:** Kokoro onnx-82M (Dual-Mode: FP32/INT8)
 
 **Last Original LocalReader Pro updated**: January 6, 2026
 ---
