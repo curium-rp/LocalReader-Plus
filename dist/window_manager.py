@@ -357,6 +357,8 @@ class WindowStateManager:
     def stamp_maximized(self, enabled: bool):
         target = bool(enabled)
         with self.lock:
+            if self._transitioning and self.state.get("is_fullscreen"):
+                return
             if self.state.get("is_maximized") == target and (not target or not self.state.get("is_fullscreen")):
                 return
             self.state["is_maximized"] = target
@@ -380,6 +382,44 @@ class WindowStateManager:
                 return
             self.state["is_fullscreen"] = False
         self._flush_to_disk()
+
+    def calculate_drag_restore_geometry(
+        self, screen_x: int, screen_y: int, client_x: int, client_y: int, current_width: int
+    ) -> tuple[int, int, int, int]:
+        with self.lock:
+            target_w = max(MIN_WIDTH, _as_int(self.state.get("width"), DEFAULT_WIDTH))
+            target_h = max(MIN_HEIGHT, _as_int(self.state.get("height"), DEFAULT_HEIGHT))
+
+        current_w = _as_int(current_width, 0)
+        if current_w and current_w > 0:
+            ratio = max(0.0, min(1.0, float(client_x) / float(current_w)))
+        else:
+            ratio = 0.5
+
+        new_x = int(round(screen_x - (ratio * target_w)))
+        new_y = int(round(screen_y - client_y))
+        new_y = max(0, new_y)
+
+        return new_x, new_y, target_w, target_h
+
+    def apply_drag_restore(self, window, new_x: int, new_y: int, width: int, height: int):
+        if window is None:
+            return
+        with self.lock:
+            self.state["is_fullscreen"] = False
+            self.state["is_maximized"] = False
+            self.state["pre_fullscreen_state"] = "normal"
+            self.state["width"] = width
+            self.state["height"] = height
+            self.state["x"] = new_x
+            self.state["y"] = new_y
+        try:
+            if hasattr(window, "resize"):
+                window.resize(width, height)
+            if hasattr(window, "move") and positioning_supported():
+                window.move(int(new_x), int(new_y))
+        except Exception as exc:
+            print(f"[WINDOW] Failed to apply drag restore bounds: {exc}")
 
     def apply_restored_bounds(self, window):
         if window is None:

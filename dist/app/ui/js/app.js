@@ -53,6 +53,8 @@ import {
   setHorizontalPageTurn,
   layoutSpreads,
   getSpreadIndex,
+  getNextSpreadPageIndex,
+  getPrevSpreadPageIndex,
 } from "./modules/horizontal.js";
 import { initShortcuts } from "./shortcuts.js";
 import { initSearch, closeSearchMode, handleSearchPopupKeys } from "./search.js";
@@ -465,15 +467,17 @@ document.getElementById("skipForward").onclick = async () => {
 initShortcuts({ closeSearchMode, handleSearchPopupKeys, closeSidebarMiniPopups });
 
 document.getElementById("prevPage").onclick = async () => {
-  if (state.viewPageIndex > 0) {
-    state.viewPageIndex--;
+  const prevIdx = getPrevSpreadPageIndex(state.viewPageIndex);
+  if (prevIdx !== state.viewPageIndex && prevIdx >= 0) {
+    state.viewPageIndex = prevIdx;
     state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
   }
 };
 document.getElementById("nextPage").onclick = async () => {
-  if (state.viewPageIndex < state.currentPages.length - 1) {
-    state.viewPageIndex++;
+  const nextIdx = getNextSpreadPageIndex(state.viewPageIndex);
+  if (nextIdx !== state.viewPageIndex && nextIdx < state.currentPages.length) {
+    state.viewPageIndex = nextIdx;
     state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
   }
@@ -481,16 +485,18 @@ document.getElementById("nextPage").onclick = async () => {
 
 setHorizontalPageTurn(async (dir) => {
   if (dir < 0) {
-    if (state.viewPageIndex > 0) {
-      state.viewPageIndex--;
+    const prevIdx = getPrevSpreadPageIndex(state.viewPageIndex);
+    if (prevIdx !== state.viewPageIndex && prevIdx >= 0) {
+      state.viewPageIndex = prevIdx;
       state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
       await renderPage();
       return true;
     }
     return false;
   }
-  if (state.viewPageIndex < state.currentPages.length - 1) {
-    state.viewPageIndex++;
+  const nextIdx = getNextSpreadPageIndex(state.viewPageIndex);
+  if (nextIdx !== state.viewPageIndex && nextIdx < state.currentPages.length) {
+    state.viewPageIndex = nextIdx;
     state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
     return true;
@@ -987,12 +993,6 @@ document.getElementById("ignoreListUI").addEventListener("click", (e) => {
 });
 
 document.getElementById("libraryPanel").addEventListener("click", async (e) => {
-  const st = e.target.closest('[data-action="select-doc"]');
-  if (st) {
-    selectDocById(st.dataset.id);
-    return;
-  }
-  
   const dt = e.target.closest('[data-action="delete-doc"]');
   if (dt) {
     if (dt.disabled) return; // 🌟 CONCURRENCY SHIELD: Block double-clicks
@@ -1014,6 +1014,16 @@ document.getElementById("libraryPanel").addEventListener("click", async (e) => {
         dt.classList.remove("opacity-50", "pointer-events-none");
       }
     }
+    return;
+  }
+
+  const st = e.target.closest('[data-action="select-doc"]') || e.target.closest('[data-doc-id]');
+  if (st) {
+    const docId = st.dataset.id || st.dataset.docId;
+    if (docId) {
+      selectDocById(docId);
+    }
+    return;
   }
 });
 

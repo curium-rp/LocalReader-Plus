@@ -9,6 +9,12 @@ FALLBACK_VOICES = {
     'cmn': 'zf_xiaoxiao'
 }
 
+# Distinctive Chinese indicators: particles, pronouns, and simplified characters
+# that never exist in standard Japanese Jouyou or Jinmeiyou Kanji
+CHINESE_INDICATORS = re.compile(
+    r'[你她它们这那麽么吗吧呢过给说很，谁从发对经让关见车还问门读语实现时头两开话电长东钱买网红题为产义变办个样无乐欢书]'
+)
+
 def _determine_chunk_lang(chunk: str, base_lang: str = 'en', is_jp_context: bool = False, is_cmn_context: bool = False) -> str:
     """Robust heuristics to determine the language script of a substring block."""
     if not chunk or not chunk.strip():
@@ -27,8 +33,15 @@ def _determine_chunk_lang(chunk: str, base_lang: str = 'en', is_jp_context: bool
     if cjk_kanji > 0: 
         if base_lang == 'ja': return 'ja'
         if base_lang in ('cmn', 'zh'): return 'cmn'
-        # Contextual Kanji Resolution
-        if is_jp_context: return 'ja'
+        
+        # Check Chinese specific indicators
+        if CHINESE_INDICATORS.search(chunk) or is_cmn_context:
+            return 'cmn'
+            
+        # Prioritize Japanese for short Kanji compounds, titles, or text without Chinese indicators
+        if is_jp_context or len(chunk.strip()) <= 25 or not CHINESE_INDICATORS.search(chunk):
+            return 'ja'
+            
         return 'cmn'
     
     # Rule 3: Latin Standard (English, Spanish, French, etc.)
@@ -78,7 +91,11 @@ def smart_polyglot_split(text: str, current_voice: str, lang_resolver: Callable[
 
     # 🌟 GLOBAL PRE-SCAN CONTEXT
     has_japanese_kana = bool(re.search(r'[\u3041-\u3096\u30A1-\u30FA]', text))
-    has_chinese_kanji = bool(re.search(r'[\u4E00-\u9FFF]', text)) and not has_japanese_kana
+    has_cmn_indicators = bool(CHINESE_INDICATORS.search(text))
+    has_cjk_kanji = bool(re.search(r'[\u4E00-\u9FFF]', text))
+
+    is_chinese_context = has_cjk_kanji and not has_japanese_kana and has_cmn_indicators
+    is_japanese_context = has_japanese_kana or (has_cjk_kanji and not has_cmn_indicators)
 
     # Standardized CJK + Fullwidth Punctuation blocks
     cjk_pattern = r'([\u3000-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF\u2000-\u206F]+)'
@@ -89,7 +106,7 @@ def smart_polyglot_split(text: str, current_voice: str, lang_resolver: Callable[
         if not part: continue
         evaluated_parts.append({
             'text': part,
-            'lang': _determine_chunk_lang(part, base_current_lang, has_japanese_kana, has_chinese_kanji)
+            'lang': _determine_chunk_lang(part, base_current_lang, is_japanese_context, is_chinese_context)
         })
         
     # 🌟 FIX 1: Two-Pass Nearest Neighbor Language Propagation
@@ -158,6 +175,16 @@ def smart_polyglot_split(text: str, current_voice: str, lang_resolver: Callable[
                 last_seg['text'] += space_char + seg['text']
                 last_seg['is_fallback'] = last_seg['is_fallback'] or seg['is_fallback']
             else:
-                merged_segments.append(seg)
+                # 🌟 CROSS-LANGUAGE BOUNDARY BRACKET SANITIZATION
+                # Strip trailing opening brackets from the preceding segment, e.g. "World (" -> "World"
+                last_seg['text'] = re.sub(r'[\(\[\{（【「『≪<"\'`]+$', '', last_seg['text']).strip()
+                # Strip leading closing brackets from the incoming segment
+                seg['text'] = re.sub(r'^[\)\]\}）】」』≫>"\'`]+', '', seg['text']).strip()
+                # Strip enclosing brackets on Latin annotations adjacent to Asian segments, e.g. "(Tokyo)" -> "Tokyo"
+                if last_seg['lang'] in ('ja', 'cmn') and seg['lang'] == 'en':
+                    seg['text'] = re.sub(r'^[\(\[\{（【「『≪<]+', '', seg['text'])
+                    seg['text'] = re.sub(r'[\)\]\}）】」』≫>]+$', '', seg['text']).strip()
+                if seg['text']:
+                    merged_segments.append(seg)
                 
     return merged_segments

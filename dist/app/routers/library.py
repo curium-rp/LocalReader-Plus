@@ -1363,7 +1363,7 @@ def _rewrite_epub_image_loading(fragment: str, loading: str) -> str:
 
 # Apply eager/lazy loading attribute across all pages based on content
 def apply_image_loading(pages: List[str]) -> List[str]:
-    """Standalone image HTML stays lazy. Mixed pages and <s> images become eager."""
+    """Standalone single image HTML stays lazy. Mixed pages, multi-image pages, and <s> images become eager."""
     if not pages:
         return pages
     out = []
@@ -1371,7 +1371,9 @@ def apply_image_loading(pages: List[str]) -> List[str]:
         if not page_html or "epub-image" not in page_html:
             out.append(page_html)
             continue
-        page_loading = "eager" if html_has_narrative_besides_media(page_html) else "lazy"
+        img_count = len(_EPUB_IMG_TAG.findall(page_html))
+        is_standalone = img_count == 1 and not html_has_narrative_besides_media(page_html)
+        page_loading = "lazy" if is_standalone else "eager"
         rewritten = _rewrite_epub_image_loading(page_html, page_loading)
         rewritten = _S_BLOCK.sub(
             lambda m: _rewrite_epub_image_loading(m.group(0), "eager"),
@@ -1779,9 +1781,11 @@ async def convert_epub(id: str, background_tasks: BackgroundTasks, file: UploadF
             chapter_mixed = html_has_narrative_besides_media(
                 (chapter_root.html if chapter_root is not None else tree.html) or ""
             )
-            img_loading = "eager" if chapter_mixed else "lazy"
+            img_elements = list(tree.css("img, image"))
+            is_standalone = (not chapter_mixed) and (len(img_elements) == 1)
+            img_loading = "lazy" if is_standalone else "eager"
 
-            for image in list(tree.css("img, image")):
+            for image in img_elements:
                 if image.parent is None:
                     continue
 

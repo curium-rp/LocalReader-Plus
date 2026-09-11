@@ -388,34 +388,44 @@ function setMaximizedChrome(maximized) {
   if (isMax) {
     document.documentElement.dataset.fullscreen = "false";
   }
+  if (document.documentElement.dataset.fullscreen === "true") {
+    return;
+  }
   const maxBtn = document.getElementById("winMaxBtn");
   const restoreBtn = document.getElementById("winRestoreBtn");
   maxBtn?.classList.toggle("hidden", isMax);
   restoreBtn?.classList.toggle("hidden", !isMax);
+  if (restoreBtn) restoreBtn.title = "Restore";
 }
 
 function setFullscreenChrome(fullscreen) {
   const isFs = !!fullscreen;
   document.documentElement.dataset.fullscreen = isFs ? "true" : "false";
+  const maxBtn = document.getElementById("winMaxBtn");
+  const restoreBtn = document.getElementById("winRestoreBtn");
   if (isFs) {
     document.documentElement.dataset.maximized = "false";
-    const maxBtn = document.getElementById("winMaxBtn");
-    const restoreBtn = document.getElementById("winRestoreBtn");
-    maxBtn?.classList.toggle("hidden", false);
-    restoreBtn?.classList.toggle("hidden", true);
+    maxBtn?.classList.toggle("hidden", true);
+    restoreBtn?.classList.toggle("hidden", false);
+    if (restoreBtn) restoreBtn.title = "Exit Fullscreen (F11)";
+  } else {
+    const isMax = document.documentElement.dataset.maximized === "true";
+    maxBtn?.classList.toggle("hidden", isMax);
+    restoreBtn?.classList.toggle("hidden", !isMax);
+    if (restoreBtn) restoreBtn.title = "Restore";
   }
 }
 
 function applyWindowState(state) {
   if (!state || typeof state !== "object") return;
-  if (state.maximized && state.fullscreen) {
-    console.warn("[WINDOW] Conflicting window state received (both maximized & fullscreen). Resetting.");
-    setMaximizedChrome(false);
-    setFullscreenChrome(false);
+  if (state.fullscreen) {
+    setFullscreenChrome(true);
     return;
   }
-  if (typeof state.fullscreen === "boolean") setFullscreenChrome(state.fullscreen);
-  if (typeof state.maximized === "boolean") setMaximizedChrome(state.maximized);
+  setFullscreenChrome(false);
+  if (typeof state.maximized === "boolean") {
+    setMaximizedChrome(state.maximized);
+  }
 }
 
 function wireNoDragChrome() {
@@ -438,12 +448,14 @@ async function toggleMaximize() {
   if (typeof maximized === "boolean") setMaximizedChrome(maximized);
   const state = await nativeCall("get_state");
   applyWindowState(state);
+  window.dispatchEvent(new Event("resize"));
 }
 
 async function toggleFullscreen() {
   await nativeCall("fullscreen_toggle");
   const state = await nativeCall("get_state");
   applyWindowState(state);
+  window.dispatchEvent(new Event("resize"));
 }
 
 function wireWindowControls() {
@@ -487,6 +499,74 @@ function wireWindowControls() {
     e.stopPropagation();
     toggleFullscreen();
   }, true);
+}
+
+function wireTitlebarDrag() {
+  const dragRegion = document.getElementById("titlebarDrag");
+  const topBar = document.getElementById("appTopBar");
+  const targetEl = dragRegion || topBar;
+  if (!targetEl) return;
+
+  let isDown = false;
+  let startScreenX = 0;
+  let startScreenY = 0;
+  let startClientX = 0;
+  let startClientY = 0;
+  let hasDragged = false;
+  const DRAG_THRESHOLD = 5;
+
+  targetEl.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest("button, input, select, .no-drag, .pywebview-no-drag")) return;
+
+    const isMax = document.documentElement.dataset.maximized === "true";
+    const isFs = document.documentElement.dataset.fullscreen === "true";
+    if (!isMax && !isFs) return;
+
+    isDown = true;
+    hasDragged = false;
+    startScreenX = Math.round(e.screenX || 0);
+    startScreenY = Math.round(e.screenY || 0);
+    startClientX = Math.round(e.clientX || 0);
+    startClientY = Math.round(e.clientY || 0);
+  });
+
+  window.addEventListener("pointermove", (e) => {
+    if (!isDown || hasDragged) return;
+
+    const currentScreenX = Math.round(e.screenX || 0);
+    const currentScreenY = Math.round(e.screenY || 0);
+    const dist = Math.hypot(currentScreenX - startScreenX, currentScreenY - startScreenY);
+
+    if (dist >= DRAG_THRESHOLD) {
+      hasDragged = true;
+      isDown = false;
+
+      setMaximizedChrome(false);
+      setFullscreenChrome(false);
+
+      const api = nativeApi();
+      if (api?.start_titlebar_drag) {
+        const winWidth = window.innerWidth;
+        api.start_titlebar_drag(
+          currentScreenX,
+          currentScreenY,
+          startClientX,
+          startClientY,
+          winWidth
+        );
+      }
+    }
+  });
+
+  const reset = () => {
+    isDown = false;
+    hasDragged = false;
+  };
+
+  window.addEventListener("pointerup", reset);
+  window.addEventListener("pointercancel", reset);
+  window.addEventListener("blur", reset);
 }
 
 function wireSidebarToggle() {
@@ -536,6 +616,7 @@ export function initTopBar() {
   initViewMenu();
   renderThemeMenu();
   wireWindowControls();
+  wireTitlebarDrag();
   wireSidebarToggle();
   wireClock();
   wireNoDragChrome();

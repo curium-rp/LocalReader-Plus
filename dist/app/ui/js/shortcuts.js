@@ -18,10 +18,34 @@ import { isHorizontalMode, flipSpread } from "./modules/horizontal.js";
 import { closeAllDrawers } from "./modules/ui.js";
 
 export function initShortcuts({ closeSearchMode, handleSearchPopupKeys, closeSidebarMiniPopups }) {
-window.addEventListener("keydown", (e) => {
-  if (handleSearchPopupKeys(e)) return;
+  // Suppress default webview mouse back (button 3) and forward (button 4) navigation
+  const suppressMouseNav = (e) => {
+    if (e.button === 3 || e.button === 4) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+  window.addEventListener("pointerdown", suppressMouseNav, true);
+  window.addEventListener("pointerup", suppressMouseNav, true);
+  window.addEventListener("mousedown", suppressMouseNav, true);
+  window.addEventListener("mouseup", suppressMouseNav, true);
+  window.addEventListener("click", suppressMouseNav, true);
+  window.addEventListener("auxclick", suppressMouseNav, true);
 
-  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
+  window.addEventListener("keydown", (e) => {
+    if (handleSearchPopupKeys(e)) return;
+
+    // Suppress browser history back / forward shortcut keys
+    if (
+      e.key === "BrowserBack" ||
+      e.key === "BrowserForward" ||
+      (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight"))
+    ) {
+      e.preventDefault();
+      return;
+    }
+
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
   
   if (e.code === "Space") {
     e.preventDefault();

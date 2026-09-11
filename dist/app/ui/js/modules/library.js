@@ -2,7 +2,7 @@ import { state, normalizeBcp47, langFromHtmlMarkup, guessLangFromText } from "./
 import { fetchJSON, fetchBlob } from "./api.js";
 import { showToast, renderIcons, stripHTML, highlightSearchTerm, showFootnoteModal, setMonitorPreview, syncBackToReadingButton } from "./ui.js";
 import { applyReaderTypography, getRenderState } from "./typography.js";
-import { isHorizontalMode, layoutSpreads, revealInSpread, updateHorizontalSpreadFocus } from "./horizontal.js";
+import { isHorizontalMode, layoutSpreads, revealInSpread, updateHorizontalSpreadFocus, wantsSpreadTwoPage, isStandaloneIllustrationPage, getActiveSpreadPages } from "./horizontal.js";
 import { indexDocument, updateProgressDisplay, getProgressMetrics } from "./progress.js";
 
 // Tags that survive EPUB/PDF restore; stripped when extracting spoken/preview text.
@@ -102,12 +102,17 @@ export function renderLibraryCard(item) {
   const { current, total, percent } = resolveLibraryProgress(item);
   const div = document.createElement("div");
   div.dataset.docId = item.id;
-  div.className = `group p-3 rounded-xl cursor-pointer border transition-all ${
-    isSelected ? "bg-blue-600/10 border-blue-600/50 text-blue-400" : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:border-zinc-700"
+  div.dataset.id = item.id;
+  div.dataset.action = "select-doc";
+  div.title = item.fileName;
+  div.className = `group select-none p-3 rounded-xl cursor-pointer border transition-all ${
+    isSelected
+      ? "bg-blue-600/10 border-blue-600/50 text-blue-400 hover:bg-blue-600/15"
+      : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800/40"
   }`;
   div.innerHTML = `
                 <div class="flex items-start justify-between gap-2">
-                    <div class="flex items-start gap-3 flex-1 min-w-0" data-action="select-doc" data-id="${item.id}" title="${item.fileName}">
+                    <div class="flex items-start gap-3 flex-1 min-w-0" data-action="select-doc" data-id="${item.id}">
                         <i data-lucide="file" class="w-4 h-4 mt-0.5 shrink-0"></i>
                         <div class="flex-1 min-w-0">
                             <p class="text-xs font-bold leading-tight truncate">${item.fileName}</p>
@@ -118,7 +123,7 @@ export function renderLibraryCard(item) {
                             </p>
                         </div>
                     </div>
-                    <button data-action="delete-doc" data-id="${item.id}" class="p-1 hover:bg-red-500/20 hover:text-red-500 rounded-md transition-colors opacity-0 group-hover:opacity-100 shrink-0">
+                    <button data-action="delete-doc" data-id="${item.id}" title="Delete book" class="p-1.5 hover:bg-red-500/20 hover:text-red-500 rounded-md transition-colors opacity-0 group-hover:opacity-100 shrink-0 relative z-10">
                         <i data-lucide="x" class="w-3.5 h-3.5"></i>
                     </button>
                 </div>`;
@@ -944,7 +949,19 @@ export async function renderPage() {
     if (textContent) {
         textContent.innerHTML = "";
 
-        textContent.innerHTML = pageText;
+        let contentMarkup = pageText;
+        if (isHorizontalMode() && wantsSpreadTwoPage()) {
+            const spreadPages = getActiveSpreadPages(state.viewPageIndex);
+            if (spreadPages.length === 2) {
+                const pageTextA = state.currentPages[spreadPages[0]] || "";
+                const pageTextB = state.currentPages[spreadPages[1]] || "";
+                contentMarkup = `<div class="spread-slot spread-slot-left" data-page-index="${spreadPages[0]}">${pageTextA}</div><div class="spread-slot spread-slot-right" data-page-index="${spreadPages[1]}">${pageTextB}</div>`;
+            } else if (isStandaloneIllustrationPage(state.viewPageIndex)) {
+                contentMarkup = `<div class="spread-slot spread-slot-isolated" data-page-index="${state.viewPageIndex}">${pageText}</div>`;
+            }
+        }
+
+        textContent.innerHTML = contentMarkup;
         injectParagraphSentences(textContent);
         const readerElements = collectReaderElements(textContent);
 
@@ -1009,8 +1026,9 @@ export async function renderPage() {
                 const hMatch = cleanS.match(/\[(H[1-6])\](.*?)\[\/\1\]/);
                 const imgMatch = cleanS.match(/\[IMAGE_(\d+)\]/);
 
+                const fallbackImgLoading = state.viewSentences.length === 1 ? "lazy" : "eager";
                 if (hMatch) span.innerHTML = `<${hMatch[1].toLowerCase()} class="book-heading ${hMatch[1].toLowerCase()}">${hMatch[2]}</${hMatch[1].toLowerCase()}>`;
-                else if (imgMatch) span.innerHTML = `<img src="/api/library/image/${state.currentDoc?.id}/${imgMatch[1]}" class="epub-image" onload="if(this.naturalWidth < 150 && this.naturalHeight < 150) { this.classList.add('epub-icon'); }" loading="lazy" alt="Illustration" />`;
+                else if (imgMatch) span.innerHTML = `<img src="/api/library/image/${state.currentDoc?.id}/${imgMatch[1]}" class="epub-image" onload="if(this.naturalWidth < 150 && this.naturalHeight < 150) { this.classList.add('epub-icon'); }" loading="${fallbackImgLoading}" alt="Illustration" />`;
                 else if (cleanS.includes("[SCENE_BREAK]")) span.innerHTML = `<div class="scene-break">♦ ♦ ♦</div>`;
                 else {
                     if (cleanS.includes("[DIM]")) span.innerHTML = cleanS.replace(/\[DIM\](.*?)\[\/DIM\]/g, '<span class="dimmed-text">$1</span>');
@@ -1166,7 +1184,9 @@ export async function renderPage() {
     const pageHasNarrative = pageClone ? (pageClone.textContent || '').trim().length > 0 : false;
     const parentMixed = Array.from(pageImages).some(isMixedInlineImage);
     const htmlEager = Array.from(pageImages).some(img => (img.loading || '').toLowerCase() === 'eager');
-    const hasInlineImages = pageImages.length > 0 && (pageHasNarrative || parentMixed || htmlEager);
+    const isSpreadSlot = !!(textContent && textContent.querySelector('.spread-slot'));
+    const isMultiImage = pageImages.length > 1 && !isSpreadSlot;
+    const hasInlineImages = pageImages.length > 0 && (pageHasNarrative || parentMixed || htmlEager || isMultiImage);
 
     if (pageImages.length > 0) {
 
@@ -1227,6 +1247,20 @@ export async function renderPage() {
             if (pending.length > 0) Promise.all(pending).then(settle);
             else settle();
         } else {
+            const onIllustrationSettled = () => {
+                if (isHorizontalMode()) {
+                    void layoutSpreads({ reset: false }).then(() => {
+                        const activeEl = document.querySelector("#textContent .active-sentence");
+                        if (activeEl && state.viewPageIndex === state.readingPageIndex && state.autoScrollEnabled) {
+                            revealInSpread(activeEl);
+                        }
+                        updateProgressDisplay();
+                        if (typeof updateActiveTOC === "function") updateActiveTOC();
+                        updateHorizontalSpreadFocus();
+                    });
+                }
+            };
+
             const imgObserver = new IntersectionObserver((entries, observer) => {
                 entries.forEach(entry => {
                     if (entry.isIntersecting) {
@@ -1236,26 +1270,39 @@ export async function renderPage() {
                             markIconIfSmall(img);
                             img.classList.remove('lazy-prep');
                             img.classList.add('lazy-loaded');
+                            requestAnimationFrame(onIllustrationSettled);
                         };
 
                         if (img.complete) {
                             reveal();
                         } else {
                             img.addEventListener('load', reveal, { once: true });
+                            img.addEventListener('error', reveal, { once: true });
                         }
 
                         observer.unobserve(img);
                     }
                 });
-            }, { root: null, rootMargin: '800px 0px' });
+            }, { root: null, rootMargin: '800px 800px' });
 
             pageImages.forEach(img => {
                 markIconIfSmall(img);
+                if (isHorizontalMode()) {
+                    img.loading = "eager";
+                    img.decoding = "async";
+                }
                 if (img.complete) {
                     img.classList.add('lazy-loaded');
+                    requestAnimationFrame(onIllustrationSettled);
                 } else {
                     img.classList.add('lazy-prep');
                     imgObserver.observe(img);
+                    img.addEventListener('load', () => {
+                        markIconIfSmall(img);
+                        img.classList.remove('lazy-prep');
+                        img.classList.add('lazy-loaded');
+                        requestAnimationFrame(onIllustrationSettled);
+                    }, { once: true });
                 }
             });
         }

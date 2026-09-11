@@ -513,6 +513,12 @@ body.reader-two-page #readerContent {
   z-index: 0;
 }
 
+html[data-maximized="true"] #titlebarDrag,
+html[data-fullscreen="true"] #titlebarDrag {
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+}
+
 .pywebview-drag-region {
   -webkit-app-region: drag;
 }
@@ -1426,7 +1432,8 @@ img.epub-image:not(.epub-icon).active-sentence {
 
 #imageViewerModal {
   position: fixed;
-  inset: 0;
+  top: 32px;
+  inset: 32px 0 0 0;
   background: rgba(0, 0, 0, 0.95);
   z-index: 9999;
   display: flex;
@@ -1446,7 +1453,7 @@ img.epub-image:not(.epub-icon).active-sentence {
 
 #imageViewerImg {
   max-width: 95vw;
-  max-height: 95vh;
+  max-height: calc(95vh - 32px);
   object-fit: contain;
   border-radius: 8px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
