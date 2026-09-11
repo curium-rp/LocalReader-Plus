@@ -104,12 +104,12 @@ def _native_hwnd(form):
 
 
 def _invoke_on_ui(form, fn):
-    """Run fn on the WinForms UI thread. pywebview JS-API calls arrive on a worker."""
+    """Run fn on the WinForms UI thread asynchronously to prevent deadlocks."""
     try:
         if getattr(form, "InvokeRequired", False):
-            from System import Func, Type
+            from System import Action
 
-            form.Invoke(Func[Type](fn))
+            form.BeginInvoke(Action(fn))
             return
     except Exception as e:
         print(f"[WINDOW] UI invoke failed: {e}")
@@ -207,20 +207,119 @@ class WindowApi:
         window.events.restored += self._on_native_restored
 
     def _logical_maximized(self):
-        if native_is_fullscreen(self._window):
-            if self._window_state:
-                return self._window_state.state.get("pre_fullscreen_state") == "maximized" or bool(
-                    self._window_state.state.get("is_maximized")
-                )
-            return self._maximized
+        if native_is_fullscreen(self._window) or self._fullscreen:
+            return False
         if getattr(self._window, "native", None):
             return native_is_maximized(self._window)
         return self._maximized
 
     def _is_expanded(self):
         if not self._window:
-            return self._maximized or self._fullscreen
-        return native_is_fullscreen(self._window) or native_is_maximized(self._window)
+            return bool(self._maximized or self._fullscreen)
+        return bool(
+            native_is_fullscreen(self._window)
+            or native_is_maximized(self._window)
+            or self._maximized
+            or self._fullscreen
+        )
+
+    def _restore_window(self):
+        if not self._window:
+            return False
+        if self._window_state:
+            self._window_state.begin_transition()
+
+        form = getattr(self._window, "native", None)
+        if form is not None and platform.system() == "Windows":
+            def _do_restore():
+                try:
+                    if native_is_fullscreen(self._window):
+                        self._window.toggle_fullscreen()
+                    from System.Windows.Forms import FormWindowState
+                    form.WindowState = FormWindowState.Normal
+                    setup_standard_borderless(self._window)
+                    if self._window_state:
+                        self._window_state.apply_restored_bounds(self._window)
+                        self._window_state.stamp_maximized(False)
+                        self._window_state.exit_fullscreen()
+                except Exception as e:
+                    print(f"[WINDOW] Restore failed: {e}")
+                self._finish_transition()
+
+            _invoke_on_ui(form, _do_restore)
+            self._maximized = False
+            self._fullscreen = False
+            return False
+        else:
+            if native_is_fullscreen(self._window) or self._fullscreen:
+                self._window.toggle_fullscreen()
+            self._window.restore()
+            if self._window_state:
+                self._window_state.apply_restored_bounds(self._window)
+                self._window_state.stamp_maximized(False)
+                self._window_state.exit_fullscreen()
+            self._maximized = False
+            self._fullscreen = False
+            self._finish_transition()
+            return False
+
+    def _maximize_window(self):
+        if not self._window:
+            return False
+        if self._window_state:
+            self._window_state.begin_transition()
+
+        form = getattr(self._window, "native", None)
+        if form is not None and platform.system() == "Windows":
+            def _do_max():
+                try:
+                    from System.Windows.Forms import FormWindowState
+                    form.WindowState = FormWindowState.Maximized
+                    if self._window_state:
+                        self._window_state.stamp_maximized(True)
+                except Exception as e:
+                    print(f"[WINDOW] Maximize failed: {e}")
+                self._finish_transition()
+
+            _invoke_on_ui(form, _do_max)
+            self._maximized = True
+            self._fullscreen = False
+            return True
+        else:
+            self._window.maximize()
+            self._maximized = True
+            self._fullscreen = False
+            if self._window_state:
+                self._window_state.stamp_maximized(True)
+            self._finish_transition()
+            return True
+
+    def _enter_fullscreen(self):
+        if not self._window:
+            return False
+        if self._window_state:
+            self._window_state.begin_transition()
+            self._window_state.enter_fullscreen("normal")
+
+        form = getattr(self._window, "native", None)
+        if form is not None and platform.system() == "Windows":
+            def _do_fs():
+                try:
+                    self._window.toggle_fullscreen()
+                except Exception as e:
+                    print(f"[WINDOW] Fullscreen failed: {e}")
+                self._finish_transition()
+
+            _invoke_on_ui(form, _do_fs)
+            self._fullscreen = True
+            self._maximized = False
+            return True
+        else:
+            self._window.toggle_fullscreen()
+            self._fullscreen = True
+            self._maximized = False
+            self._finish_transition()
+            return True
 
     def _native_is_maximized(self):
         return self._logical_maximized()
@@ -255,14 +354,14 @@ class WindowApi:
         self._sync_chrome(self._logical_maximized())
 
     def _on_native_maximized(self):
-        if native_is_fullscreen(self._window):
+        if native_is_fullscreen(self._window) or self._fullscreen or (self._window_state and self._window_state.state.get("is_fullscreen")):
             return
         self._sync_chrome(True)
         if self._window_state:
             self._window_state.stamp_maximized(True)
 
     def _on_native_restored(self):
-        if native_is_fullscreen(self._window):
+        if native_is_fullscreen(self._window) or self._fullscreen or (self._window_state and self._window_state.state.get("is_fullscreen")):
             return
         self._sync_chrome(False)
         if self._window_state:
@@ -277,7 +376,7 @@ class WindowApi:
             self._window.minimize()
 
     def get_state(self):
-        fs = native_is_fullscreen(self._window) if self._window else False
+        fs = (native_is_fullscreen(self._window) or self._fullscreen) if self._window else False
         is_max = False if fs else bool(self._logical_maximized())
         return {
             "maximized": is_max,
@@ -290,59 +389,17 @@ class WindowApi:
     def maximize_toggle(self):
         if not self._window:
             return self._maximized
-        if native_is_fullscreen(self._window):
-            return self._logical_maximized()
-        if native_is_maximized(self._window):
-            if self._window_state:
-                self._window_state.begin_transition()
-            self._window.restore()
-            if self._window_state:
-                self._window_state.apply_restored_bounds(self._window)
-                self._window_state.stamp_maximized(False)
-                self._finish_transition()
-            self._sync_chrome(False)
-            return False
-        if self._window_state:
-            self._window_state.begin_transition()
-        self._window.maximize()
-        if self._window_state:
-            self._window_state.stamp_maximized(True)
-            self._finish_transition()
-        self._sync_chrome(True)
-        return True
+        if self._is_expanded():
+            return self._restore_window()
+        return self._maximize_window()
 
     def fullscreen_toggle(self):
         if not self._window:
             return False
-        entering = not native_is_fullscreen(self._window)
-        if self._window_state:
-            self._window_state.begin_transition()
-        if entering:
-            pre = "maximized" if native_is_maximized(self._window) else "normal"
-            if self._window_state:
-                self._window_state.enter_fullscreen(pre)
-            self._window.toggle_fullscreen()
-            self._sync_fullscreen_chrome(True)
-            self._sync_chrome(pre == "maximized")
-        else:
-            pre = "normal"
-            if self._window_state:
-                pre = self._window_state.state.get("pre_fullscreen_state", "normal")
-                self._window_state.exit_fullscreen()
-            self._window.toggle_fullscreen()
-            if pre == "maximized":
-                self._window.maximize()
-                if self._window_state:
-                    self._window_state.stamp_maximized(True)
-                self._sync_chrome(True)
-            else:
-                if self._window_state:
-                    self._window_state.apply_restored_bounds(self._window)
-                    self._window_state.stamp_maximized(False)
-                self._sync_chrome(False)
-            self._sync_fullscreen_chrome(False)
-        self._finish_transition()
-        return entering
+        if self._is_expanded():
+            self._restore_window()
+            return False
+        return self._enter_fullscreen()
 
     def close(self):
         if self._window:
@@ -532,6 +589,155 @@ class WindowApi:
             self._resize_darwin(edge)
         # Each platform helper is self-contained; no fallback block here.
 
+    def _move_windows(self):
+        form = getattr(self._window, "native", None)
+        if not form:
+            return
+
+        def _run():
+            try:
+                import ctypes
+                hwnd = _native_hwnd(form)
+                if not hwnd:
+                    return
+                user32 = ctypes.windll.user32
+                user32.ReleaseCapture()
+                user32.PostMessageW(hwnd, 0x00A1, 2, 0)  # WM_NCLBUTTONDOWN, HTCAPTION = 2
+            except Exception as e:
+                print(f"[WINDOW] Windows native drag failed: {e}")
+
+        _invoke_on_ui(form, _run)
+
+    def _move_linux(self, screen_x: int, screen_y: int):
+        gtk_win = getattr(self._window, "native", None)
+        if not gtk_win:
+            return
+
+        def _do_drag():
+            try:
+                rx = int(screen_x)
+                ry = int(screen_y)
+                if rx == 0 and ry == 0:
+                    display = gtk_win.get_display()
+                    seat = display.get_default_seat() if hasattr(display, "get_default_seat") else None
+                    device = seat.get_pointer() if seat else None
+                    if device:
+                        _, rx, ry = device.get_position()
+                    else:
+                        _, rx, ry, _ = display.get_pointer()
+                gtk_win.begin_move_drag(1, int(rx), int(ry), 0)
+            except Exception as e:
+                print(f"[WINDOW] Linux begin_move_drag failed: {e}")
+            return False
+
+        try:
+            from gi.repository import GLib
+            GLib.idle_add(_do_drag)
+        except Exception:
+            _do_drag()
+
+    def _move_darwin(self):
+        ns_win = getattr(self._window, "native", None)
+        if not ns_win:
+            return
+
+        def _run_cocoa():
+            try:
+                from AppKit import (
+                    NSApp,
+                    NSEvent,
+                    NSEventMaskLeftMouseDragged,
+                    NSEventMaskLeftMouseUp,
+                    NSEventTrackingRunLoopMode,
+                )
+                from Foundation import NSDate, NSPoint
+
+                initial_origin = ns_win.frame().origin
+                start_mouse = NSEvent.mouseLocation()
+                mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+
+                while True:
+                    event = NSApp.nextEventMatchingMask_untilDate_inMode_dequeue_(
+                        mask,
+                        NSDate.distantFuture(),
+                        NSEventTrackingRunLoopMode,
+                        True,
+                    )
+                    if not event or event.type() == 2:  # NSLeftMouseUp
+                        break
+                    if event.type() == 6:  # NSLeftMouseDragged
+                        curr = NSEvent.mouseLocation()
+                        dx = curr.x - start_mouse.x
+                        dy = curr.y - start_mouse.y
+                        ns_win.setFrameOrigin_(NSPoint(initial_origin.x + dx, initial_origin.y + dy))
+            except Exception as e:
+                print(f"[WINDOW] macOS native move loop failed: {e}")
+
+        try:
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(_run_cocoa)
+        except Exception:
+            threading.Thread(target=_run_cocoa, daemon=True).start()
+
+    def start_titlebar_drag(self, screen_x: int, screen_y: int, client_x: int, client_y: int, current_width: int = 0):
+        if not self._window:
+            return
+
+        is_fs = native_is_fullscreen(self._window)
+        is_max = native_is_maximized(self._window)
+
+        if not is_fs and not is_max:
+            return
+
+        if self._window_state:
+            self._window_state.begin_transition()
+
+        self._maximized = False
+        self._fullscreen = False
+
+        new_x, new_y, target_w, target_h = (
+            self._window_state.calculate_drag_restore_geometry(screen_x, screen_y, client_x, client_y, current_width)
+            if self._window_state
+            else (screen_x - 200, max(0, screen_y - 20), 1200, 800)
+        )
+
+        form = getattr(self._window, "native", None)
+        if form is not None and platform.system() == "Windows":
+            def _do_restore():
+                try:
+                    if native_is_fullscreen(self._window):
+                        self._window.toggle_fullscreen()
+                        if self._window_state:
+                            self._window_state.exit_fullscreen()
+                        setup_standard_borderless(self._window)
+                    from System.Windows.Forms import FormWindowState
+                    form.WindowState = FormWindowState.Normal
+                except Exception as e:
+                    print(f"[WINDOW] Drag restore failed: {e}")
+                if self._window_state:
+                    self._window_state.apply_drag_restore(self._window, new_x, new_y, target_w, target_h)
+                self._finish_transition()
+
+            _invoke_on_ui(form, _do_restore)
+            return
+
+        if is_fs:
+            self._window.toggle_fullscreen()
+            if self._window_state:
+                self._window_state.exit_fullscreen()
+
+        self._window.restore()
+        if self._window_state:
+            self._window_state.apply_drag_restore(self._window, new_x, new_y, target_w, target_h)
+        self._finish_transition()
+
+        sys_platform = platform.system()
+        if sys_platform == "Linux":
+            self._move_linux(screen_x, screen_y)
+        elif sys_platform == "Darwin":
+            self._move_darwin()
+
+
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -619,17 +825,13 @@ def main():
                 want_max = False
                 window_state.stamp_maximized(False)
             if want_fs:
-                window.toggle_fullscreen()
-                api._sync_fullscreen_chrome(True)
-                api._sync_chrome(False)
+                api._enter_fullscreen()
             elif want_max:
-                window.maximize()
-                api._sync_fullscreen_chrome(False)
-                api._sync_chrome(True)
+                api._maximize_window()
             else:
                 api._sync_fullscreen_chrome(False)
                 api._sync_chrome(False)
-            api._finish_transition()
+                api._finish_transition()
             threading.Thread(target=attach_ui, daemon=True).start()
 
         def on_resized(width=None, height=None):

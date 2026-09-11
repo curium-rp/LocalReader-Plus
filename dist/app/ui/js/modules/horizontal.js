@@ -93,9 +93,93 @@ function wantsNewspaperTwoPage() {
   );
 }
 
-function wantsSpreadTwoPage() {
+export function wantsSpreadTwoPage() {
   const text = textEl();
   return !!(text && text.classList.contains("two-page") && twoPageFits() && isHorizontalMode());
+}
+
+const NARRATIVE_CHARS_REGEX = /[a-zA-Z0-9\u00C0-\u024F\u0400-\u04FF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]/;
+
+export function isStandaloneIllustrationPage(pageIndex) {
+  const pages = state.currentPages;
+  if (!pages || pageIndex < 0 || pageIndex >= pages.length) return false;
+  const html = pages[pageIndex];
+  if (!html || typeof html !== "string") return false;
+
+  if (!html.includes("<img") && !html.includes("<image")) {
+    return false;
+  }
+
+  const imgMatches = html.match(/<(?:img|image)\b[^>]*>/gi) || [];
+  if (imgMatches.length !== 1) {
+    return false;
+  }
+
+  const stripped = html
+    .replace(/<(?:svg|picture)\b[^>]*>[\s\S]*?<\/(?:svg|picture)>/gi, " ")
+    .replace(/<(?:img|image)\b[^>]*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z0-9#]+;/gi, " ")
+    .trim();
+
+  return !NARRATIVE_CHARS_REGEX.test(stripped);
+}
+
+export function getActiveSpreadPages(pageIndex) {
+  const pages = state.currentPages || [];
+  if (pageIndex < 0 || pageIndex >= pages.length) return [pageIndex];
+
+  if (!isHorizontalMode() || !wantsSpreadTwoPage()) {
+    return [pageIndex];
+  }
+
+  if (!isStandaloneIllustrationPage(pageIndex)) {
+    return [pageIndex];
+  }
+
+  let runStart = pageIndex;
+  while (runStart > 0 && isStandaloneIllustrationPage(runStart - 1)) {
+    runStart--;
+  }
+
+  const offsetInRun = pageIndex - runStart;
+  if (offsetInRun % 2 === 0) {
+    const nextIdx = pageIndex + 1;
+    if (nextIdx < pages.length && isStandaloneIllustrationPage(nextIdx)) {
+      return [pageIndex, nextIdx];
+    }
+    return [pageIndex];
+  } else {
+    const prevIdx = pageIndex - 1;
+    return [prevIdx, pageIndex];
+  }
+}
+
+export function getNextSpreadPageIndex(currentIndex) {
+  const pages = state.currentPages || [];
+  if (currentIndex >= pages.length - 1) return currentIndex;
+
+  if (isHorizontalMode() && wantsSpreadTwoPage()) {
+    const activeSpread = getActiveSpreadPages(currentIndex);
+    if (activeSpread.length === 2) {
+      return Math.min(pages.length - 1, activeSpread[1] + 1);
+    }
+  }
+  return Math.min(pages.length - 1, currentIndex + 1);
+}
+
+export function getPrevSpreadPageIndex(currentIndex) {
+  if (currentIndex <= 0) return 0;
+
+  if (isHorizontalMode() && wantsSpreadTwoPage()) {
+    const activeSpread = getActiveSpreadPages(currentIndex);
+    const startIdx = activeSpread[0];
+    if (startIdx <= 0) return 0;
+    const targetIdx = startIdx - 1;
+    const targetSpread = getActiveSpreadPages(targetIdx);
+    return targetSpread[0];
+  }
+  return Math.max(0, currentIndex - 1);
 }
 
 function syncLayoutClasses() {
@@ -383,7 +467,48 @@ function afterLayout(cb) {
   requestAnimationFrame(cb);
 }
 
+function ensureImagesLoadedForLayout() {
+  const text = textEl();
+  if (!text) return;
+  const pendingImgs = text.querySelectorAll("img.epub-image:not(.epub-icon)");
+  pendingImgs.forEach((img) => {
+    if (!img.complete && !img.dataset.layoutBound) {
+      img.dataset.layoutBound = "true";
+      const onDone = () => {
+        delete img.dataset.layoutBound;
+        if (isHorizontalMode()) {
+          layoutSpreads({ reset: false });
+        } else if (state.autoScrollEnabled && state.viewPageIndex === state.readingPageIndex) {
+          realignVerticalFocus();
+        }
+      };
+      img.addEventListener("load", onDone, { once: true });
+      img.addEventListener("error", onDone, { once: true });
+    }
+  });
+}
+
+export function realignVerticalFocus() {
+  if (!state.currentDoc || !state.autoScrollEnabled || state.viewPageIndex !== state.readingPageIndex) {
+    syncBackToReadingButton();
+    return;
+  }
+  if (isHorizontalMode()) return;
+  const scroller = document.querySelector(".content-area");
+  const activeEl = document.querySelector("#textContent .active-sentence");
+  if (scroller && activeEl) {
+    const elRect = activeEl.getBoundingClientRect();
+    const containerRect = scroller.getBoundingClientRect();
+    const relativeTop = elRect.top - containerRect.top + scroller.scrollTop;
+    const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
+    scroller.scrollTop = Math.max(0, centerPosition);
+    if (typeof updateActiveTOC === "function") updateActiveTOC();
+  }
+  syncBackToReadingButton();
+}
+
 let isProgrammaticScroll = false;
+let isResizeReflowing = false;
 
 export function layoutSpreads({ reset = false, spreadIndex = null } = {}) {
   bindListeners();
@@ -407,6 +532,16 @@ export function layoutSpreads({ reset = false, spreadIndex = null } = {}) {
     clearPaneHeight();
     if (text) text.scrollLeft = 0;
     if (pane) pane.scrollLeft = 0;
+
+    if (state.autoScrollEnabled && state.viewPageIndex === state.readingPageIndex) {
+      afterLayout(() => {
+        realignVerticalFocus();
+        setTimeout(realignVerticalFocus, 100);
+      });
+    } else {
+      syncBackToReadingButton();
+    }
+
     layoutLock = false;
     if (pendingLayout) {
       const nextArgs = pendingLayout;
@@ -431,6 +566,7 @@ export function layoutSpreads({ reset = false, spreadIndex = null } = {}) {
         if (gen !== layoutGen) return;
         setPageBox();
         setColumnMetrics();
+        ensureImagesLoadedForLayout();
         const next = getScroller();
         if (!next) return;
         const landing = pendingSpread;
@@ -565,18 +701,24 @@ export function revealInSpread(el) {
 function onViewportChange() {
   const sidebar = document.querySelector(".sidebar");
   if (sidebar && sidebar.classList.contains("animating")) return;
+  isResizeReflowing = true;
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
-    layoutSpreads();
+    layoutSpreads().finally(() => {
+      setTimeout(() => {
+        isResizeReflowing = false;
+      }, 150);
+    });
   }, 80);
 }
 
 let spreadScrollTimer = null;
 function onScrollerScroll() {
   if (!isHorizontalMode()) return;
-  if (window.isJumpingCamera || isProgrammaticScroll) return;
+  if (window.isJumpingCamera || isProgrammaticScroll || isResizeReflowing) return;
   clearTimeout(spreadScrollTimer);
   spreadScrollTimer = setTimeout(() => {
+    if (isResizeReflowing) return;
     updateHorizontalSpreadFocus();
   }, 100);
 }

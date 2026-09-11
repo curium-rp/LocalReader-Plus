@@ -374,6 +374,31 @@ def fix_broken_words(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+JP_DIGIT_MAP = {
+    '0': 'ゼロ', '1': 'イチ', '2': 'ニ', '3': 'サン', '4': 'ヨン',
+    '5': 'ゴ', '6': 'ロク', '7': 'ナナ', '8': 'ハチ', '9': 'キュウ'
+}
+
+EN_DIGIT_MAP = {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", 
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine"
+}
+
+KANJI_DIGITS = {
+    '0': '〇', '1': '一', '2': '二', '3': '三', '4': '四',
+    '5': '五', '6': '六', '7': '七', '8': '八', '9': '九'
+}
+
+NUMBER_PATTERN = re.compile(
+    r'(?<![a-zA-Z0-9,\.])'
+    r'('
+    r'(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?'
+    r')'
+    r'(?:(st|nd|rd|th)(?![a-zA-Z0-9])|(?![0-9]|,[0-9]|\.[0-9]|[a-zA-Z]))',
+    re.IGNORECASE
+)
+
+
 def fix_special_formats(text: str, lang: str = "en") -> str:
     """Handles edge cases like time, dates, phone numbers, currency, and paper sizes."""
     if not text:
@@ -385,16 +410,55 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
     # Hyphenated capital forces Kokoro G2P to pronounce letter name /eI/ without pause
     text = re.sub(r'\b[Aa](\d+)\b', r'A-\1', text)
 
-    if not lang.startswith('en'):
-        return text
+    # Universal currency symbol handling for Japanese Yen
+    text = re.sub(r'¥\s*(\d+(?:,\d{3})*(?:\.\d+)?)', r'\1円', text)
 
+    # Context detection for phone numbers and hyphenated digit sequences
+    has_kana = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF]', text))
+    is_jp = lang.startswith('ja') or has_kana
+
+    def replace_hyphenated(match):
+        raw_match = match.group(0)
+        # Check local boundary context
+        s_idx = match.start()
+        e_idx = match.end()
+        left_c = ""
+        for c in reversed(text[:s_idx]):
+            if c.strip() and not re.match(r'[0-9.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–:;/\\]', c):
+                left_c = c
+                break
+        right_c = ""
+        for c in text[e_idx:]:
+            if c.strip() and not re.match(r'[0-9.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–:;/\\]', c):
+                right_c = c
+                break
+        local_jp = is_jp or bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', left_c + right_c))
+        parts = raw_match.split('-')
+        if local_jp:
+            kana_parts = ["".join(JP_DIGIT_MAP.get(d, d) for d in p) for p in parts]
+            return "、".join(kana_parts)
+        else:
+            word_parts = [" ".join(EN_DIGIT_MAP.get(d, d) for d in p) for p in parts]
+            return ", ".join(word_parts)
+
+    text = re.sub(r'(?<![a-zA-Z0-9])\d{2,4}(?:-\d{2,4}){1,2}(?![a-zA-Z0-9])', replace_hyphenated, text)
+
+    # Currency for US Dollars
     def split_currency(match):
         dollars = match.group(1)
         cents = match.group(2)
+        s_idx = match.start()
+        left_c = ""
+        for c in reversed(text[:s_idx]):
+            if c.strip() and not re.match(r'[0-9.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–:;/\\]', c):
+                left_c = c
+                break
+        if is_jp or bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', left_c)):
+            return f"{dollars}ドル"
         if cents and int(cents) > 0:
             return f"{dollars} dollars and {cents} cents"
         return f"{dollars} dollars"
-    
+
     text = re.sub(r'\$([0-9,]+)(?:\.(\d+))?', split_currency, text)
 
     # Dot-separated time with AM/PM (e.g. 3.43 P.M. -> 3:43 pm) before decimal engine fires
@@ -406,45 +470,34 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
     text = re.sub(r'(\d)\s*(?i:a\.?m\.?)(?=\s|[.,!?]|$)', r'\1 am', text)
     text = re.sub(r'(\d)\s*(?i:p\.?m\.?)(?=\s|[.,!?]|$)', r'\1 pm', text)
 
-    def split_decimal(match):
-        whole_number = match.group(1)
-        decimal_digits = match.group(2)
-        spaced_decimals = " ".join(list(decimal_digits))
-        return f"{whole_number} point {spaced_decimals}"
-    text = re.sub(r'\b(\d+)\.(\d+)\b', split_decimal, text)
-
-    def split_hyphenated(match):
-        digit_map = {"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", 
-                     "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine"}
-        raw_digits = match.group(0).replace("-", "")
-        return " ".join([digit_map[d] if d in digit_map else d for d in raw_digits])
-    text = re.sub(r'\b\d+(?:-\d+){2,}\b', split_hyphenated, text)
-
-    year_pattern = re.compile(
-        r'\b('
-        r'in|since|from|to|until|through|between|and|during|by|before|after|around|circa|of|year|'
-        r'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?'
-        r')\s+'
-        r'(the\s+|the\s+year\s+|\d{1,2}(?:st|nd|rd|th)?,?\s+)?'
-        r'(1[789]\d{2}|20[1-9]\d)(s)?\b',
-        re.IGNORECASE
-    )
-    def split_year(match):
-        prefix1 = match.group(1)
-        prefix2 = match.group(2) or ""
-        year = match.group(3)
-        plural = match.group(4) or ""
-        return f"{prefix1} {prefix2}{year[:2]} {year[2:]}{plural}"
-        
-    text = year_pattern.sub(split_year, text)
+    if lang.startswith('en'):
+        year_pattern = re.compile(
+            r'\b('
+            r'in|since|from|to|until|through|between|and|during|by|before|after|around|circa|of|year|'
+            r'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?'
+            r')\s+'
+            r'(the\s+|the\s+year\s+|\d{1,2}(?:st|nd|rd|th)?,?\s+)?'
+            r'(1[789]\d{2}|20[1-9]\d)(s)?\b',
+            re.IGNORECASE
+        )
+        def split_year(match):
+            prefix1 = match.group(1)
+            prefix2 = match.group(2) or ""
+            year = match.group(3)
+            plural = match.group(4) or ""
+            return f"{prefix1} {prefix2}{year[:2]} {year[2:]}{plural}"
+            
+        text = year_pattern.sub(split_year, text)
 
     return text
 
 
 def auto_translate_numbers(text: str, lang: str = "en") -> str:
-    """Converts numbers to words dynamically, supporting ordinals and CJK scanner bounds."""
+    """Converts numbers to words dynamically, supporting ordinals, decimals, and CJK boundaries."""
     if not text:
         return text
+
+    has_kana_globally = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF]', text))
 
     def match_to_words(match):
         raw_number = match.group(1)
@@ -452,49 +505,81 @@ def auto_translate_numbers(text: str, lang: str = "en") -> str:
         raw_string = match.group(0)
         start_idx = match.start()
         end_idx = match.end()
-        
+
+        # Look left skipping punctuation, whitespace, and digits
         left_char = ""
         for char in reversed(text[:start_idx]):
-            if char.strip() and not re.match(r'[.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–\s]', char):
+            if char.strip() and not re.match(r'[0-9.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–:;/\\]', char):
                 left_char = char
                 break
-                
+
+        # Look right skipping punctuation, whitespace, and digits
         right_char = ""
         for char in text[end_idx:]:
-            if char.strip() and not re.match(r'[.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–\s]', char):
+            if char.strip() and not re.match(r'[0-9.,!?"\'\(\)\[\]\{\}\-\_“”‘’…—–:;/\\]', char):
                 right_char = char
                 break
-        
-        ja_regex = r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]'
-        is_left_ja = bool(re.match(ja_regex, left_char)) if left_char else False
-        is_right_ja = bool(re.match(ja_regex, right_char)) if right_char else False
-        
+
+        ja_kana_regex = r'[\u3040-\u309F\u30A0-\u30FF]'
+        cjk_regex = r'[\u4E00-\u9FFF]'
+        latin_regex = r'[a-zA-Z]'
+
+        is_left_kana = bool(re.match(ja_kana_regex, left_char)) if left_char else False
+        is_right_kana = bool(re.match(ja_kana_regex, right_char)) if right_char else False
+        is_left_cjk = bool(re.match(cjk_regex, left_char)) if left_char else False
+        is_right_cjk = bool(re.match(cjk_regex, right_char)) if right_char else False
+        is_left_latin = bool(re.match(latin_regex, left_char)) if left_char else False
+        is_right_latin = bool(re.match(latin_regex, right_char)) if right_char else False
+
+        target_lang = 'en'
+        if lang.startswith('ja'):
+            target_lang = 'ja'
+        elif is_left_kana or is_right_kana:
+            target_lang = 'ja'
+        elif (is_left_cjk or is_right_cjk) and (has_kana_globally or not (is_left_latin or is_right_latin)):
+            target_lang = 'ja'
+        elif has_kana_globally and not (is_left_latin or is_right_latin):
+            target_lang = 'ja'
+        elif lang.startswith('es'):
+            target_lang = 'es'
+        elif lang.startswith('fr'):
+            target_lang = 'fr'
+        elif lang.startswith('it'):
+            target_lang = 'it'
+        elif lang.startswith('pt'):
+            target_lang = 'pt_BR'
+        elif lang.startswith('hi'):
+            target_lang = 'hi'
+
         try:
+            if target_lang == 'ja':
+                if '.' in raw_number:
+                    parts = raw_number.replace(',', '').split('.', 1)
+                    whole_str, dec_str = parts[0], parts[1]
+                    whole_val = int(whole_str) if whole_str else 0
+                    whole_kanji = num2words(whole_val, lang='ja') if whole_val != 0 else '〇'
+                    dec_kanji = "".join(KANJI_DIGITS.get(d, d) for d in dec_str)
+                    return f"{whole_kanji}点{dec_kanji}"
+
+                clean_number = int(raw_number.replace(',', ''))
+                if suffix:
+                    return num2words(clean_number, lang='ja', to='ordinal')
+                return num2words(clean_number, lang='ja')
+
+            # Non-Japanese languages
+            if '.' in raw_number:
+                clean_float = float(raw_number.replace(',', ''))
+                return num2words(clean_float, lang=target_lang)
+
             clean_number = int(raw_number.replace(',', ''))
-            
-            target_lang = 'en'
-            if lang.startswith('ja') or is_left_ja or is_right_ja:
-                target_lang = 'ja'
-            elif lang.startswith('es'):
-                target_lang = 'es'
-            elif lang.startswith('fr'):
-                target_lang = 'fr'
-            elif lang.startswith('it'):
-                target_lang = 'it'
-            elif lang.startswith('pt'):
-                target_lang = 'pt_BR'
-            elif lang.startswith('hi'):
-                target_lang = 'hi'
-            
             if suffix:
                 return num2words(clean_number, lang=target_lang, to='ordinal')
-            else:
-                return num2words(clean_number, lang=target_lang)
-                
+            return num2words(clean_number, lang=target_lang)
+
         except Exception:
             return raw_string
 
-    return re.sub(r'(?<![\d,])(\d+(?:,\d{3})*)(st|nd|rd|th)?\b', match_to_words, text, flags=re.IGNORECASE)
+    return NUMBER_PATTERN.sub(match_to_words, text)
 
 
 def normalize_unicode_quotes(text: str) -> str:
@@ -520,22 +605,22 @@ def protect_japanese_mixed_latin(text: str, lang: str) -> str:
     latin_to_kana = {
         'A': 'エー', 'B': 'ビー', 'C': 'シー', 'D': 'ディー', 'E': 'イー', 
         'F': 'エフ', 'G': 'ジー', 'H': 'エイチ', 'I': 'アイ', 'J': 'ジェー', 
-        'K': 'ケー', 'L': 'エル', 'M': 'エム', 'N': 'エン', 'O': 'オー', 
+        'K': 'ケー', 'L': 'エル', 'M': 'エム', 'N': 'エヌ', 'O': 'オー', 
         'P': 'ピー', 'Q': 'キュー', 'R': 'アール', 'S': 'エス', 'T': 'ティー', 
         'U': 'ユー', 'V': 'ブイ', 'W': 'ダブリュー', 'X': 'エックス', 'Y': 'ワイ', 'Z': 'ゼット',
         'a': 'エー', 'b': 'ビー', 'c': 'シー', 'd': 'ディー', 'e': 'イー', 
         'f': 'エフ', 'g': 'ジー', 'h': 'エイチ', 'i': 'アイ', 'j': 'ジェー', 
-        'k': 'ケー', 'l': 'エル', 'm': 'エム', 'n': 'エン', 'o': 'オー', 
+        'k': 'ケー', 'l': 'エル', 'm': 'エム', 'n': 'エヌ', 'o': 'オー', 
         'p': 'ピー', 'q': 'キュー', 'r': 'アール', 's': 'エス', 't': 'ティー', 
         'u': 'ユー', 'v': 'ブイ', 'w': 'ダブリュー', 'x': 'エックス', 'y': 'ワイ', 'z': 'ゼット',
         'Ａ': 'エー', 'Ｂ': 'ビー', 'Ｃ': 'シー', 'Ｄ': 'ディー', 'Ｅ': 'イー', 
         'Ｆ': 'エフ', 'Ｇ': 'ジー', 'Ｈ': 'エイチ', 'Ｉ': 'アイ', 'Ｊ': 'ジェー', 
-        'Ｋ': 'ケー', 'Ｌ': 'エル', 'Ｍ': 'エム', 'Ｎ': 'エン', 'Ｏ': 'オー', 
+        'Ｋ': 'ケー', 'Ｌ': 'エル', 'Ｍ': 'エム', 'Ｎ': 'エヌ', 'Ｏ': 'オー', 
         'Ｐ': 'ピー', 'Ｑ': 'キュー', 'Ｒ': 'アール', 'Ｓ': 'エス', 'Ｔ': 'ティー', 
         'Ｕ': 'ユー', 'Ｖ': 'ブイ', 'Ｗ': 'ダブリュー', 'Ｘ': 'エックス', 'Ｙ': 'ワイ', 'Ｚ': 'ゼット',
         'ａ': 'エー', 'ｂ': 'ビー', 'ｃ': 'シー', 'ｄ': 'ディー', 'ｅ': 'イー', 
         'ｆ': 'エフ', 'ｇ': 'ジー', 'ｈ': 'エイチ', 'ｉ': 'アイ', 'ｊ': 'ジェー', 
-        'ｋ': 'ケー', 'ｌ': 'エル', 'ｍ': 'エム', 'ｎ': 'エン', 'ｏ': 'オー', 
+        'ｋ': 'ケー', 'ｌ': 'エル', 'ｍ': 'エム', 'ｎ': 'エヌ', 'ｏ': 'オー', 
         'ｐ': 'ピー', 'ｑ': 'キュー', 'ｒ': 'アール', 'ｓ': 'エス', 'ｔ': 'ティー', 
         'ｕ': 'ユー', 'ｖ': 'ブイ', 'ｗ': 'ダブリュー', 'ｘ': 'エックス', 'ｙ': 'ワイ', 'ｚ': 'ゼット'
     }
