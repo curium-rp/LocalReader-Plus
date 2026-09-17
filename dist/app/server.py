@@ -18,7 +18,7 @@ from .config import (
     settings_file,
     rules_file,
     ignore_file,
-    library_file,
+    library_dir,
 )
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
@@ -29,7 +29,8 @@ state_module.providers = [p for p in ort_env.split(",") if p]
 
 from .models import AppSettings
 
-from .routers import settings, library, tts, system, export, timer, theme, render, view
+from .routers import settings, library, tts, system, export, timer, theme, render, view, redirect
+from . import files_api
 
 # --- Lifespan Manager ---
 @asynccontextmanager
@@ -84,7 +85,17 @@ async def lifespan(app: FastAPI):
 
     safe_init_json(rules_file, [], indent=2)
     safe_init_json(ignore_file, [], indent=2)
-    safe_init_json(library_file, [])
+    try:
+        library_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    try:
+        from .logic.memories import migrate_peek_sidecars, migrate_pdf_sidecars
+        migrate_peek_sidecars()
+        migrate_pdf_sidecars()
+    except Exception as e:
+        print(f"[LIBRARY] Sidecar migration bypassed: {e}")
 
     from .routers.system import load_engine_logic
     from .state import system_status
@@ -133,6 +144,7 @@ async def add_no_cache_header(request: Request, call_next):
     return response
 
 # --- Routers ---
+app.include_router(redirect.router)
 app.include_router(settings.router)
 app.include_router(library.router)
 app.include_router(tts.router)
@@ -142,6 +154,7 @@ app.include_router(timer.router)
 app.include_router(theme.router)
 app.include_router(render.router)
 app.include_router(view.router)
+app.include_router(files_api.router)
 
 # --- Static Files ---
 ui_dir = base_dir / "ui"

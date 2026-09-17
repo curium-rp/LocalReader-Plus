@@ -7,13 +7,18 @@ import {
   switchTab,
   renderRules,
   renderIgnoreList,
-  updateEngineStatusUI,
   highlightSearchTerm,
   updateTranslations,
   toggleSettingsDrawer,
   closeAllDrawers,
   syncBackToReadingButton,
 } from "./modules/ui.js";
+import {
+  updateEngineStatusUI,
+  openModelManagerModal,
+  closeModelManagerModal,
+  initDownloader,
+} from "./modules/downloader.js";
 import {
   loadLibrary,
   selectDocument,
@@ -47,6 +52,8 @@ import { initProgress, jumpToDisplayedPage, updateProgressDisplay } from "./modu
 import { initResizeBorders } from "./modules/resize.js";
 import { initTypography, getRenderState, closeTypoMenu, applyReaderTypography } from "./modules/typography.js";
 import { initLayoutHooks, requestGeometrySync } from "./modules/reader-layout.js";
+import { mountFilesUI, openFilesUI } from "./modules/files_UI.js";
+import { mountHistoryUI } from "./modules/history.js";
 import {
   isHorizontalMode,
   revealInSpread,
@@ -184,7 +191,10 @@ async function init() {
   initTopBar();
   initProgress();
   initResizeBorders(); 
+  mountFilesUI();
+  mountHistoryUI();
 
+  window.loadVoices = loadVoices;
   try { await loadVoices(); } catch (e) { console.error(e); }
   try { await loadLibrary(); } catch (e) { console.error(e); }
 
@@ -472,6 +482,7 @@ document.getElementById("prevPage").onclick = async () => {
     state.viewPageIndex = prevIdx;
     state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
+    saveProgress(true);
   }
 };
 document.getElementById("nextPage").onclick = async () => {
@@ -480,6 +491,7 @@ document.getElementById("nextPage").onclick = async () => {
     state.viewPageIndex = nextIdx;
     state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
+    saveProgress(true);
   }
 };
 
@@ -490,6 +502,7 @@ setHorizontalPageTurn(async (dir) => {
       state.viewPageIndex = prevIdx;
       state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
       await renderPage();
+      saveProgress(true);
       return true;
     }
     return false;
@@ -499,6 +512,7 @@ setHorizontalPageTurn(async (dir) => {
     state.viewPageIndex = nextIdx;
     state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
+    saveProgress(true);
     return true;
   }
   return false;
@@ -509,6 +523,7 @@ document.getElementById("pageInput").onchange = async (e) => {
   if (jumpToDisplayedPage(v)) {
     state.autoScrollEnabled = (state.viewPageIndex === state.readingPageIndex);
     await renderPage();
+    saveProgress(true);
   } else {
     updateProgressDisplay();
   }
@@ -587,6 +602,91 @@ if (appScroller) {
     { passive: true },
   );
 }
+// --- NATIVE OLE DROP HANDLERS (native_shell.dll) ---
+window.__lrOnNativeEpubDrop = async function(book) {
+  try {
+    const dropOverlay = document.getElementById("dropOverlay");
+    if (dropOverlay) dropOverlay.classList.add("hidden");
+    if (typeof window.closeFilesUI === "function") window.closeFilesUI();
+    if (typeof closeAllDrawers === "function") closeAllDrawers();
+    if (typeof stopPlayback === "function") stopPlayback();
+
+    showToast("Opening " + (book.title || book.fileName || "book") + "...", "info", 1200);
+    await loadLibrary();
+    document.dispatchEvent(new CustomEvent("lr-library-change"));
+    await selectDocument(book);
+    showToast("Book opened", "success", 1200);
+  } catch (err) {
+    console.error("[NATIVE DROP] Failed to open EPUB:", err);
+    showToast("Failed to open book: " + err.message, "error");
+  }
+};
+
+window.__lrOnNativePdfDrop = async function(filePath) {
+  try {
+    const dropOverlay = document.getElementById("dropOverlay");
+    if (dropOverlay) dropOverlay.classList.add("hidden");
+    if (typeof window.closeFilesUI === "function") window.closeFilesUI();
+    if (typeof closeAllDrawers === "function") closeAllDrawers();
+    if (typeof stopPlayback === "function") stopPlayback();
+
+    const fileName = filePath.split(/[/\\]/).pop();
+    showToast("Loading " + fileName + "...", "info", 1200);
+    const res = await fetch(`/api/explorer/read-file?path=${encodeURIComponent(filePath)}`);
+    if (!res.ok) throw new Error("Could not read dropped PDF from disk");
+    const blob = await res.blob();
+    processPdfBlob(blob, fileName);
+  } catch (err) {
+    console.error("[NATIVE DROP] Failed to process PDF:", err);
+    showToast("Failed to process PDF: " + err.message, "error");
+  }
+};
+
+window.__lrProcessPendingNativeDrops = async function() {
+  if (!window.__lrPendingNativeDrops || window.__lrPendingNativeDrops.length === 0) return;
+  const queue = window.__lrPendingNativeDrops.splice(0, window.__lrPendingNativeDrops.length);
+  for (const item of queue) {
+    if (item.type === "epub" && item.book) {
+      await window.__lrOnNativeEpubDrop(item.book);
+    } else if (item.type === "pdf" && item.filePath) {
+      await window.__lrOnNativePdfDrop(item.filePath);
+    }
+  }
+};
+
+// Process any pending native drops queued before app.js finished loading
+window.__lrProcessPendingNativeDrops();
+
+async function openEpubByPathOrFallback(file) {
+  const filePath = file.path || (window.webUtils && window.webUtils.getPathForFile ? window.webUtils.getPathForFile(file) : null);
+  if (!filePath) {
+    // In native PyWebView on Windows, native_shell.dll catches the drop via OLE IDropTarget.
+    // If we reach here, it means the drop was handled by HTML5 without a native path.
+    showToast("App cannot read path from browser drop. Please use 'Open Files' instead.", "warning", 3500);
+    return;
+  }
+
+  showToast("Binding EPUB to shelf...", "info", 1200);
+  try {
+    const res = await fetchJSON("/api/explorer/add-to-shelf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ epub_path: filePath }),
+    });
+
+    if (res && res.book) {
+      await loadLibrary();
+      document.dispatchEvent(new CustomEvent("lr-library-change"));
+      await selectDocument(res.book);
+      showToast("Book opened", "success", 1200);
+    }
+  } catch (err) {
+    console.error("[EPUB] Peek binding failed:", err);
+    showToast("Failed to open EPUB: " + err.message, "error");
+  }
+}
+
+
 // --- SAFELY MOUNT UPLOAD HANDLER ---
 const pdfUpload = document.getElementById("pdfUpload");
 if (pdfUpload) {
@@ -595,31 +695,21 @@ if (pdfUpload) {
     if (!file) return;
     
     if (file.name.toLowerCase().endsWith(".epub")) {
-      showToast("Parsing EPUB...");
-      const docId = crypto.randomUUID();
-      const formData = new FormData();
-      formData.append("file", file);
-
-      try {
-        const res = await fetch(`/api/convert/epub?id=${docId}`, {
-          method: "POST",
-          body: formData,
-        });
-        if (!res.ok) throw new Error("Conversion failed");
-        const data = await res.json();
-        
-        // Pass everything safely
-        processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map, data.language, data.bookType || "epub");
-      } catch (err) {
-        console.error(err);
-        showToast("EPUB conversion failed: " + err.message);
-      }
+      await openEpubByPathOrFallback(file);
     } else {
       processPdfBlob(file, file.name);
     }
     e.target.value = "";
   };
 }
+
+// --- Empty state welcome card buttons ---
+document.getElementById("emptyStateOpenEpubBtn")?.addEventListener("click", () => {
+  if (typeof window.openFilesExplorer === "function") window.openFilesExplorer();
+});
+document.getElementById("emptyStateHistoryBtn")?.addEventListener("click", () => {
+  if (typeof window.openHistoryUI === "function") window.openHistoryUI();
+});
 
 document.getElementById("tabLibrary").onclick = () =>
   switchTab(
@@ -710,32 +800,197 @@ async function saveIgnore(immediate = false) {
   }
 }
 
-document.getElementById("speedRange").onchange = saveSettings;
-document.getElementById("speedRange").oninput = (e) =>
-  (document.getElementById("speedVal").textContent = parseFloat(
-    e.target.value,
-  ).toFixed(2));
+const speedRange = document.getElementById("speedRange");
+const speedVal = document.getElementById("speedVal");
+const speedInput = document.getElementById("speedInput");
+const speedValBtn = document.getElementById("speedValBtn");
+const speedStepUp = document.getElementById("speedStepUp");
+const speedStepDown = document.getElementById("speedStepDown");
+const speedStepperBox = document.getElementById("speedStepperBox");
+
+const updateSpeedDisplay = (val) => {
+  const str = Number(val).toFixed(2);
+  if (speedRange) speedRange.value = str;
+  if (speedVal) speedVal.textContent = str;
+  if (speedInput) speedInput.value = str;
+};
+
+if (speedRange) {
+  speedRange.step = "any";
+  speedRange.oninput = (e) => {
+    const stepped = (Math.round(parseFloat(e.target.value) / 0.05) * 0.05).toFixed(2);
+    if (speedVal) speedVal.textContent = stepped;
+    if (speedInput) speedInput.value = stepped;
+  };
+  speedRange.onchange = (e) => {
+    const stepped = (Math.round(parseFloat(e.target.value) / 0.05) * 0.05).toFixed(2);
+    e.target.value = stepped;
+    updateSpeedDisplay(stepped);
+    state.audioBufferCache.clear();
+    saveSettings();
+  };
+}
+
+const adjustSpeed = (delta) => {
+  let current = parseFloat(speedRange?.value || speedVal?.textContent || 1.0);
+  if (isNaN(current)) current = 1.0;
+  let next = Math.round((current + delta) * 100) / 100;
+  if (next < 0.5) next = 0.5;
+  if (next > 3.0) next = 3.0;
+  updateSpeedDisplay(next);
+};
+
+if ((speedValBtn || speedVal) && speedInput && speedRange) {
+  const valDisplayTrigger = speedValBtn || speedVal;
+  valDisplayTrigger.onclick = () => {
+    speedInput.value = parseFloat(speedRange.value || 1.0).toFixed(2);
+    valDisplayTrigger.classList.add("hidden");
+    speedInput.classList.remove("hidden");
+    speedInput.focus();
+    speedInput.select();
+  };
+
+  const commitSpeedInput = () => {
+    if (speedInput.classList.contains("hidden")) return;
+    let val = parseFloat(speedInput.value);
+    // Protect: lower than 0.5 or more than 3.0 snaps to 1.00
+    if (isNaN(val) || val < 0.5 || val > 3.0) {
+      val = 1.0;
+    }
+    val = Math.round(val * 100) / 100;
+    updateSpeedDisplay(val);
+    speedInput.classList.add("hidden");
+    valDisplayTrigger.classList.remove("hidden");
+    state.audioBufferCache.clear();
+    saveSettings();
+  };
+
+  speedInput.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitSpeedInput();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      speedInput.classList.add("hidden");
+      valDisplayTrigger.classList.remove("hidden");
+    }
+  };
+
+  speedInput.onblur = commitSpeedInput;
+}
+
+// Stepper controls: click, hold-to-repeat, and wheel support
+let speedStepTimeout = null;
+let speedStepInterval = null;
+
+const startStepping = (delta) => {
+  adjustSpeed(delta);
+  speedStepTimeout = setTimeout(() => {
+    speedStepInterval = setInterval(() => {
+      adjustSpeed(delta);
+    }, 60);
+  }, 350);
+};
+
+const stopStepping = () => {
+  const wasActive = speedStepTimeout || speedStepInterval;
+  if (speedStepTimeout) {
+    clearTimeout(speedStepTimeout);
+    speedStepTimeout = null;
+  }
+  if (speedStepInterval) {
+    clearInterval(speedStepInterval);
+    speedStepInterval = null;
+  }
+  if (wasActive) {
+    state.audioBufferCache.clear();
+    saveSettings();
+  }
+};
+
+if (speedStepUp) {
+  speedStepUp.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startStepping(e.shiftKey ? 0.05 : 0.01);
+  });
+  speedStepUp.addEventListener("mouseup", stopStepping);
+  speedStepUp.addEventListener("mouseleave", stopStepping);
+}
+
+if (speedStepDown) {
+  speedStepDown.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startStepping(e.shiftKey ? -0.05 : -0.01);
+  });
+  speedStepDown.addEventListener("mouseup", stopStepping);
+  speedStepDown.addEventListener("mouseleave", stopStepping);
+}
+
+// Scroll wheel support on speed number box and stepper container
+let speedWheelDebounce = null;
+const handleSpeedWheel = (e) => {
+  e.preventDefault();
+  const step = e.shiftKey ? 0.05 : 0.01;
+  adjustSpeed(e.deltaY < 0 ? step : -step);
+  clearTimeout(speedWheelDebounce);
+  speedWheelDebounce = setTimeout(() => {
+    state.audioBufferCache.clear();
+    saveSettings();
+  }, 300);
+};
+
+if (speedValBtn) {
+  speedValBtn.addEventListener("wheel", handleSpeedWheel, { passive: false });
+}
+if (speedStepperBox) {
+  speedStepperBox.addEventListener("wheel", handleSpeedWheel, { passive: false });
+}
 document.getElementById("voiceSelect").onchange = async () => {
   state.audioBufferCache.clear();
-  try {
-    await fetchJSON("/api/system/clear-cache", { method: "POST" });
-  } catch (e) {
-    console.error("Failed to clear backend cache", e);
-  }
   await saveSettings();
 };
-document.getElementById("engineMode").onchange = async (e) => {
-  state.engineMode = e.target.value;
-  await saveSettings();
-};
-document.getElementById("setupBtn").onclick = async (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  const popup = document.getElementById("kokoroDownloadPopup");
-  if (!popup) return;
-  closeSidebarMiniPopups();
-  popup.classList.toggle("hidden");
-};
+const engineModeEl = document.getElementById("engineMode");
+if (engineModeEl) {
+  engineModeEl.onchange = async (e) => {
+    const val = e.target.value;
+    state.engineMode = val;
+    state.audioBufferCache.clear();
+    await saveSettings();
+    try {
+      showToast(`Switching engine to ${val.toUpperCase()}...`);
+      const res = await fetchJSON('/api/system/models/select', {
+        method: 'POST',
+        body: JSON.stringify({ model_id: val }),
+      });
+      if (res.default_voice) {
+        state.voice = res.default_voice;
+      }
+      setTimeout(async () => {
+        await loadVoices();
+      }, 600);
+    } catch (err) {
+      console.error("Failed to switch engine:", err);
+      showToast(err.message || "Failed to switch engine");
+    }
+  };
+}
+const setupBtn = document.getElementById("setupBtn");
+if (setupBtn) {
+  setupBtn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeSidebarMiniPopups();
+    openModelManagerModal();
+  };
+}
+const modelManagerBtn = document.getElementById("modelManagerBtn");
+if (modelManagerBtn) {
+  modelManagerBtn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openModelManagerModal();
+  };
+}
 
 document.getElementById("voiceSettingsBtn").onclick = () => toggleSettingsDrawer("voiceSettingsDrawer", true);
 document.getElementById("closeDrawerBtn").onclick = () => toggleSettingsDrawer("voiceSettingsDrawer", false);
@@ -785,11 +1040,39 @@ if (sidebarCollapseBtn && sidebar) {
     beginSidebarWidthAnim();
     sidebar.classList.toggle("collapsed", collapsing);
     updateSidebarVar(collapsing);
+    syncEmptyStateCompact();
     applyReaderTypography();
     requestGeometrySync();
     if (collapsing) closeTypoMenu();
   };
 }
+
+export function syncEmptyStateCompact() {
+  const w = window.innerWidth || document.documentElement.clientWidth || 0;
+  const isCompact = w < 1100;
+
+  const emptyState = document.getElementById("emptyState");
+  if (emptyState) {
+    if (isCompact) {
+      emptyState.style.setProperty("display", "none", "important");
+    } else {
+      emptyState.style.removeProperty("display");
+    }
+  }
+
+  document.body.classList.toggle("compact-empty-state", isCompact);
+}
+
+window.addEventListener("resize", syncEmptyStateCompact);
+try {
+  const ro = new ResizeObserver(() => syncEmptyStateCompact());
+  ro.observe(document.body);
+  const ca = document.querySelector(".content-area");
+  if (ca) ro.observe(ca);
+} catch (e) {
+  console.warn("ResizeObserver init skipped", e);
+}
+syncEmptyStateCompact();
 
 let dragCounter = 0;
 const dropOverlay = document.getElementById("dropOverlay");
@@ -822,24 +1105,7 @@ document.body.addEventListener("drop", async (e) => {
   }
   
   if (name.endsWith(".epub")) {
-    showToast("Parsing EPUB...");
-    const docId = crypto.randomUUID(); // Added missing docId to fix conversion crash
-    const formData = new FormData();
-    formData.append("file", file);
-    
-    try {
-      const res = await fetch(`/api/convert/epub?id=${docId}`, { // Added ?id parameter
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) throw new Error("Conversion failed");
-      const data = await res.json();
-      
-      processJsonData(data.pages, file.name.replace(/\.epub$/i, ""), docId, data.image_map, data.toc_map, data.language, data.bookType || "epub");
-    } catch (err) {
-      console.error(err);
-      showToast("EPUB conversion failed: " + err.message);
-    }
+    await openEpubByPathOrFallback(file);
   } else {
     processPdfBlob(file, file.name);
   }
@@ -848,6 +1114,7 @@ document.body.addEventListener("drop", async (e) => {
 function closeSidebarMiniPopups() {
   document.getElementById("languagePopup")?.classList.add("hidden");
   document.getElementById("engineStatusPopup")?.classList.add("hidden");
+  document.getElementById("kokoroDownloadPopup")?.classList.add("hidden");
 }
 
 function syncLanguageChip(lang) {
@@ -1069,13 +1336,97 @@ window.selectDocById = async (id) => {
     }
 });
 
-const pauseToggleBtn = document.getElementById("pauseSettingsToggle");
-if (pauseToggleBtn) {
-  pauseToggleBtn.onclick = () => {
-    const content = document.getElementById("pauseSettingsContent");
-    if (content) content.classList.toggle("hidden");
+
+// --- Setting Help Popover ---
+const settingHelpPopup = document.getElementById("settingHelpPopup");
+const settingHelpPopupText = document.getElementById("settingHelpPopupText");
+const closeSettingHelpPopupBtn = document.getElementById("closeSettingHelpPopupBtn");
+
+function closeSettingHelp() {
+  if (settingHelpPopup) {
+    settingHelpPopup.classList.add("hidden");
+    delete settingHelpPopup.dataset.activeBtn;
+  }
+}
+
+if (closeSettingHelpPopupBtn) {
+  closeSettingHelpPopupBtn.onclick = (e) => {
+    e.stopPropagation();
+    closeSettingHelp();
   };
 }
+
+document.querySelectorAll(".setting-help-btn").forEach((btn) => {
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const key = btn.dataset.helpKey;
+    if (!key || !settingHelpPopup || !settingHelpPopupText) return;
+
+    let text = "";
+    if (state.translations) {
+      const parts = key.split(".");
+      let curr = state.translations;
+      for (const p of parts) {
+        if (curr && typeof curr === "object") curr = curr[p];
+        else { curr = null; break; }
+      }
+      if (typeof curr === "string") text = curr;
+    }
+
+    if (!text) {
+      const fallbackMap = {
+        "settings.comma_pause_desc": "Recommended 0ms. Setting values above 0ms may cause unnatural pauses or speech cadence artifacts.",
+        "settings.spam_symbols_pause_desc": "Adds pause when punctuation repeats (e.g. ..., ???, !!!, ?!?). Stacks extra silence for each repeated mark.",
+        "settings.behavior_h_desc": "Breathing room before and after chapter headings (100% front, 30% tail). Lower heading levels scale down automatically.",
+        "settings.behavior_img_desc": "Temporary silence while viewing an image or cover before narration resumes.",
+        "settings.behavior_s_desc": "Dramatic pause for scene break dividers (such as ***, ---, or ◇◇◇).",
+        "settings.behavior_n_desc": "Micro-pause between standard sentences and narrative text blocks."
+      };
+      text = fallbackMap[key] || "No description available.";
+    }
+
+    if (!settingHelpPopup.classList.contains("hidden") && settingHelpPopup.dataset.activeBtn === key) {
+      closeSettingHelp();
+      return;
+    }
+
+    settingHelpPopupText.textContent = text;
+    settingHelpPopup.dataset.activeBtn = key;
+    settingHelpPopup.classList.remove("hidden");
+
+    if (window.lucide && typeof window.lucide.createIcons === "function") {
+      window.lucide.createIcons();
+    }
+
+    const rect = btn.getBoundingClientRect();
+    const popupWidth = settingHelpPopup.offsetWidth || 260;
+    const popupHeight = settingHelpPopup.offsetHeight || 80;
+
+    let left = rect.right - popupWidth;
+    if (left < 12) left = 12;
+    if (left + popupWidth > window.innerWidth - 12) left = window.innerWidth - popupWidth - 12;
+
+    let top = rect.bottom + 6;
+    if (top + popupHeight > window.innerHeight - 12) {
+      top = rect.top - popupHeight - 6;
+    }
+
+    settingHelpPopup.style.left = `${left}px`;
+    settingHelpPopup.style.top = `${top}px`;
+  };
+});
+
+document.addEventListener("click", (e) => {
+  if (settingHelpPopup && !settingHelpPopup.classList.contains("hidden")) {
+    if (!settingHelpPopup.contains(e.target) && !e.target.closest(".setting-help-btn")) {
+      closeSettingHelp();
+    }
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeSettingHelp();
+});
 
 function safeJumpToSentence(index) {
     state.autoScrollEnabled = true;
@@ -1114,26 +1465,55 @@ window.addEventListener("jump-to-sentence", (e) => {
 });
 
 let lastSysState = null;
+let _wasSysDownloading = false;
+let _lastSysReportedError = null;
+
 async function startStatusPolling() {
   const poll = async () => {
     try {
       const status = await fetchJSON(`/api/system/status?t=${Date.now()}`);
       window.isEngineReady = status.model_loaded;
       
+      if (status.selected_model) {
+        state.selectedModel = status.selected_model;
+      }
+      if (status.active_model) {
+        state.activeModel = status.active_model;
+      }
       if (status.engine_mode) {
         state.engineMode = status.engine_mode.toLowerCase();
       }
       if (status.active_hardware) {
         state.activeHardware = status.active_hardware.toLowerCase();
       }
+
+      const engineSelectEl = document.getElementById("engineMode");
+      if (engineSelectEl && document.activeElement !== engineSelectEl) {
+        let activeVal = status.active_model || status.selected_model || state.engineMode;
+        if (activeVal === "kokoro-v1.0") activeVal = "gpu";
+        else if (activeVal === "kokoro-v1.0-int8") activeVal = "cpu";
+        if (engineSelectEl.value !== activeVal && Array.from(engineSelectEl.options).some(o => o.value === activeVal)) {
+          engineSelectEl.value = activeVal;
+        }
+      }
       
-      const selModel = state.engineMode === "gpu" ? status.available_models?.gpu : status.available_models?.cpu;
-      
-      const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${selModel}-${status.available_models?.gpu}-${status.available_models?.cpu}-${status.available_models?.voices}-${state.engineMode}-${state.activeHardware}`;
+      // Alert user if a background download terminates with an error
+      if (_wasSysDownloading && !status.is_downloading && status.last_error && status.last_error !== _lastSysReportedError) {
+        _lastSysReportedError = status.last_error;
+        showToast(status.last_error);
+      } else if (status.is_downloading) {
+        _lastSysReportedError = null;
+      }
+      _wasSysDownloading = Boolean(status.is_downloading);
+
+      const curState = `${status.is_downloading}-${status.is_loading}-${status.model_loaded}-${status.active_model}-${status.active_hardware}-${JSON.stringify(status.available_models)}-${status.last_error || ''}`;
       if (curState !== lastSysState) {
         lastSysState = curState;
-        updateEngineStatusUI(status, selModel);
-        if (status.model_loaded) loadVoices();
+        updateEngineStatusUI(status, true);
+        if (status.model_loaded) {
+          state.audioBufferCache.clear();
+          loadVoices();
+        }
       }
     } catch (e) {}
     setTimeout(poll, 2000);
@@ -1221,3 +1601,38 @@ function updateSentenceBrightness() {
   btn.appendChild(newIcon);
   if (typeof renderIcons === "function") renderIcons();
 }
+
+// --- Reading Progress Session Buffer Flush on Unload/Exit ---
+function flushProgressOnExit() {
+  if (!state.currentDoc) return;
+  const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
+  let sentenceIdString = null;
+  if (currentEl) {
+    sentenceIdString = currentEl.dataset?.sentenceId || currentEl.getAttribute('id') || currentEl.closest('[id^="s_"]')?.getAttribute('id') || currentEl.id || null;
+  }
+  const payload = {
+    currentPage: state.readingPageIndex || 0,
+    lastSentenceId: sentenceIdString || state.currentDoc.lastSentenceId || null,
+    lastSentenceIndex: typeof state.currentSentenceIndex === "number" ? state.currentSentenceIndex : 0,
+    lastAccessed: Date.now(),
+    current_page: state.currentDoc.current_page || 1,
+    total_pages: state.currentDoc.total_pages || 1,
+    progress_percent: state.currentDoc.progress_percent || 0,
+  };
+  const body = JSON.stringify(payload);
+  const url = `/api/library/progress/${state.currentDoc.id}?flush=true`;
+  if (navigator.sendBeacon) {
+    const blob = new Blob([body], { type: "application/json" });
+    navigator.sendBeacon(url, blob);
+  } else {
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  }
+}
+
+window.addEventListener("beforeunload", flushProgressOnExit);
+window.addEventListener("pagehide", flushProgressOnExit);

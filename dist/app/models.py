@@ -48,6 +48,7 @@ class AppSettings(BaseModel):
     speed: Optional[float] = 1.0
     font_size: Optional[int] = 18
     engine_mode: Optional[str] = "gpu"
+    selected_model: Optional[str] = "kokoro-v1.0"
     ui_language: Optional[str] = "en"
     pause_settings: Optional[Dict[str, int]] = {
         "comma": 0,
@@ -65,6 +66,16 @@ class AppSettings(BaseModel):
         "S": 1000,
         "N": 500,
     }
+
+class ModelDownloadRequest(BaseModel):
+    model_id: Optional[str] = None
+    model_type: Optional[str] = None
+
+class ModelSelectRequest(BaseModel):
+    model_id: str
+
+class ModelDeleteRequest(BaseModel):
+    model_id: str
 
 class TimerRequest(BaseModel):
     minutes: int

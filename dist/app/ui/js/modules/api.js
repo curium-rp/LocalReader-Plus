@@ -2,7 +2,11 @@ export const API_URL = "";
 
 export async function fetchJSON(endpoint, options = {}) {
     try {
-        const res = await fetch(`${API_URL}${endpoint}`, options);
+        const headers = { ...(options.headers || {}) };
+        if (options.body && typeof options.body === "string" && !headers["Content-Type"]) {
+            headers["Content-Type"] = "application/json";
+        }
+        const res = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.detail || err.error || `Request failed: ${res.status}`);

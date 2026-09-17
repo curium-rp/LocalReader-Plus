@@ -174,6 +174,7 @@ export function stopPlayback() {
     state.currentGainNode = null;
   }
   updateWakeLock();
+  saveProgress(true); // 🌟 Session buffer: flush checkpoint on pause/stop
 }
 
 export async function playNext() {
@@ -192,9 +193,12 @@ export async function playNext() {
       const currentSettings = await fetchJSON(`/api/settings`);
       const vs = document.getElementById("voiceSelect");
       
-      // If a mismatch exists between the DOM and the saved truth, snap it back
+      // If a mismatch exists between the DOM and the saved truth, snap it back (only if option exists)
       if (vs && currentSettings.voice_id && vs.value !== currentSettings.voice_id) {
-        vs.value = currentSettings.voice_id;
+        const optionExists = Array.from(vs.options).some(o => o.value === currentSettings.voice_id);
+        if (optionExists) {
+          vs.value = currentSettings.voice_id;
+        }
       }
     } catch (err) {
       console.error("Voice mismatch recovery failed", err);
@@ -529,7 +533,7 @@ export async function jumpToSentence(i) {
   playNext();
 }
 
-export async function saveProgress() {
+export async function saveProgress(flushImmediately = false) {
   if (!state.currentDoc) return;
 
   const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
@@ -559,35 +563,48 @@ export async function saveProgress() {
 
   if (saveProgressTimeout) {
       clearTimeout(saveProgressTimeout);
+      saveProgressTimeout = null;
   }
 
-  saveProgressTimeout = setTimeout(async () => {
-      try {
-        await fetchJSON(`/api/library/progress/${state.currentDoc.id}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            currentPage: state.currentDoc.currentPage,
-            lastSentenceId: state.currentDoc.lastSentenceId,     
-            lastSentenceIndex: state.currentDoc.lastSentenceIndex, 
-            lastAccessed: Date.now(),
-            current_page: state.currentDoc.current_page,
-            total_pages: state.currentDoc.total_pages,
-            progress_percent: state.currentDoc.progress_percent,
-          }),
-        });
-        console.log(`[Checkpoint] Saved to disk. ID: ${sentenceIdString} | Fallback Index: ${state.currentDoc.lastSentenceIndex}`);
-      } catch (e) {
-        console.error("[Checkpoint] Save progress mapping failed", e);
-      }
-  }, 2000); 
+  const payload = {
+    currentPage: state.currentDoc.currentPage,
+    lastSentenceId: state.currentDoc.lastSentenceId,     
+    lastSentenceIndex: state.currentDoc.lastSentenceIndex, 
+    lastAccessed: Date.now(),
+    current_page: state.currentDoc.current_page,
+    total_pages: state.currentDoc.total_pages,
+    progress_percent: state.currentDoc.progress_percent,
+  };
+
+  const docId = state.currentDoc.id;
+
+  const sendPayload = async (isFlush) => {
+    try {
+      const url = `/api/library/progress/${docId}${isFlush ? "?flush=true" : ""}`;
+      await fetchJSON(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      console.log(`[Checkpoint] ${isFlush ? "Flushed to progress.json" : "Saved to progress.json"}. ID: ${sentenceIdString} | Fallback Index: ${payload.lastSentenceIndex}`);
+    } catch (e) {
+      console.error("[Checkpoint] Save progress failed", e);
+    }
+  };
+
+  if (flushImmediately) {
+    await sendPayload(true);
+  } else {
+    saveProgressTimeout = setTimeout(() => {
+      sendPayload(false);
+    }, 2000);
+  }
 }
 
 let isPreloading = false;
 
 async function preCacheNextSentences() {
-  const MAX_FORWARD = 5; 
-  const MAX_CACHE_SIZE = 10; 
+  const MAX_FORWARD = 6; 
 
   if (!state.audioContext || isPreloading) return;
   isPreloading = true;
@@ -599,7 +616,7 @@ async function preCacheNextSentences() {
     const currentPage = state.readingPageIndex;
     const currentIndex = state.currentSentenceIndex;
     
-    // Dynamic sliding window: Keep exactly 3 behind and 5 ahead relative to current reading index
+    // Dynamic sliding window: Keep exactly 4 behind and 6 ahead relative to current reading index
     for (const key of state.audioBufferCache.keys()) {
         const [kPageStr, kIndexStr, kVoice, kSpeed] = key.split('_');
         const kPage = parseInt(kPageStr);
@@ -611,7 +628,7 @@ async function preCacheNextSentences() {
         }
         
         if (kPage === currentPage) {
-            if (kIndex < currentIndex - 3 || kIndex > currentIndex + 5) {
+            if (kIndex < currentIndex - 4 || kIndex > currentIndex + 6) {
                 state.audioBufferCache.delete(key);
             }
         }

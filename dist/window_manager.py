@@ -7,8 +7,8 @@ from pathlib import Path
 
 DEFAULT_WIDTH = 1200
 DEFAULT_HEIGHT = 800
-MIN_WIDTH = 850
-MIN_HEIGHT = 550
+MIN_WIDTH = 500
+MIN_HEIGHT = 500
 SAVE_DEBOUNCE_SEC = 0.5
 # Windows restored windows often sit a few pixels past the monitor edge (resize border).
 SCREEN_EDGE_SLACK = 64
@@ -42,70 +42,23 @@ def _native_flag(native, *names):
     return None
 
 
+from platform_driver import get_platform_driver
+
+
 def native_is_fullscreen(window) -> bool:
-    native = _native(window)
-    flag = _native_flag(native, "is_fullscreen", "isFullScreen")
-    if flag is not None:
-        return flag
-    try:
-        style = getattr(native, "styleMask", None)
-        if callable(style):
-            # NSWindowStyleMaskFullScreen = 1 << 14
-            return bool(int(style()) & 16384)
-    except Exception:
-        pass
-    return bool(getattr(window, "fullscreen", False)) if window is not None else False
+    return get_platform_driver().is_fullscreen(window)
 
 
 def native_is_maximized(window) -> bool:
-    native = _native(window)
-    if native is None:
-        return False
-    flag = _native_flag(native, "is_maximized", "isMaximized", "isZoomed")
-    if flag is not None:
-        return flag
-    try:
-        state = getattr(native, "WindowState", None)
-        if state is not None:
-            text = str(state)
-            if "Maximized" in text:
-                return True
-            if "Normal" in text or "Minimized" in text:
-                return False
-            return int(state) == 2
-    except Exception:
-        pass
-    return False
+    return get_platform_driver().is_maximized(window)
 
 
 def native_is_minimized(window) -> bool:
-    native = _native(window)
-    if native is None:
-        return False
-    flag = _native_flag(native, "is_minimized", "isMinimized", "is_iconified", "isMiniaturized")
-    if flag is not None:
-        return flag
-    try:
-        state = getattr(native, "WindowState", None)
-        if state is not None:
-            return "Minimized" in str(state)
-    except Exception:
-        pass
-    return False
+    return get_platform_driver().is_minimized(window)
 
 
 def positioning_supported() -> bool:
-    """Wayland compositors ignore absolute client placement requests."""
-    if sys.platform != "linux":
-        return True
-    gdk_backend = os.environ.get("GDK_BACKEND", "").strip().lower()
-    if gdk_backend == "x11":
-        return True
-    if gdk_backend == "wayland":
-        return False
-    if os.environ.get("WAYLAND_DISPLAY"):
-        return False
-    return os.environ.get("XDG_SESSION_TYPE", "").strip().lower() != "wayland"
+    return get_platform_driver().positioning_supported()
 
 
 def _active_screens():
@@ -141,14 +94,13 @@ def _geometry_visible(x, y, width, height, screens) -> bool:
 
 def _read_geometry(window):
     try:
-        return (
-            _as_int(getattr(window, "x", None)),
-            _as_int(getattr(window, "y", None)),
-            _as_int(getattr(window, "width", None)),
-            _as_int(getattr(window, "height", None)),
-        )
+        from platform_driver import get_platform_driver
+        x, y, w, h = get_platform_driver().get_geometry(window)
+        if w is not None and h is not None:
+            return _as_int(x), _as_int(y), _as_int(w), _as_int(h)
     except Exception:
-        return None, None, None, None
+        pass
+    return None, None, None, None
 
 
 class WindowStateManager:
@@ -414,10 +366,7 @@ class WindowStateManager:
             self.state["x"] = new_x
             self.state["y"] = new_y
         try:
-            if hasattr(window, "resize"):
-                window.resize(width, height)
-            if hasattr(window, "move") and positioning_supported():
-                window.move(int(new_x), int(new_y))
+            get_platform_driver().apply_geometry(window, int(new_x), int(new_y), int(width), int(height))
         except Exception as exc:
             print(f"[WINDOW] Failed to apply drag restore bounds: {exc}")
 
@@ -430,10 +379,10 @@ class WindowStateManager:
             x = self.state.get("x")
             y = self.state.get("y")
         try:
-            if hasattr(window, "resize"):
+            if x is not None and y is not None:
+                get_platform_driver().apply_geometry(window, int(x), int(y), int(width), int(height))
+            elif hasattr(window, "resize"):
                 window.resize(width, height)
-            if x is not None and y is not None and hasattr(window, "move") and positioning_supported():
-                window.move(int(x), int(y))
         except Exception as exc:
             print(f"[WINDOW] Failed to apply restored bounds: {exc}")
 

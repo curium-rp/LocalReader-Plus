@@ -3,19 +3,20 @@ import sys
 import glob
 import time
 import socket
+import signal
 import threading
 import uvicorn
 import platform
 from pathlib import Path
-if platform.system() == "Linux":
-    # Prevents WebKitGTK blank window crashes on both VMs and physical NVIDIA hardware
-    os.environ["WEBKIT_DISABLE_DMABUF_RENDERER"] = "1"
-    os.environ["__NV_DISABLE_EXPLICIT_SYNC"] = "1"
-import webview
+
 # --- 1. ARCHITECTURAL SETUP: ABSOLUTE PATH ANCHORING ---
 base_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(base_dir))
 
+from platform_driver import get_platform_driver
+get_platform_driver().configure_engine()
+
+import webview
 from window_manager import WindowStateManager, native_is_fullscreen, native_is_maximized
 
 # --- 2. UNIVERSAL HARDWARE DETECTION & ORT PROVIDER LINKING ---
@@ -90,108 +91,9 @@ def setup_hardware():
 
 
 
-def _native_hwnd(form):
-    handle = getattr(form, "Handle", None)
-    if handle is None:
-        return 0
-    to_int64 = getattr(handle, "ToInt64", None)
-    if callable(to_int64):
-        return int(to_int64())
-    to_int32 = getattr(handle, "ToInt32", None)
-    if callable(to_int32):
-        return int(to_int32())
-    return int(handle)
-
-
-def _invoke_on_ui(form, fn):
-    """Run fn on the WinForms UI thread asynchronously to prevent deadlocks."""
-    try:
-        if getattr(form, "InvokeRequired", False):
-            from System import Action
-
-            form.BeginInvoke(Action(fn))
-            return
-    except Exception as e:
-        print(f"[WINDOW] UI invoke failed: {e}")
-        return
-    fn()
-
-
 def setup_standard_borderless(window):
     """Platform-specific frame chrome configuration for native resize and snap."""
-    native_win = getattr(window, "native", None)
-    if not native_win:
-        return
-
-    sys_platform = platform.system()
-
-    if sys_platform == "Windows":
-        try:
-            import ctypes
-
-            hwnd = _native_hwnd(native_win)
-            if not hwnd:
-                return
-            user32 = ctypes.windll.user32
-            dwmapi = ctypes.windll.dwmapi
-
-            GWL_STYLE = -16
-            WS_THICKFRAME = 0x00040000
-            WS_MINIMIZEBOX = 0x00020000
-            WS_MAXIMIZEBOX = 0x00010000
-            SWP_NOSIZE = 0x0001
-            SWP_NOMOVE = 0x0002
-            SWP_NOZORDER = 0x0004
-            SWP_FRAMECHANGED = 0x0020
-
-            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-            user32.SetWindowLongW(
-                hwnd, GWL_STYLE, style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
-            )
-            user32.SetWindowPos(
-                hwnd, None, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
-            )
-
-            # Win11 rounded corners + snap layouts
-            corner = ctypes.c_int(2)
-            dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(corner), ctypes.sizeof(corner))
-
-            class MARGINS(ctypes.Structure):
-                _fields_ = [
-                    ("cxLeftWidth", ctypes.c_int),
-                    ("cxRightWidth", ctypes.c_int),
-                    ("cyTopHeight", ctypes.c_int),
-                    ("cyBottomHeight", ctypes.c_int),
-                ]
-
-            margins = MARGINS(0, 0, 0, 1)
-            dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-        except Exception as e:
-            print(f"[WINDOW] Windows borderless setup failed: {e}")
-
-    elif sys_platform == "Darwin":
-        try:
-            # 1 = NSWindowStyleMaskTitled
-            # 8 = NSWindowStyleMaskResizable
-            # 32768 = NSWindowStyleMaskFullSizeContentView
-            mask = 1 | 8 | 32768
-            native_win.setStyleMask_(mask)
-            native_win.setTitlebarAppearsTransparent_(True)
-            native_win.setTitleVisibility_(1)  # NSWindowTitleHidden = 1
-
-            for btn_id in (0, 1, 2):  # Close, Miniaturize, Zoom buttons
-                btn = native_win.standardWindowButton_(btn_id)
-                if btn:
-                    btn.setHidden_(True)
-        except Exception as e:
-            print(f"[WINDOW] macOS borderless setup failed: {e}")
-
-    elif sys_platform == "Linux":
-        try:
-            if hasattr(native_win, "set_resizable"):
-                native_win.set_resizable(True)
-        except Exception as e:
-            print(f"[WINDOW] Linux borderless setup failed: {e}")
+    get_platform_driver().setup_window(window)
 
 
 class WindowApi:
@@ -229,39 +131,25 @@ class WindowApi:
         if self._window_state:
             self._window_state.begin_transition()
 
-        form = getattr(self._window, "native", None)
-        if form is not None and platform.system() == "Windows":
-            def _do_restore():
-                try:
-                    if native_is_fullscreen(self._window):
-                        self._window.toggle_fullscreen()
-                    from System.Windows.Forms import FormWindowState
-                    form.WindowState = FormWindowState.Normal
-                    setup_standard_borderless(self._window)
-                    if self._window_state:
-                        self._window_state.apply_restored_bounds(self._window)
-                        self._window_state.stamp_maximized(False)
-                        self._window_state.exit_fullscreen()
-                except Exception as e:
-                    print(f"[WINDOW] Restore failed: {e}")
-                self._finish_transition()
-
-            _invoke_on_ui(form, _do_restore)
-            self._maximized = False
-            self._fullscreen = False
-            return False
-        else:
-            if native_is_fullscreen(self._window) or self._fullscreen:
-                self._window.toggle_fullscreen()
-            self._window.restore()
+        is_fs = native_is_fullscreen(self._window) or self._fullscreen
+        if is_fs:
+            get_platform_driver().exit_fullscreen(self._window)
             if self._window_state:
-                self._window_state.apply_restored_bounds(self._window)
-                self._window_state.stamp_maximized(False)
                 self._window_state.exit_fullscreen()
-            self._maximized = False
-            self._fullscreen = False
-            self._finish_transition()
-            return False
+        else:
+            get_platform_driver().restore(self._window)
+            if self._window_state:
+                self._window_state.stamp_maximized(False)
+
+        if self._window_state:
+            self._window_state.apply_restored_bounds(self._window)
+
+        self._maximized = False
+        self._fullscreen = False
+        self._finish_transition()
+        self._sync_fullscreen_chrome(False)
+        self._sync_chrome(False)
+        return False
 
     def _maximize_window(self):
         if not self._window:
@@ -269,30 +157,15 @@ class WindowApi:
         if self._window_state:
             self._window_state.begin_transition()
 
-        form = getattr(self._window, "native", None)
-        if form is not None and platform.system() == "Windows":
-            def _do_max():
-                try:
-                    from System.Windows.Forms import FormWindowState
-                    form.WindowState = FormWindowState.Maximized
-                    if self._window_state:
-                        self._window_state.stamp_maximized(True)
-                except Exception as e:
-                    print(f"[WINDOW] Maximize failed: {e}")
-                self._finish_transition()
-
-            _invoke_on_ui(form, _do_max)
-            self._maximized = True
-            self._fullscreen = False
-            return True
-        else:
-            self._window.maximize()
-            self._maximized = True
-            self._fullscreen = False
-            if self._window_state:
-                self._window_state.stamp_maximized(True)
-            self._finish_transition()
-            return True
+        get_platform_driver().maximize(self._window)
+        self._maximized = True
+        self._fullscreen = False
+        if self._window_state:
+            self._window_state.stamp_maximized(True)
+        self._finish_transition()
+        self._sync_fullscreen_chrome(False)
+        self._sync_chrome(True)
+        return True
 
     def _enter_fullscreen(self):
         if not self._window:
@@ -301,25 +174,13 @@ class WindowApi:
             self._window_state.begin_transition()
             self._window_state.enter_fullscreen("normal")
 
-        form = getattr(self._window, "native", None)
-        if form is not None and platform.system() == "Windows":
-            def _do_fs():
-                try:
-                    self._window.toggle_fullscreen()
-                except Exception as e:
-                    print(f"[WINDOW] Fullscreen failed: {e}")
-                self._finish_transition()
-
-            _invoke_on_ui(form, _do_fs)
-            self._fullscreen = True
-            self._maximized = False
-            return True
-        else:
-            self._window.toggle_fullscreen()
-            self._fullscreen = True
-            self._maximized = False
-            self._finish_transition()
-            return True
+        get_platform_driver().enter_fullscreen(self._window)
+        self._fullscreen = True
+        self._maximized = False
+        self._finish_transition()
+        self._sync_fullscreen_chrome(True)
+        self._sync_chrome(False)
+        return True
 
     def _native_is_maximized(self):
         return self._logical_maximized()
@@ -329,24 +190,32 @@ class WindowApi:
         if not self._window:
             return
         flag = "true" if self._maximized else "false"
-        try:
-            self._window.evaluate_js(
-                f"window.__lrSetMaximized && window.__lrSetMaximized({flag})"
-            )
-        except Exception:
-            pass
+
+        def _run():
+            try:
+                self._window.evaluate_js(
+                    f"window.__lrSetMaximized && window.__lrSetMaximized({flag})"
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _sync_fullscreen_chrome(self, fullscreen):
         self._fullscreen = bool(fullscreen)
         if not self._window:
             return
         flag = "true" if self._fullscreen else "false"
-        try:
-            self._window.evaluate_js(
-                f"window.__lrSetFullscreen && window.__lrSetFullscreen({flag})"
-            )
-        except Exception:
-            pass
+
+        def _run():
+            try:
+                self._window.evaluate_js(
+                    f"window.__lrSetFullscreen && window.__lrSetFullscreen({flag})"
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _sync_all_chrome(self):
         fs = native_is_fullscreen(self._window) if self._window else False
@@ -403,7 +272,9 @@ class WindowApi:
 
     def close(self):
         if self._window:
-            self._window.destroy()
+            def _do_close():
+                get_platform_driver().close(self._window)
+            threading.Timer(0.05, _do_close).start()
 
     def open_external(self, url: str) -> None:
         """Open a URL in the system default browser, never in the webview."""
@@ -411,273 +282,15 @@ class WindowApi:
         if url and str(url).startswith(("http://", "https://", "mailto:")):
             webbrowser.open(str(url))
 
-    def _resize_windows(self, edge: str):
-        form = getattr(self._window, "native", None)
-        if not form:
+    def start_native_move(self, screen_x: int = 0, screen_y: int = 0):
+        if not self._window or self._is_expanded():
             return
-        edge_map = {
-            "left": 10,
-            "right": 11,
-            "top": 12,
-            "topleft": 13,
-            "topright": 14,
-            "bottom": 15,
-            "bottomleft": 16,
-            "bottomright": 17,
-        }
-        hit = edge_map.get(str(edge or "").lower().replace("-", ""))
-        if not hit:
-            return
-
-        def _run():
-            try:
-                import ctypes
-                hwnd = _native_hwnd(form)
-                if not hwnd:
-                    return
-                user32 = ctypes.windll.user32
-                user32.ReleaseCapture()
-                user32.SendMessageW(hwnd, 0x00A1, hit, 0)  # WM_NCLBUTTONDOWN
-            except Exception as e:
-                print(f"[WINDOW] Windows native resize failed: {e}")
-
-        _invoke_on_ui(form, _run)
-
-    def _resize_linux(self, edge: str, screen_x: int, screen_y: int):
-        gtk_win = getattr(self._window, "native", None)
-        if not gtk_win:
-            return
-
-        # Gdk.WindowEdge enum:
-        # NORTH_WEST = 0, NORTH = 1, NORTH_EAST = 2, WEST = 3,
-        # EAST = 4, SOUTH_WEST = 5, SOUTH = 6, SOUTH_EAST = 7
-        edge_map = {
-            "topleft": 0,
-            "top": 1,
-            "topright": 2,
-            "left": 3,
-            "right": 4,
-            "bottomleft": 5,
-            "bottom": 6,
-            "bottomright": 7,
-        }
-        edge_code = edge_map.get(str(edge or "").lower().replace("-", ""))
-        if edge_code is None:
-            return
-
-        def _do_drag():
-            try:
-                from gi.repository import Gdk
-                edge_enum = Gdk.WindowEdge(edge_code) if hasattr(Gdk, "WindowEdge") else edge_code
-                rx = int(screen_x)
-                ry = int(screen_y)
-
-                if rx == 0 and ry == 0:
-                    display = gtk_win.get_display()
-                    seat = display.get_default_seat() if hasattr(display, "get_default_seat") else None
-                    device = seat.get_pointer() if seat else None
-                    if device:
-                        _, rx, ry = device.get_position()
-                    else:
-                        _, rx, ry, _ = display.get_pointer()
-
-                gtk_win.begin_resize_drag(
-                    edge_enum,
-                    1,        # Mouse button 1 (left click)
-                    int(rx),
-                    int(ry),
-                    0         # Current event timestamp
-                )
-            except Exception as e:
-                print(f"[WINDOW] Linux begin_resize_drag failed: {e}")
-            return False
-
-        try:
-            from gi.repository import GLib
-            GLib.idle_add(_do_drag)
-        except Exception:
-            _do_drag()
-
-    def _resize_darwin(self, edge: str):
-        ns_win = getattr(self._window, "native", None)
-        if not ns_win:
-            return
-
-        clean_edge = str(edge or "").lower().replace("-", "")
-
-        def _run_cocoa():
-            try:
-                from AppKit import (
-                    NSApp,
-                    NSEvent,
-                    NSEventMaskLeftMouseDragged,
-                    NSEventMaskLeftMouseUp,
-                    NSEventTrackingRunLoopMode,
-                )
-                from Foundation import NSDate, NSMakeRect
-
-                initial_frame = ns_win.frame()
-                start_mouse = NSEvent.mouseLocation()
-
-                min_w = 850
-                min_h = 550
-                if hasattr(self._window, "min_size") and self._window.min_size:
-                    min_w, min_h = self._window.min_size
-
-                mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
-
-                while True:
-                    event = NSApp.nextEventMatchingMask_untilDate_inMode_dequeue_(
-                        mask,
-                        NSDate.distantFuture(),
-                        NSEventTrackingRunLoopMode,
-                        True,
-                    )
-                    if not event:
-                        break
-                    etype = event.type()
-                    if etype == 2:  # NSLeftMouseUp
-                        break
-                    if etype == 6:  # NSLeftMouseDragged
-                        curr = NSEvent.mouseLocation()
-                        dx = curr.x - start_mouse.x
-                        dy = curr.y - start_mouse.y
-
-                        x = initial_frame.origin.x
-                        y = initial_frame.origin.y
-                        w = initial_frame.size.width
-                        h = initial_frame.size.height
-
-                        # Horizontal sizing
-                        if "right" in clean_edge:
-                            new_w = max(min_w, w + dx)
-                        elif "left" in clean_edge:
-                            new_w = max(min_w, w - dx)
-                            x = x + (w - new_w)
-                        else:
-                            new_w = w
-
-                        # Vertical sizing (Cocoa y=0 at screen bottom)
-                        if "top" in clean_edge:
-                            new_h = max(min_h, h + dy)
-                        elif "bottom" in clean_edge:
-                            new_h = max(min_h, h - dy)
-                            y = y + (h - new_h)
-                        else:
-                            new_h = h
-
-                        ns_win.setFrame_display_(NSMakeRect(x, y, new_w, new_h), True)
-            except Exception as e:
-                print(f"[WINDOW] macOS native resize loop failed: {e}")
-
-        try:
-            from PyObjCTools import AppHelper
-            AppHelper.callAfter(_run_cocoa)
-        except Exception:
-            threading.Thread(target=_run_cocoa, daemon=True).start()
+        get_platform_driver().start_move(self._window, screen_x, screen_y)
 
     def start_native_resize(self, edge: str, screen_x: int = 0, screen_y: int = 0):
         if not self._window or self._is_expanded():
             return
-
-        sys_platform = platform.system()
-        if sys_platform == "Windows":
-            self._resize_windows(edge)
-        elif sys_platform == "Linux":
-            self._resize_linux(edge, screen_x, screen_y)
-        elif sys_platform == "Darwin":
-            self._resize_darwin(edge)
-        # Each platform helper is self-contained; no fallback block here.
-
-    def _move_windows(self):
-        form = getattr(self._window, "native", None)
-        if not form:
-            return
-
-        def _run():
-            try:
-                import ctypes
-                hwnd = _native_hwnd(form)
-                if not hwnd:
-                    return
-                user32 = ctypes.windll.user32
-                user32.ReleaseCapture()
-                user32.PostMessageW(hwnd, 0x00A1, 2, 0)  # WM_NCLBUTTONDOWN, HTCAPTION = 2
-            except Exception as e:
-                print(f"[WINDOW] Windows native drag failed: {e}")
-
-        _invoke_on_ui(form, _run)
-
-    def _move_linux(self, screen_x: int, screen_y: int):
-        gtk_win = getattr(self._window, "native", None)
-        if not gtk_win:
-            return
-
-        def _do_drag():
-            try:
-                rx = int(screen_x)
-                ry = int(screen_y)
-                if rx == 0 and ry == 0:
-                    display = gtk_win.get_display()
-                    seat = display.get_default_seat() if hasattr(display, "get_default_seat") else None
-                    device = seat.get_pointer() if seat else None
-                    if device:
-                        _, rx, ry = device.get_position()
-                    else:
-                        _, rx, ry, _ = display.get_pointer()
-                gtk_win.begin_move_drag(1, int(rx), int(ry), 0)
-            except Exception as e:
-                print(f"[WINDOW] Linux begin_move_drag failed: {e}")
-            return False
-
-        try:
-            from gi.repository import GLib
-            GLib.idle_add(_do_drag)
-        except Exception:
-            _do_drag()
-
-    def _move_darwin(self):
-        ns_win = getattr(self._window, "native", None)
-        if not ns_win:
-            return
-
-        def _run_cocoa():
-            try:
-                from AppKit import (
-                    NSApp,
-                    NSEvent,
-                    NSEventMaskLeftMouseDragged,
-                    NSEventMaskLeftMouseUp,
-                    NSEventTrackingRunLoopMode,
-                )
-                from Foundation import NSDate, NSPoint
-
-                initial_origin = ns_win.frame().origin
-                start_mouse = NSEvent.mouseLocation()
-                mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
-
-                while True:
-                    event = NSApp.nextEventMatchingMask_untilDate_inMode_dequeue_(
-                        mask,
-                        NSDate.distantFuture(),
-                        NSEventTrackingRunLoopMode,
-                        True,
-                    )
-                    if not event or event.type() == 2:  # NSLeftMouseUp
-                        break
-                    if event.type() == 6:  # NSLeftMouseDragged
-                        curr = NSEvent.mouseLocation()
-                        dx = curr.x - start_mouse.x
-                        dy = curr.y - start_mouse.y
-                        ns_win.setFrameOrigin_(NSPoint(initial_origin.x + dx, initial_origin.y + dy))
-            except Exception as e:
-                print(f"[WINDOW] macOS native move loop failed: {e}")
-
-        try:
-            from PyObjCTools import AppHelper
-            AppHelper.callAfter(_run_cocoa)
-        except Exception:
-            threading.Thread(target=_run_cocoa, daemon=True).start()
+        get_platform_driver().start_resize(self._window, edge, screen_x, screen_y)
 
     def start_titlebar_drag(self, screen_x: int, screen_y: int, client_x: int, client_y: int, current_width: int = 0):
         if not self._window:
@@ -692,50 +305,30 @@ class WindowApi:
         if self._window_state:
             self._window_state.begin_transition()
 
-        self._maximized = False
-        self._fullscreen = False
-
         new_x, new_y, target_w, target_h = (
             self._window_state.calculate_drag_restore_geometry(screen_x, screen_y, client_x, client_y, current_width)
             if self._window_state
             else (screen_x - 200, max(0, screen_y - 20), 1200, 800)
         )
 
-        form = getattr(self._window, "native", None)
-        if form is not None and platform.system() == "Windows":
-            def _do_restore():
-                try:
-                    if native_is_fullscreen(self._window):
-                        self._window.toggle_fullscreen()
-                        if self._window_state:
-                            self._window_state.exit_fullscreen()
-                        setup_standard_borderless(self._window)
-                    from System.Windows.Forms import FormWindowState
-                    form.WindowState = FormWindowState.Normal
-                except Exception as e:
-                    print(f"[WINDOW] Drag restore failed: {e}")
-                if self._window_state:
-                    self._window_state.apply_drag_restore(self._window, new_x, new_y, target_w, target_h)
-                self._finish_transition()
-
-            _invoke_on_ui(form, _do_restore)
-            return
-
         if is_fs:
-            self._window.toggle_fullscreen()
+            get_platform_driver().exit_fullscreen(self._window)
             if self._window_state:
                 self._window_state.exit_fullscreen()
+        else:
+            get_platform_driver().restore(self._window)
+            if self._window_state:
+                self._window_state.stamp_maximized(False)
 
-        self._window.restore()
+        self._maximized = False
+        self._fullscreen = False
+
         if self._window_state:
             self._window_state.apply_drag_restore(self._window, new_x, new_y, target_w, target_h)
         self._finish_transition()
-
-        sys_platform = platform.system()
-        if sys_platform == "Linux":
-            self._move_linux(screen_x, screen_y)
-        elif sys_platform == "Darwin":
-            self._move_darwin()
+        self._sync_fullscreen_chrome(False)
+        self._sync_chrome(False)
+        get_platform_driver().start_move(self._window, screen_x, screen_y)
 
 
 def find_free_port() -> int:
@@ -749,13 +342,16 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
+_server = None
+
 def run_server(port: int):
+    global _server
     try:
         setup_hardware()
         from app.server import app
         config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="critical")
-        server = uvicorn.Server(config)
-        server.run()
+        _server = uvicorn.Server(config)
+        _server.run()
     except Exception as e:
         print(f"[ERROR] Server error: {e}")
         sys.exit(1)
@@ -794,7 +390,7 @@ def main():
             fullscreen=False,
             maximized=False,
             background_color="#000000",
-            min_size=(850, 550),
+            min_size=(500, 500),
             frameless=True,
             easy_drag=False, # Didn't know why it not work but anyway it fixed by code
             shadow=True,
@@ -846,19 +442,67 @@ def main():
         def on_closing():
             window_state.save_immediate(window)
 
+        def on_closed():
+            global _server
+            if _server:
+                _server.should_exit = True
+
+        _sigint_count = 0
+
+        def sig_handler(sig, frame):
+            nonlocal _sigint_count
+            _sigint_count += 1
+            if _sigint_count > 1:
+                print("\n[EXIT] Forcing immediate termination...", flush=True)
+                os._exit(1)
+            print("\n[EXIT] Interrupt received. Closing cleanly...", flush=True)
+            try:
+                get_platform_driver().close(window)
+            except Exception:
+                pass
+
+            def _force_exit():
+                time.sleep(1.5)
+                os._exit(0)
+
+            threading.Thread(target=_force_exit, daemon=True).start()
+
+        try:
+            signal.signal(signal.SIGINT, sig_handler)
+            signal.signal(signal.SIGTERM, sig_handler)
+        except Exception:
+            pass
+
         window.events.shown += on_shown
         window.events.resized += on_resized
         window.events.moved += on_moved
         window.events.maximized += on_chrome_state
         window.events.restored += on_chrome_state
         window.events.closing += on_closing
-        webview.start(debug=False, storage_path=str(storage_path))
+        window.events.closed += on_closed
+
+        try:
+            webview.start(debug=False, storage_path=str(storage_path))
+        except KeyboardInterrupt:
+            print("\n[EXIT] KeyboardInterrupt caught. Closing cleanly...")
+            try:
+                get_platform_driver().close(window)
+            except Exception:
+                pass
+            try:
+                window.events.closed.wait(timeout=3.0)
+            except Exception:
+                pass
+            time.sleep(0.3)
 
     except Exception as e:
         print(f"[CRITICAL] Failed to create window: {e}")
         sys.exit(1)
 
     print("\n[EXIT] Shutting down...")
+    if _server:
+        _server.should_exit = True
+    time.sleep(0.2)
     os._exit(0)
 
 if __name__ == "__main__":

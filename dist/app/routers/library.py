@@ -7,7 +7,7 @@ import json, re, uuid, posixpath, urllib.parse, shutil, html, zipfile, sys, asyn
 from pathlib import Path
 from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 import xml.etree.ElementTree as ET
-from ..config import library_file, content_dir, settings_file
+from ..config import content_dir, settings_file
 from ..models import LibraryItem
 from ..utils import (
     safe_save_json,
@@ -534,6 +534,7 @@ class ProgressUpdatePayload(BaseModel):
     current_page: Optional[int] = None
     total_pages: Optional[int] = None
     progress_percent: Optional[int] = None
+    disable_br: Optional[bool] = None
 
 # Locate JSON metadata file for a given document ID
 def get_doc_json_path(doc_id: str) -> Path:
@@ -2859,69 +2860,47 @@ def _normalize_book_type(value: Any) -> Optional[str]:
     return None
 
 
-# Read and return library inventory list
+# Catalog used to be one userdata/library.json array: each row mixed identity
+# (id, fileName, bookType) with reading progress (currentPage, lastSentenceId, …).
+# That file is migrated away at boot. Canonical store is now two sidecar folders:
+#   peek EPUB  -> userdata/library/<id>/info.json + progress.json
+#   PDF/legacy -> userdata/metadata/<id>/info.json + progress.json
+# redirect.py registers the same paths first; these handlers are the fallback.
 @router.get("/api/library")
 def get_library():
+    from ..logic.memories import list_peek_catalog, list_pdf_catalog
     try:
-        with open(library_file, "r", encoding="utf-8") as f:
-            library = json.load(f)
+        return list_peek_catalog() + list_pdf_catalog()
     except Exception:
         return []
-    if not isinstance(library, list):
-        return []
-    return library
 
-# Add or update book metadata item in library.json
+
+# POST used to merge LibraryItem into library.json (skip peek).
+# PDF/legacy now write userdata/metadata/<id>/info.json + progress.json instead.
 @router.post("/api/library")
 async def save_library_item(item: LibraryItem):
-    async with _library_lock:
-        try:
-            with open(library_file, "r", encoding="utf-8") as f:
-                library = json.load(f)
-        except Exception: library = []
-
-        incoming = item.model_dump()
-        incoming["bookType"] = _normalize_book_type(incoming.get("bookType"))
-        found = False
-        for i, existing in enumerate(library):
-            if existing.get("id") == item.id:
-                merged = {**existing, **incoming}
-                if not merged.get("bookType") and existing.get("bookType"):
-                    merged["bookType"] = _normalize_book_type(existing.get("bookType"))
-                if not merged.get("language") and existing.get("language"):
-                    merged["language"] = existing.get("language")
-                library[i] = merged
-                found = True
-                break
-        if not found:
-            library.append(incoming)
-
-        safe_save_json(library_file, library)
+    from ..logic.memories import is_peek_book, upsert_pdf_sidecar
+    if is_peek_book(item.id):
         return {"status": "ok"}
+    incoming = item.model_dump()
+    incoming["bookType"] = _normalize_book_type(incoming.get("bookType"))
+    try:
+        upsert_pdf_sidecar(incoming)
+    except Exception as e:
+        print(f"[Library] Failed saving metadata sidecar for {item.id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save library item")
+    return {"status": "ok"}
 
-# Delete book from library inventory and remove extracted files
+
+# DELETE used to drop the library.json row, rmtree content/<id>/, then drop peek sidecars.
+# delete_library_book now removes peek sidecar, PDF sidecar, and extracted content.
 @router.delete("/api/library/{doc_id}")
 async def delete_library_item(doc_id: str):
+    from ..logic.memories import delete_library_book
     async with _library_lock:
-        try:
-            with open(library_file, "r", encoding="utf-8") as f:
-                library = json.load(f)
-
-            len_before = len(library)
-            library = [item for item in library if item.get("id") != doc_id]
-
-            if len(library) < len_before:
-                safe_save_json(library_file, library)
-                book_dir = content_dir / doc_id
-                if book_dir.exists(): shutil.rmtree(book_dir, ignore_errors=True)
-                for ext in [".json", ".pdf", ".epub"]:
-                    file_path = content_dir / f"{doc_id}{ext}"
-                    if file_path.exists():
-                        try: file_path.unlink()
-                        except Exception: pass
-                return {"status": "deleted"}
-            else: raise HTTPException(status_code=404, detail="Document not found")
-        except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+        if not delete_library_book(doc_id):
+            raise HTTPException(status_code=404, detail="Document not found")
+        return {"status": "deleted"}
 
 # Load and return parsed book content JSON
 @router.get("/api/library/content/{doc_id}")
@@ -3078,34 +3057,34 @@ def search_book(doc_id: str, q: str, match_case: bool = False, whole_word: bool 
 
     return {"results": results, "total_matches": total_matches, "query": q, "pages_with_matches": len(results)}
 
-# Save current reading position and progress for a book
+# Progress used to patch currentPage / lastSentence* onto the library.json row.
+# Same fields now live in that book's progress.json (peek or PDF sidecar). PDF has no shelf_status.
 @router.post("/api/library/progress/{doc_id}")
 async def update_book_progress_checkpoint(doc_id: str, payload: ProgressUpdatePayload):
-    if not library_file.exists(): raise HTTPException(status_code=404, detail="Library inventory log absent.")
-    async with _library_lock:
-        try:
-            with open(library_file, "r", encoding="utf-8") as f: books_inventory = json.load(f)
-            target_book = next((book for book in books_inventory if book.get("id") == doc_id), None)
-            if not target_book: raise HTTPException(status_code=404, detail="Requested record entry missing.")
-
-            target_book["currentPage"] = payload.currentPage
-            target_book["lastSentenceId"] = payload.lastSentenceId
-            target_book["lastSentenceIndex"] = payload.lastSentenceIndex
-            target_book["lastAccessed"] = payload.lastAccessed
-            if payload.current_page is not None:
-                target_book["current_page"] = payload.current_page
-            if payload.total_pages is not None:
-                target_book["total_pages"] = payload.total_pages
-            if payload.progress_percent is not None:
-                target_book["progress_percent"] = payload.progress_percent
-
-            temp_lib_path = library_file.with_suffix(".tmp")
-            with open(temp_lib_path, "w", encoding="utf-8") as write_handle:
-                json.dump(books_inventory, write_handle, indent=4, ensure_ascii=False)
-            temp_lib_path.replace(library_file)
-            
-        except Exception as io_error:
-            print(f"[Error] Failed to auto-save progress to library.json: {io_error}")
-            raise HTTPException(status_code=500, detail=f"Database sync failure: {str(io_error)}")
-
+    from ..logic.memories import (
+        is_peek_book,
+        is_pdf_sidecar_book,
+        load_any_progress,
+        save_book_progress,
+    )
+    peek = is_peek_book(doc_id)
+    pdf = (not peek) and is_pdf_sidecar_book(doc_id)
+    if not peek and not pdf:
+        raise HTTPException(status_code=404, detail="Requested record entry missing.")
+    prev = load_any_progress(doc_id) or {}
+    entry = {
+        "currentPage": payload.currentPage,
+        "lastSentenceId": payload.lastSentenceId,
+        "lastSentenceIndex": payload.lastSentenceIndex,
+        "lastAccessed": payload.lastAccessed,
+        "current_page": payload.current_page,
+        "total_pages": payload.total_pages,
+        "progress_percent": payload.progress_percent,
+        "disable_br": prev.get("disable_br", False) if payload.disable_br is None else bool(payload.disable_br),
+    }
+    try:
+        save_book_progress(doc_id, entry, kind="pdf" if pdf else "peek")
+    except Exception as io_error:
+        print(f"[Error] Failed to auto-save progress.json: {io_error}")
+        raise HTTPException(status_code=500, detail=f"Database sync failure: {str(io_error)}")
     return {"status": "success", "message": f"Checkpoint saved for {doc_id}"}
