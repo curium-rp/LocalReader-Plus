@@ -4,7 +4,7 @@
 
 **A modern app that used Kokoro TTS, rebuilt offline reader: fixed, optimized, and significantly improved.**
 ---
-### 🚨Update september 8, 2026 ##
+### 🚨Update september 17, 2026 ##
 ---
 <div align="center">
   <h1>Brief</h1>
@@ -175,11 +175,7 @@ for uninstall uv go [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-starte
 
 For use .exe you can go to settings "installed apps" and uninstall LocalReader Plus
 
-</br>
 
-## 🔘for Original visit [Original LocalReader-Pro](https://github.com/revisionhiep-create/LocalReader-Pro)
-
-</br>
 
 ### Custom Pause Settings
 
@@ -236,92 +232,125 @@ For use .exe you can go to settings "installed apps" and uninstall LocalReader P
 <summary><b>Click to expand the full File Tree)</b></summary>
 
 ```text
-│   .gitattributes
-│   .gitignore
-│   COPYING
-│   INSTALL.txt
-│   README.md
-│
-└───dist
-    │   main.py                           # App entry point (FastAPI + WebView)
-    │   window_manager.py                 # Native frameless window & event controls
-    │   requirements.txt                  # Locked Python dependencies
-    │   uv.toml                           # UV tool configuration
-    │
-    ├───app
-    │   │   config.py                     # Anchored paths and system configuration
-    │   │   models.py                     # Pydantic data schemas & state models
-    │   │   server.py                     # Lifespan startup & route registration
-    │   │   state.py                      # Global State Instances 
-    │   │   utils.py                      # JSON storage and helper utilities
-    │   │
-    │   ├───locales/                      # UI translations (en, es, fr, zh)
-    │   │
-    │   ├───logic/                       
-    │   │       html_normalizer.py        # Fast C-based DOM & footnote normalizer
-    │   │       smart_content_detector.py  
-    │   │       text_normalizer.py        # Sentence & pronunciation rules
-    │   │       chinese_g2p.py            # Chinese Grapheme-to-Phoneme converter
-    │   │       japanese_g2p.py           # Japanese Grapheme-to-Phoneme converter
-    │   │       language_switcher.py      # Dynamic TTS voice routing
-    │   │       dependency_manager.py     
-    │   │       downloader.py             # Model fetcher & downloader
-    │   │       syllable.py               # helper calculator for tts.py
-    │   │
-    │   ├───models/                       # Local AI models & phonetic data
-    │   │   │   kokoro.onnx               # Kokoro-82M TTS neural model
-    │   │   │   voices.bin                # Voice embedding vectors
-    │   │   │
-    │   │   └───Kanjium/
-    │   │           kanjium_pitch.json    # Japanese pitch accent dictionary
-    │   │
-    │   ├───routers/                      # REST API Endpoints
-    │   │       library.py                # Book upload, extraction, and TOC
-    │   │       tts.py                    # Audio synthesis & pause controls
-    │   │       render.py                 # HTML & document settings
-    │   │       view.py                   # Usage Documentation Models 
-    │   │       settings.py               
-    │   │       theme.py                  # Theme color & styling routes
-    │   │       timer.py                  # Background sleep timer
-    │   │       export.py                 # MP3 & audio export engine
-    │   │       system.py                 # Hardware status & engine loader
-    │   │
-    │   └───ui/                           
-    │       │   index.html                # Main Reader Single Page Application
-    │       │
-    │       ├───css/
-    │       │       reader-typography.css # Font & multi-column page styles
-    │       │       style.css             # Base application & drawer theme
-    │       │
-    │       ├───js/
-    │       │   │   app.js                # Core UI coordinator
-    │       │   │   shortcuts.js          # Keyboard navigation
-    │       │   │   search.js             # In-book search engine
-    │       │   │
-    │       │   └───modules/              # Dedicated ES6 feature controllers
-    │       │           topbar.js         # VS Code-style draggable header
-    │       │           recent.js         # Sigil-style 1-9 recent files
-    │       │           reader-layout.js  # margin control
-    │       │           horizontal.js     # Horizontal scroll & layout mode
-    │       │           typography.js     # Center control settings(topbar)
-    │       │           progress.js       # reading position sync
-    │       │           themes.js         # Theme switching & palette hooks
-    │       │           tts.js            # WebAudio playback & highlight sync
-    │       │           library.js        # Bookshelf & document selector
-    │       │           timer.js          # Sleep countdown HUD
-    │       │           export.js         # Audio export 
-    │       │           resize.js         # Panel & sidebar drag handles
-    │       │           api.js            # Backend fetch client
-    │       │           state.js          # Frontend reactive state store
-    │       │           ui.js             # Toast notifications & DOM utilities
-    |       |           wakelock.js       # Api: control sleep screen
-    │       │
-    │       └───lib/
-    │               tailwindcss-with-all-plugins.js # Local offline Tailwind CSS
-    │               lucide.min.js                   # Local vector icons
-    │
-    └───userdata/                         # Local database & user book content
-
+|   .gitattributes
+|   .gitignore
+|   COPYING
+|   INSTALL.txt
+|   README.md
+|
+\---dist
+    |   main.py
+    |   platform_driver.py
+    |   requirements.txt
+    |   uv.toml
+    |   window_manager.py
+    |
+    +---app
+    |   |   config.py
+    |   |   files_api.py
+    |   |   models.py
+    |   |   server.py
+    |   |   state.py
+    |   |   utils.py
+    |   |   __init__.py
+    |   |
+    |   +---engine
+    |   |   |   zipstream-darwin-arm64.dylib
+    |   |   |   zipstream-darwin-x64.dylib
+    |   |   |   zipstream-linux-x64.so
+    |   |   |   zipstream-win-x64.dll
+    |   |   |
+    |   |   \---native
+    |   |       |   libz.tbd
+    |   |       |   stack_chk.c
+    |   |       |   zipstream.cpp
+    |   |       |
+    |   |       \---zlib_inc
+    |   |               zconf.h
+    |   |               zlib.h
+    |   |
+    |   +---locales
+    |   |       en.json
+    |   |       es.json
+    |   |       fr.json
+    |   |       zh.json
+    |   |
+    |   +---logic
+    |   |       chinese_g2p.py
+    |   |       dependency_manager.py
+    |   |       downloader.py
+    |   |       html_normalizer.py
+    |   |       japanese_g2p.py
+    |   |       language_switcher.py
+    |   |       memories.py
+    |   |       smart_content_detector.py
+    |   |       syllable.py
+    |   |       text_normalizer.py
+    |   |       __init__.py
+    |   |
+    |   +---models
+    |   |   \---Kanjium
+    |   |           kanjium_pitch.json
+    |   |
+    |   +---native_api
+    |   |   |   native_shell.dll
+    |   |   |   native_snap.dll
+    |   |   |
+    |   |   \---native
+    |   |           native_shell.cpp
+    |   |           native_snap.cpp
+    |   |
+    |   +---routers
+    |   |       export.py
+    |   |       library.py
+    |   |       redirect.py
+    |   |       render.py
+    |   |       settings.py
+    |   |       system.py
+    |   |       theme.py
+    |   |       timer.py
+    |   |       tts.py
+    |   |       view.py
+    |   |
+    |   \---ui
+    |       |   index.html
+    |       |   __init__.py
+    |       |
+    |       +---css
+    |       |       reader-typography.css
+    |       |       style.css
+    |       |
+    |       +---js
+    |       |   |   app.js
+    |       |   |   search.js
+    |       |   |   shortcuts.js
+    |       |   |
+    |       |   \---modules
+    |       |           api.js
+    |       |           downloader.js
+    |       |           export.js
+    |       |           files_UI.js
+    |       |           history.js
+    |       |           horizontal.js
+    |       |           library.js
+    |       |           progress.js
+    |       |           reader-layout.js
+    |       |           recent.js
+    |       |           resize.js
+    |       |           state.js
+    |       |           themes.js
+    |       |           timer.js
+    |       |           topbar.js
+    |       |           tts.js
+    |       |           typography.js
+    |       |           ui.js
+    |       |           wakelock.js
+    |       |
+    |       \---lib
+    |               lucide.min.js
+    |               tailwindcss-with-all-plugins.js
+    |
+    \---userdata
 ```
 </details>
 
@@ -389,14 +418,6 @@ For use .exe you can go to settings "installed apps" and uninstall LocalReader P
 ---
 
 
-
-### LocalReader Plus (Fork of LocalReader Pro)
-
-- **Application Logic:** Proprietary modification fork (Feel free to review, modify, and use personally).
-- **Redistribution:** Please contact the author for permission.
-- **Open Source copyright Note:** This project links to and utilizes dependencies licensed under open-source agreements (including MIT, AGPL, and GPL). In compliance with those underlying libraries, the raw source code of this fork is publicly accessible for review and personal modification here on GitHub.
-
-
 ### 📜 Open Source Acknowledgements
 
 This project is made possible thanks to the following open-source libraries and frameworks:
@@ -414,6 +435,9 @@ This project is made possible thanks to the following open-source libraries and 
 | **[FFmpeg](https://ffmpeg.org/)**                                      | GPL / LGPL   | On-demand audio format conversion      |
 ---
 
+- **Open Source copyright Note:** This project links to and utilizes dependencies licensed under open-source agreements (including MIT, AGPL, and GPL). In compliance with those underlying libraries.
+
+
 ## ⚪ Credits
 
 ### Core Technologies
@@ -424,34 +448,18 @@ This project is made possible thanks to the following open-source libraries and 
 - **Audio Processing:** [FFMPEG](https://ffmpeg.org/)
   
 ---
+
 </br>
-
-### Found a Bug? Support ###
-
-  0.  check error massage in terminal (If use .exe it will have `error.log` report )
-  1. Open ticket with:
-      - Python version (`python --version`)
-      - OS
-      - Error message or screenshot
-
-      
-
-  _New feature? ticket, request, or help me and pull request_
-      
-
- 
-</br>
----
-</br>
-
-**Engine:** Kokoro onnx-82M (Dual-Mode: FP32/INT8)
-
-**Last Original LocalReader Pro updated**: January 6, 2026
----
-</br>
----
 
 **Epub or Pdf files should not be DRM (Digital Rights Management)**
 
 **Enjoy listening ! 🔳⚪**
+
+</br>
+
+---
+
+### Credits
+
+### 🔘Based on the initial project by [LocalReader-Pro](https://github.com/revisionhiep-create/LocalReader-Pro)
 
