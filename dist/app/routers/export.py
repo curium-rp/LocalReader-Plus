@@ -2,7 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from ..state import export_status, ffmpeg_status
-from ..config import content_dir, library_file, userdata_dir
+from ..config import content_dir, userdata_dir
 from ..models import ExportRequest, SynthesisRequest
 from ..utils import has_onnxruntime_gpu
 from .tts import synthesize
@@ -224,10 +224,16 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             with open(content_file, "r", encoding="utf-8") as f:
                 doc_data = json.load(f)
 
-            with open(library_file, "r", encoding="utf-8") as f:
-                library = json.load(f)
-
-            doc_item = next((item for item in library if item.get("id") == request.doc_id), None)
+            # Book name used to come from userdata/library.json. Catalog identity
+            # now lives in peek/PDF sidecar info.json (library/<id> or metadata/<id>).
+            doc_item = {"fileName": "export"}
+            try:
+                from ..logic.memories import peek_catalog_item, pdf_catalog_item
+                sidecar = peek_catalog_item(request.doc_id) or pdf_catalog_item(request.doc_id)
+                if sidecar:
+                    doc_item = sidecar
+            except Exception:
+                pass
             
             # 🌟 Extract the TOC Map for Header Rescues
             toc_map = doc_data.get("toc_map", [])

@@ -9,7 +9,14 @@ from kokoro_onnx import Kokoro, MAX_PHONEME_LENGTH, SAMPLE_RATE
 # --- Global State Instances ---
 kokoro = None  # The TTS engine instance
 
-system_status = {"is_loading": False, "last_error": None, "is_downloading": False, "downloading_model": None}
+system_status = {
+    "is_loading": False,
+    "last_error": None,
+    "is_downloading": False,
+    "downloading_model": None,
+    "download_progress": 0,
+    "download_stage": None,
+}
 
 export_status = {
     "is_exporting": False,
@@ -39,6 +46,21 @@ class PatchedKokoro(Kokoro):
         # Explicit delegation to ensure it works
         voices = super().get_voices()
         return voices
+
+    def get_voice_style(self, voice: str):
+        voices = self.get_voices()
+        if voice not in voices:
+            print(f"[PatchedKokoro] Warning: Voice '{voice}' not in loaded model. Falling back.")
+            if len(voices) > 0:
+                if "af_heart" in voices:
+                    voice = "af_heart"
+                elif "af_maple" in voices:
+                    voice = "af_maple"
+                else:
+                    voice = voices[0]
+            else:
+                raise KeyError("No voices available in model")
+        return super().get_voice_style(voice)
 
     def _create_audio(self, phonemes: str, voice: np.ndarray, speed: float):
         phonemes = phonemes[:MAX_PHONEME_LENGTH]
@@ -101,7 +123,8 @@ class PatchedKokoro(Kokoro):
                     pass
                 return np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32), SAMPLE_RATE
             raise e
-        except Exception:
+        except Exception as e:
+            print(f"[PatchedKokoro] Create failed for text '{text[:30]}...': {e}")
             return np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32), SAMPLE_RATE
 
 

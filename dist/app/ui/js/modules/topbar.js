@@ -1,7 +1,11 @@
+//Topbar for Ui/GUi near the topbar or used full screen in apps, add 32px in the top to avoid overlap
+
 import { THEME_LIST, getCurrentThemeId, setTheme } from "./themes.js";
 import { fetchJSON } from "./api.js";
 import { getTop9Recent } from "./recent.js";
 import { openTypoMenu, closeTypoMenu } from "./typography.js";
+import { openFilesUI } from "./files_UI.js";
+import { openHistoryUI } from "./history.js";
 
 function nativeApi() {
   return window.pywebview?.api || null;
@@ -131,6 +135,14 @@ function wireMenubar() {
 
 function wireFileMenu() {
   const fileInput = document.getElementById("pdfUpload");
+  document.getElementById("topbarOpenFilesBtn")?.addEventListener("click", () => {
+    closeAllMenus();
+    openFilesUI();
+  });
+  document.getElementById("topbarHistoryBtn")?.addEventListener("click", () => {
+    closeAllMenus();
+    openHistoryUI();
+  });
   document.getElementById("topbarOpenBookBtn")?.addEventListener("click", () => {
     closeAllMenus();
     fileInput?.click();
@@ -393,6 +405,8 @@ function setMaximizedChrome(maximized) {
   }
   const maxBtn = document.getElementById("winMaxBtn");
   const restoreBtn = document.getElementById("winRestoreBtn");
+  maxBtn?.classList.remove("hover-native", "active-native");
+  restoreBtn?.classList.remove("hover-native", "active-native");
   maxBtn?.classList.toggle("hidden", isMax);
   restoreBtn?.classList.toggle("hidden", !isMax);
   if (restoreBtn) restoreBtn.title = "Restore";
@@ -403,6 +417,8 @@ function setFullscreenChrome(fullscreen) {
   document.documentElement.dataset.fullscreen = isFs ? "true" : "false";
   const maxBtn = document.getElementById("winMaxBtn");
   const restoreBtn = document.getElementById("winRestoreBtn");
+  maxBtn?.classList.remove("hover-native", "active-native");
+  restoreBtn?.classList.remove("hover-native", "active-native");
   if (isFs) {
     document.documentElement.dataset.maximized = "false";
     maxBtn?.classList.toggle("hidden", true);
@@ -431,8 +447,11 @@ function applyWindowState(state) {
 function wireNoDragChrome() {
   const stop = (e) => e.stopPropagation();
   document.querySelectorAll(
-    "#appMenubar, .window-controls, .topbar-icon-btn, #pageNav, #osClock, #searchBtn",
-  ).forEach((el) => el.addEventListener("mousedown", stop));
+    "#appMenubar, .window-controls, .win-btn, .topbar-icon-btn, #pageNav, #osClock, #searchBtn",
+  ).forEach((el) => {
+    el.addEventListener("mousedown", stop);
+    el.addEventListener("pointerdown", stop);
+  });
 }
 
 function nativeCall(fn) {
@@ -440,7 +459,12 @@ function nativeCall(fn) {
   if (!api) return Promise.resolve(undefined);
   const method = api[fn];
   if (typeof method !== "function") return Promise.resolve(undefined);
-  return Promise.resolve(method());
+  try {
+    return Promise.resolve(method());
+  } catch (err) {
+    console.error("nativeCall error:", fn, err);
+    return Promise.resolve(undefined);
+  }
 }
 
 async function toggleMaximize() {
@@ -461,6 +485,15 @@ async function toggleFullscreen() {
 function wireWindowControls() {
   window.__lrSetMaximized = setMaximizedChrome;
   window.__lrSetFullscreen = setFullscreenChrome;
+  window.__lrSetMaxHover = () => {
+    document.getElementById("winMaxBtn")?.classList.remove("hover-native", "active-native");
+    document.getElementById("winRestoreBtn")?.classList.remove("hover-native", "active-native");
+  };
+
+  window.__lrSetMaxActive = () => {
+    document.getElementById("winMaxBtn")?.classList.remove("active-native");
+    document.getElementById("winRestoreBtn")?.classList.remove("active-native");
+  };
 
   document.getElementById("winMinBtn")?.addEventListener("click", () => nativeCall("minimize"));
   document.getElementById("winMaxBtn")?.addEventListener("click", (e) => {
@@ -473,7 +506,11 @@ function wireWindowControls() {
     e.stopPropagation();
     toggleMaximize();
   });
-  document.getElementById("winCloseBtn")?.addEventListener("click", () => nativeCall("close"));
+  document.getElementById("winCloseBtn")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    nativeCall("close");
+  });
 
   const bar = document.getElementById("appTopBar");
   bar?.addEventListener("dblclick", (e) => {
@@ -519,9 +556,19 @@ function wireTitlebarDrag() {
     if (e.button !== 0) return;
     if (e.target.closest("button, input, select, .no-drag, .pywebview-no-drag")) return;
 
+    if (e.detail === 2) {
+      return;
+    }
+
     const isMax = document.documentElement.dataset.maximized === "true";
     const isFs = document.documentElement.dataset.fullscreen === "true";
-    if (!isMax && !isFs) return;
+    if (!isMax && !isFs) {
+      const api = nativeApi();
+      if (api?.start_native_move) {
+        api.start_native_move(Math.round(e.screenX || 0), Math.round(e.screenY || 0));
+      }
+      return;
+    }
 
     isDown = true;
     hasDragged = false;

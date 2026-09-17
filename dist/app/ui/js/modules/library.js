@@ -3,62 +3,352 @@ import { fetchJSON, fetchBlob } from "./api.js";
 import { showToast, renderIcons, stripHTML, highlightSearchTerm, showFootnoteModal, setMonitorPreview, syncBackToReadingButton } from "./ui.js";
 import { applyReaderTypography, getRenderState } from "./typography.js";
 import { isHorizontalMode, layoutSpreads, revealInSpread, updateHorizontalSpreadFocus, wantsSpreadTwoPage, isStandaloneIllustrationPage, getActiveSpreadPages } from "./horizontal.js";
-import { indexDocument, updateProgressDisplay, getProgressMetrics } from "./progress.js";
+import { indexDocument, updateProgressDisplay, getProgressMetrics, setRamIndexReady, isRamIndexReady } from "./progress.js";
 
 // Tags that survive EPUB/PDF restore; stripped when extracting spoken/preview text.
 export const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|ins|del|strike|sub|sup|mark|small|big|abbr|cite|dfn|q|code|pre|ruby|rt|rp|figure|figcaption|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|caption|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer|address|dd|dt|summary)\b[^>]*>/gi;
 
-async function openFootnote(targetId) {
-    if (!targetId || !state.currentPages) return;
-    
-    const cleanId = targetId.split('#').pop();
-    let footnoteHTML = null;
-    let foundPageIdx = -1;
-    
-    // Priority search: Current page -> Forward -> Backward
+export function hasBookPath(item) {
+    return Boolean(item && (item.source_path || item.path));
+}
+
+function isMissingBookError(err) {
+    const msg = String(err?.message || err || "").toLowerCase();
+    return msg.includes("book missing from path") || msg.includes("source epub file missing");
+}
+
+function markPeekEpub(item) {
+    if (!item) return item;
+    if (item.source_path || item.path || item.is_peek) {
+        item.bookType = "epub";
+        item.is_peek = true;
+    }
+    return item;
+}
+
+function pageHasAnchorId(pageHtml, anchorId) {
+    if (!pageHtml || !anchorId) return false;
+    const id = String(anchorId);
+    return (
+        pageHtml.includes(`id="${id}"`) ||
+        pageHtml.includes(`id='${id}'`) ||
+        pageHtml.includes(`name="${id}"`) ||
+        pageHtml.includes(`name='${id}'`)
+    );
+}
+
+function pageHasOrigAnchor(pageHtml, anchorId) {
+    if (!pageHtml || !anchorId) return false;
+    const id = String(anchorId);
+    return (
+        pageHtml.includes(`data-orig-id="${id}"`) ||
+        pageHtml.includes(`data-orig-id='${id}'`)
+    );
+}
+
+function footnotePointerSelector(anchorId, peeked) {
+    const escaped = escapeCssAttr(anchorId);
+    if (peeked) {
+        return `[data-orig-id="${escaped}"], [id="${escaped}"], [name="${escaped}"]`;
+    }
+    return `[id="${escaped}"], [name="${escaped}"]`;
+}
+
+function findAnchorElement(root, anchorId, peeked) {
+    if (!root || !anchorId) return null;
+    const escaped = escapeCssAttr(anchorId);
+    if (peeked) {
+        return root.querySelector(`[data-orig-id="${escaped}"]`)
+            || root.getElementById?.(anchorId)
+            || root.querySelector(`[id="${escaped}"]`)
+            || root.querySelector(`[name="${escaped}"]`);
+    }
+    return root.getElementById?.(anchorId)
+        || root.querySelector(`[id="${escaped}"]`)
+        || root.querySelector(`[name="${escaped}"]`);
+}
+
+function extractFootnoteHtml(targetEl) {
+    if (!targetEl) return null;
+    const container = targetEl.closest('aside, li, p[epub\\:type="footnote"], div[epub\\:type="footnote"], .epub-footnote')
+        || targetEl.closest('p')
+        || targetEl.parentElement;
+    return container ? container.innerHTML : targetEl.innerHTML;
+}
+
+function findFootnoteInRamPages(cleanId, peeked) {
+    if (!state.currentPages || !cleanId) return { html: null, pageIdx: -1 };
     const searchOrder = [state.viewPageIndex];
     for (let i = state.viewPageIndex + 1; i < state.currentPages.length; i++) searchOrder.push(i);
     for (let i = state.viewPageIndex - 1; i >= 0; i--) searchOrder.push(i);
-    
+
     for (const idx of searchOrder) {
         const pageHtml = state.currentPages[idx];
-        if (pageHtml.includes(`id="${cleanId}"`) || pageHtml.includes(`id='${cleanId}'`)) {
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(pageHtml, 'text/html');
-            const targetEl = doc.getElementById(cleanId) || doc.querySelector(`[id="${cleanId}"]`);
-            
-            if (targetEl) {
-                const container = targetEl.closest('aside, li, p[epub\\:type="footnote"], div[epub\\:type="footnote"], .epub-footnote') 
-                                || targetEl.closest('p') 
-                                || targetEl.parentElement;
-                footnoteHTML = container ? container.innerHTML : targetEl.innerHTML;
-                foundPageIdx = idx;
-                break;
+        if (!pageHtml) continue;
+        const hit = peeked
+            ? (pageHasOrigAnchor(pageHtml, cleanId) || pageHasAnchorId(pageHtml, cleanId))
+            : pageHasAnchorId(pageHtml, cleanId);
+        if (!hit) continue;
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(pageHtml, "text/html");
+        const targetEl = findAnchorElement(doc, cleanId, peeked);
+        if (!targetEl) continue;
+        return { html: extractFootnoteHtml(targetEl), pageIdx: idx };
+    }
+    return { html: null, pageIdx: -1 };
+}
+
+function footnoteBasename(path) {
+    if (!path) return "";
+    const noQuery = String(path).split("?")[0];
+    const parts = noQuery.split("/");
+    return parts[parts.length - 1] || "";
+}
+
+function unwrapFootnoteRecord(raw, fallbackId = "") {
+    if (!raw) return null;
+    if (typeof raw === "string") {
+        return { html: raw, page_index: -1, file: "", anchor_id: fallbackId };
+    }
+    if (typeof raw === "object") {
+        return raw;
+    }
+    return null;
+}
+
+function lookupFootnoteMap(cleanId, targetId, chBase) {
+    if (!state.footnoteMap) return null;
+    const base = footnoteBasename(chBase);
+    const keys = [
+        targetId,
+        base && cleanId ? `${base}#${cleanId}` : "",
+        chBase && cleanId ? `${chBase}#${cleanId}` : "",
+        cleanId,
+    ].filter(Boolean);
+    for (const key of keys) {
+        if (state.footnoteMap[key]) return unwrapFootnoteRecord(state.footnoteMap[key], cleanId);
+    }
+    const lower = (value) => String(value || "").toLowerCase();
+    const wanted = new Set(keys.map(lower));
+    for (const [key, value] of Object.entries(state.footnoteMap)) {
+        if (wanted.has(lower(key))) return unwrapFootnoteRecord(value, cleanId);
+    }
+    return null;
+}
+
+const _peekInflight = new Map();
+let _renderPageSeq = 0;
+
+async function ensurePeekedPage(pageIdx) {
+    if (!Number.isInteger(pageIdx) || pageIdx < 0) return false;
+    if (!state.currentPages) return false;
+    if (state.currentPages[pageIdx]) return true;
+    if (!state.currentDoc?.id) return false;
+
+    const key = `${state.currentDoc.id}:${pageIdx}`;
+    const pending = _peekInflight.get(key);
+    if (pending) return pending;
+
+    const request = (async () => {
+        try {
+            const chapter = await fetchJSON(`/api/books/${state.currentDoc.id}/chapter/${pageIdx}`);
+            if (chapter?.html) {
+                if (!state.currentPages) return false;
+                while (state.currentPages.length <= pageIdx) state.currentPages.push("");
+                state.currentPages[pageIdx] = chapter.html;
+                if (isRamIndexReady()) indexDocument(state.currentPages);
+                return true;
+            }
+        } catch (e) {}
+        return false;
+    })();
+
+    _peekInflight.set(key, request);
+    try {
+        return await request;
+    } finally {
+        _peekInflight.delete(key);
+    }
+}
+
+async function ensureViewPagesReady(pageIdx) {
+    if (!hasBookPath(state.currentDoc)) return Boolean(state.currentPages?.[pageIdx]);
+    const targets = new Set([pageIdx]);
+    try {
+        if (isHorizontalMode() && wantsSpreadTwoPage()) {
+            for (const idx of getActiveSpreadPages(pageIdx)) {
+                if (Number.isInteger(idx) && idx >= 0) targets.add(idx);
             }
         }
+    } catch (e) {}
+    await Promise.all([...targets].map((idx) => ensurePeekedPage(idx)));
+    return Boolean(state.currentPages?.[pageIdx]);
+}
+
+function highlightFootnoteTarget(cleanId, peeked) {
+    const targetEl = findAnchorElement(document, cleanId, peeked);
+    if (!targetEl) return;
+    const scrollTarget = targetEl.closest(".sentence") || targetEl;
+    scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollTarget.classList.add("bg-blue-600/40", "rounded", "px-1", "transition-colors", "duration-500");
+    setTimeout(() => scrollTarget.classList.remove("bg-blue-600/40", "px-1"), 1500);
+}
+
+async function openFootnote(targetId) {
+    if (!targetId) return;
+
+    const parts = targetId.split("#");
+    const targetFile = parts.length > 1 ? parts[0] : "";
+    const cleanId = parts.pop();
+    const chBase = targetFile ? footnoteBasename(targetFile) : "";
+    const peeked = hasBookPath(state.currentDoc);
+    let footnoteHTML = null;
+    let foundPageIdx = -1;
+    let jumpAnchor = cleanId;
+
+    if (peeked) {
+        const rec = lookupFootnoteMap(cleanId, targetId, chBase);
+        if (rec) {
+            footnoteHTML = rec.html || null;
+            if (Number.isInteger(rec.page_index)) foundPageIdx = rec.page_index;
+            jumpAnchor = rec.anchor_id || cleanId;
+        }
+        if (!footnoteHTML) {
+            const ramHit = findFootnoteInRamPages(cleanId, true);
+            footnoteHTML = ramHit.html;
+            foundPageIdx = ramHit.pageIdx;
+        }
+        if (!footnoteHTML && state.currentDoc?.id) {
+            try {
+                const fnRes = await fetchJSON(`/api/books/${state.currentDoc.id}/footnote?file=${encodeURIComponent(targetFile)}&anchor=${encodeURIComponent(cleanId)}`);
+                if (fnRes && fnRes.html) footnoteHTML = fnRes.html;
+            } catch (err) {}
+        }
+    } else {
+        const rec = lookupFootnoteMap(cleanId, targetId, chBase);
+        if (rec?.html) footnoteHTML = rec.html;
+        if (!footnoteHTML) {
+            const jsonHit = findFootnoteInRamPages(cleanId, false);
+            footnoteHTML = jsonHit.html;
+            foundPageIdx = jsonHit.pageIdx;
+        }
     }
-    
+
     if (footnoteHTML) {
         showFootnoteModal(footnoteHTML, async () => {
-            state.viewPageIndex = foundPageIdx;
-            state.autoScrollEnabled = false;
-            await renderPage();
-            setTimeout(() => {
-                const targetEl = document.getElementById(cleanId);
-                if (targetEl) {
-                    const scrollTarget = targetEl.closest('.sentence') || targetEl;
-                    scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    scrollTarget.classList.add('bg-blue-600/40', 'rounded', 'px-1', 'transition-colors', 'duration-500');
-                    setTimeout(() => scrollTarget.classList.remove('bg-blue-600/40', 'px-1'), 1500);
-                }
-            }, 100);
+            if (foundPageIdx >= 0) {
+                if (peeked) await ensurePeekedPage(foundPageIdx);
+                state.viewPageIndex = foundPageIdx;
+                state.autoScrollEnabled = false;
+                await renderPage();
+                setTimeout(() => highlightFootnoteTarget(jumpAnchor || cleanId, peeked), 100);
+            }
         });
     } else {
         showToast("Footnote content not found.");
     }
 }
 
-function resolveLibraryProgress(item) {
+export function isPeekShelfBook(item) {
+  if (!item || item.is_peek === false) return false;
+  if (String(item.bookType || "").toLowerCase() === "pdf") return false;
+  return Boolean(item.source_path || item.path || item.is_peek);
+}
+
+export function peekShelfStatus(item) {
+  if (!isPeekShelfBook(item)) return "reading";
+  const raw = String(item.shelf_status || "").toLowerCase().replace(/_/g, " ");
+  if (raw === "hold" || raw === "on hold") return "hold";
+  if (raw === "finished") return "finished";
+  return "reading";
+}
+
+export function isLibrarySidebarBook(item) {
+  if (!isPeekShelfBook(item)) return true;
+  return peekShelfStatus(item) === "reading";
+}
+
+export async function setBookShelfStatus(docId, status) {
+  const res = await fetchJSON(`/api/books/${encodeURIComponent(docId)}/shelf-status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  if (state.currentDoc?.id === docId) {
+    state.currentDoc.shelf_status = (res && res.shelf_status) || status || "reading";
+  }
+  await loadLibrary();
+  return res;
+}
+
+let shelfMenuEl = null;
+let shelfMenuDocId = null;
+
+export function hideShelfStatusMenu() {
+  if (shelfMenuEl) shelfMenuEl.classList.add("hidden");
+  shelfMenuDocId = null;
+}
+
+function ensureShelfStatusMenu() {
+  if (shelfMenuEl) return shelfMenuEl;
+  shelfMenuEl = document.createElement("div");
+  shelfMenuEl.id = "lrShelfStatusMenu";
+  shelfMenuEl.className =
+    "hidden fixed z-[10050] min-w-[148px] py-1 bg-zinc-900 border border-zinc-700 rounded-md shadow-2xl text-xs text-zinc-200";
+  shelfMenuEl.innerHTML = `
+    <button type="button" data-shelf="reading" class="w-full text-left px-3 py-1.5 hover:bg-zinc-800">Reading</button>
+    <button type="button" data-shelf="hold" class="w-full text-left px-3 py-1.5 hover:bg-zinc-800">On hold</button>
+    <button type="button" data-shelf="finished" class="w-full text-left px-3 py-1.5 hover:bg-zinc-800">Finished</button>
+  `;
+  document.body.appendChild(shelfMenuEl);
+  shelfMenuEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-shelf]");
+    if (!btn || !shelfMenuDocId) return;
+    const status = btn.getAttribute("data-shelf");
+    const id = shelfMenuDocId;
+    hideShelfStatusMenu();
+    try {
+      await setBookShelfStatus(id, status);
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to update shelf status", "error");
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (shelfMenuEl && !shelfMenuEl.contains(e.target)) hideShelfStatusMenu();
+  });
+  window.addEventListener("blur", hideShelfStatusMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideShelfStatusMenu();
+  });
+  return shelfMenuEl;
+}
+
+export function openShelfStatusMenu(ev, item) {
+  if (!item?.id || !isPeekShelfBook(item)) return false;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const menu = ensureShelfStatusMenu();
+  shelfMenuDocId = item.id;
+  const current = peekShelfStatus(item);
+  menu.querySelectorAll("[data-shelf]").forEach((btn) => {
+    const active = btn.getAttribute("data-shelf") === current;
+    btn.classList.toggle("bg-zinc-800", active);
+    btn.classList.toggle("text-blue-400", active);
+  });
+  menu.classList.remove("hidden");
+  const pad = 8;
+  const w = 148;
+  const h = 108;
+  const x = Math.min(Math.max(pad, ev.clientX), window.innerWidth - w - pad);
+  const y = Math.min(Math.max(pad, ev.clientY), window.innerHeight - h - pad);
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  return true;
+}
+
+export function resolveLibraryProgress(item) {
   if (!item) return { current: 0, total: 1, percent: 0 };
   if (state.currentDoc?.id === item.id) {
     const metrics = getProgressMetrics();
@@ -127,6 +417,11 @@ export function renderLibraryCard(item) {
                         <i data-lucide="x" class="w-3.5 h-3.5"></i>
                     </button>
                 </div>`;
+  div.addEventListener("contextmenu", (e) => {
+    if (e.target.closest('[data-action="delete-doc"]')) return;
+    e.preventDefault();
+    openShelfStatusMenu(e, item);
+  });
   return div;
 }
 
@@ -148,8 +443,14 @@ export async function loadLibrary() {
       document.dispatchEvent(new CustomEvent("lr-library-change"));
       return;
     }
+    const visible = items.filter(isLibrarySidebarBook);
+    if (visible.length === 0) {
+      libraryPanel.innerHTML = '<div class="p-4 text-xs text-zinc-500 italic">No books currently reading.</div>';
+      document.dispatchEvent(new CustomEvent("lr-library-change"));
+      return;
+    }
     const fragment = document.createDocumentFragment();
-    items
+    visible
       .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
       .forEach((item) => {
         fragment.appendChild(renderLibraryCard(item));
@@ -230,7 +531,35 @@ export async function processPdfBlob(blob, fileName) {
     }
 }
 
+export async function flushReadingProgress() {
+    if (!state.currentDoc) return;
+    try {
+        const metrics = getProgressMetrics();
+        const payload = {
+            currentPage: state.readingPageIndex || 0,
+            lastSentenceId: state.currentDoc.lastSentenceId || null,
+            lastSentenceIndex: state.currentSentenceIndex || 0,
+            lastAccessed: Date.now(),
+            current_page: metrics.currentPage,
+            total_pages: metrics.totalPages,
+            progress_percent: Math.round(metrics.percent),
+        };
+        await fetchJSON(`/api/library/progress/${state.currentDoc.id}?flush=true`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        console.log(`[Progress] Flushed checkpoint for ${state.currentDoc.id}`);
+    } catch (e) {
+        console.warn("[Progress] Flush failed:", e);
+    }
+}
+
 export async function selectDocument(item) {
+    if (state.currentDoc && state.currentDoc.id !== item.id) {
+        await flushReadingProgress();
+    }
+
     if (!window._hasSyncedSettingsOnOpen) {
         try {
             const savedSettings = await fetchJSON(`/api/settings?t=${Date.now()}`).catch(() => null);
@@ -245,6 +574,7 @@ export async function selectDocument(item) {
         window._hasSyncedSettingsOnOpen = true;
     }
 
+    markPeekEpub(item);
     state.currentDoc = item;
 
     // ── BR toggle: sync to this book's stored setting ─────────────────────
@@ -273,11 +603,25 @@ export async function selectDocument(item) {
                 const tc = document.getElementById("textContent");
                 if (tc) tc.classList.toggle("disable-br", active);
                 try {
-                    await fetchJSON("/api/library", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(state.currentDoc),
-                    });
+                    if (hasBookPath(state.currentDoc)) {
+                        await fetchJSON(`/api/library/progress/${state.currentDoc.id}`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                currentPage: state.currentDoc.currentPage || 0,
+                                lastSentenceId: state.currentDoc.lastSentenceId || null,
+                                lastSentenceIndex: state.currentDoc.lastSentenceIndex || 0,
+                                lastAccessed: Date.now(),
+                                disable_br: active,
+                            }),
+                        });
+                    } else {
+                        await fetchJSON("/api/library", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(state.currentDoc),
+                        });
+                    }
                 } catch (e) {}
             });
         }
@@ -290,18 +634,86 @@ export async function selectDocument(item) {
     if (textContent) {
         textContent.classList.toggle("disable-br", !!item.disable_br);
         textContent.classList.remove("hidden");
-        textContent.innerHTML = '<div class="text-zinc-500 p-4 animate-pulse">Loading document content...</div>';
     }
 
     try {
-        const data = await fetchJSON(`/api/library/content/${item.id}`);
-        state.currentPages = data.pages;
-        
-        state.smartStartPage = data.smart_start_page || 0;
-        state.tocMap = data.toc_map || [];
+        const isNewBook = hasBookPath(item);
+        let data = null;
+        let peekWaitingOnRam = false;
+
+        if (isNewBook) {
+            // --- NEW CODE PIPELINE (Tier 1 peek, then background fill) ---
+            try {
+                const meta = await fetchJSON(`/api/books/${item.id}/meta`);
+                if (meta) {
+                    state.metadata = meta;
+                    state.tocMap = meta.toc_map || [];
+                    state.footnoteMap = meta.footnote_map || {};
+                    markPeekEpub(item);
+                    if (meta.source_path && !item.source_path) item.source_path = meta.source_path;
+                    if (meta.path && !item.path) item.path = meta.path;
+                    item.bookType = "epub";
+                    item.is_peek = true;
+                }
+            } catch (err) {
+                console.warn("[Library] New pipeline: metadata fetch bypass:", err);
+            }
+
+            const spineLen = (state.metadata?.spine && state.metadata.spine.length)
+                || state.metadata?.total_pages
+                || state.metadata?.totalPages
+                || 0;
+            let startIndex = item.currentPage || 0;
+            if (spineLen && (startIndex < 0 || startIndex >= spineLen)) startIndex = 0;
+
+            try {
+                const chapter = await fetchJSON(`/api/books/${item.id}/chapter/${startIndex}`);
+                const total = chapter.total_chapters || spineLen || 1;
+                const pages = new Array(total).fill("");
+                const idx = (typeof chapter.chapter_index === "number") ? chapter.chapter_index : startIndex;
+                pages[idx] = chapter.html || "";
+                state.currentPages = pages;
+                state.smartStartPage = 0;
+                data = {
+                    pages,
+                    toc_map: state.tocMap || [],
+                    footnote_map: state.footnoteMap || {},
+                    bookType: "epub",
+                    language: state.metadata?.language,
+                    smart_start_page: 0,
+                    is_peek: true,
+                };
+                fillPeekedBookInBackground(item.id, item);
+                peekWaitingOnRam = true;
+            } catch (err) {
+                if (isMissingBookError(err)) throw err;
+                console.warn("[Library] Chapter peek failed, falling back to full content:", err);
+                data = await fetchJSON(`/api/library/content/${item.id}`);
+                state.currentPages = data.pages;
+                state.smartStartPage = data.smart_start_page || 0;
+                if (!state.tocMap || state.tocMap.length === 0) {
+                    state.tocMap = data.toc_map || [];
+                }
+                if (!state.footnoteMap || Object.keys(state.footnoteMap).length === 0) {
+                    state.footnoteMap = data.footnote_map || {};
+                }
+            }
+        } else {
+            // --- LEGACY CODE PIPELINE (Disk-based unzipped book, no source path) ---
+            state.metadata = null;
+            data = await fetchJSON(`/api/library/content/${item.id}`);
+            state.currentPages = data.pages;
+            state.smartStartPage = data.smart_start_page || 0;
+            state.tocMap = data.toc_map || [];
+            state.footnoteMap = data.footnote_map || {};
+        }
+
         resolveBookLanguage(data, item);
-        if (!item.bookType) item.bookType = data.bookType;
-        indexDocument(state.currentPages);
+        if (hasBookPath(item)) item.bookType = "epub";
+        else if (!item.bookType) item.bookType = data.bookType;
+        setRamIndexReady(!peekWaitingOnRam);
+        if (!peekWaitingOnRam) indexDocument(state.currentPages);
+        else updateProgressDisplay();
 
         if ((item.currentPage || 0) === 0 && state.smartStartPage > 0) {
             state.readingPageIndex = state.smartStartPage;
@@ -311,6 +723,23 @@ export async function selectDocument(item) {
             state.readingPageIndex = item.currentPage || 0;
             state.viewPageIndex = item.currentPage || 0;
             state.currentSentenceIndex = item.lastSentenceIndex || 0;
+        }
+
+        const pageCount = (state.currentPages || []).length;
+        if (pageCount > 0) {
+            if (state.readingPageIndex < 0 || state.readingPageIndex >= pageCount) {
+                state.readingPageIndex = 0;
+            }
+            if (state.viewPageIndex < 0 || state.viewPageIndex >= pageCount) {
+                state.viewPageIndex = state.readingPageIndex;
+            }
+            if (!state.currentPages[state.viewPageIndex]) {
+                const filled = state.currentPages.findIndex((page) => page);
+                if (filled >= 0) {
+                    state.viewPageIndex = filled;
+                    state.readingPageIndex = filled;
+                }
+            }
         }
 
         state.readingSentences = await getSentencesForPage(state.readingPageIndex);
@@ -343,13 +772,15 @@ export async function selectDocument(item) {
         state.autoScrollEnabled = true;
 
         item.lastAccessed = Date.now();
-        try {
-            await fetchJSON("/api/library", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(item),
-            });
-        } catch (e) {}
+        if (!hasBookPath(item)) {
+            try {
+                await fetchJSON("/api/library", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(item),
+                });
+            } catch (e) {}
+        }
 
         await renderPage(); 
         renderTOC(); 
@@ -364,11 +795,67 @@ export async function selectDocument(item) {
         } 
     } catch (e) {
         console.error("Select document error:", e);
-        showToast("Failed to load document content");
+        if (isMissingBookError(e)) {
+            showToast("Book missing from path", "warning");
+        } else {
+            showToast("Failed to load document content");
+        }
         state.bookLanguage = null;
         state.pageLanguage = null;
         if (textContent) textContent.innerHTML = '';
     }
+}
+
+function fillPeekedBookInBackground(openedId, item) {
+    fetchJSON(`/api/library/content/${openedId}`).then((full) => {
+        if (!full?.pages?.length) {
+            setRamIndexReady(true);
+            indexDocument(state.currentPages || []);
+            return;
+        }
+        if (!state.currentDoc || state.currentDoc.id !== openedId) return;
+
+        const oldPages = state.currentPages || [];
+        const viewIdx = state.viewPageIndex;
+        const readingIdx = state.readingPageIndex;
+        const sentenceIdx = state.currentSentenceIndex;
+        const oldLen = oldPages.length;
+
+        let spreadIdxs = [viewIdx];
+        try {
+            if (isHorizontalMode() && wantsSpreadTwoPage()) {
+                spreadIdxs = getActiveSpreadPages(viewIdx);
+            }
+        } catch (e) {}
+        const hadHole = spreadIdxs.some((i) => !oldPages[i]) || !oldPages[viewIdx];
+
+        state.currentPages = full.pages;
+        if (Array.isArray(full.toc_map)) state.tocMap = full.toc_map;
+        if (full.footnote_map && typeof full.footnote_map === "object") {
+            state.footnoteMap = full.footnote_map;
+        }
+        if (full.bookType && item && !item.bookType) item.bookType = full.bookType;
+        resolveBookLanguage(full, item);
+        setRamIndexReady(true);
+        indexDocument(state.currentPages);
+        const newLen = (state.currentPages || []).length;
+        const clampIdx = (idx) => {
+            if (!newLen) return 0;
+            if (!Number.isInteger(idx) || idx < 0) return 0;
+            return Math.min(idx, newLen - 1);
+        };
+        state.viewPageIndex = clampIdx(viewIdx);
+        state.readingPageIndex = clampIdx(readingIdx);
+        state.currentSentenceIndex = sentenceIdx;
+        renderTOC();
+        if (hadHole || oldLen !== newLen) {
+            renderPage();
+        }
+    }).catch((err) => {
+        console.warn("[Library] Background content fill failed:", err);
+        setRamIndexReady(true);
+        indexDocument(state.currentPages || []);
+    });
 }
 
 function resolveBookLanguage(data, item) {
@@ -395,6 +882,7 @@ function resolveBookLanguage(data, item) {
 async function persistBookLanguage(lang) {
     if (!state.currentDoc || !lang) return;
     state.currentDoc.language = lang;
+    if (hasBookPath(state.currentDoc)) return;
     try {
         await fetchJSON("/api/library", {
             method: "POST",
@@ -490,6 +978,9 @@ function renderTOC() {
     const tocList = document.getElementById('tocList');
     if (!tocList) return;
     tocList.innerHTML = '';
+    if ((!state.tocMap || state.tocMap.length === 0) && state.metadata?.toc_map) {
+        state.tocMap = state.metadata.toc_map;
+    }
     if (!state.tocMap || state.tocMap.length === 0) {
         tocList.innerHTML = '<div class="p-4 text-xs text-zinc-500 italic">No Table of Contents available.</div>';
         return;
@@ -507,10 +998,13 @@ function renderTOC() {
             const tocModal = document.getElementById('tocModal');
             if (tocModal) tocModal.classList.add('hidden');
 
+            await flushReadingProgress();
+
             // Camera-only: open this entry's page, then pin its target_tts_id.
             // Playback stays on its own page. IDs are unique only within a page.
             state.viewPageIndex = Number(item.page_index);
             state.autoScrollEnabled = false;
+            await ensureViewPagesReady(state.viewPageIndex);
             await renderPage();
 
             const targetEl = resolveTocTargetElement(item);
@@ -882,7 +1376,11 @@ function readerElementToTtsValue(element) {
 }
 
 export async function getSentencesForPage(pageIndex) {
-    if (!state.currentPages || !state.currentPages[pageIndex]) return [];
+    if (!state.currentPages) return [];
+    if (!state.currentPages[pageIndex] && hasBookPath(state.currentDoc)) {
+        await ensurePeekedPage(pageIndex);
+    }
+    if (!state.currentPages[pageIndex]) return [];
     const pageText = state.currentPages[pageIndex];
 
     const tempDiv = document.createElement('div');
@@ -927,8 +1425,23 @@ export async function renderPage() {
     const scrollContainer = document.querySelector(".content-area");
     const currentSentencePreview = document.getElementById("currentSentencePreview");
     const backToReadingBtn = document.getElementById("backToReadingBtn");
+    const seq = ++_renderPageSeq;
+    const pageIdx = state.viewPageIndex;
 
-    if (!state.currentPages || !state.currentPages[state.viewPageIndex]) {
+    if (!state.currentPages) {
+        if (textContent) textContent.innerHTML = '<div class="text-zinc-500 p-4">Error: Page not found</div>';
+        return;
+    }
+
+    if (hasBookPath(state.currentDoc) && Number.isInteger(pageIdx) && pageIdx >= 0) {
+        if (!state.currentPages[pageIdx] && textContent) {
+            textContent.innerHTML = '<div class="text-zinc-500 p-4 animate-pulse">Loading page...</div>';
+        }
+        await ensureViewPagesReady(pageIdx);
+        if (seq !== _renderPageSeq) return;
+    }
+
+    if (!state.currentPages[pageIdx]) {
         if (textContent) textContent.innerHTML = '<div class="text-zinc-500 p-4">Error: Page not found</div>';
         return;
     }
@@ -938,8 +1451,9 @@ export async function renderPage() {
     }
     syncBackToReadingButton();
 
-    state.viewSentences = await getSentencesForPage(state.viewPageIndex);
-    const pageText = state.currentPages[state.viewPageIndex];
+    state.viewSentences = await getSentencesForPage(pageIdx);
+    if (seq !== _renderPageSeq) return;
+    const pageText = state.currentPages[pageIdx];
     state.pageLanguage = langFromHtmlMarkup(pageText);
     const isReadingCurrentPage = state.viewPageIndex === state.readingPageIndex;
     
@@ -1311,7 +1825,7 @@ export async function renderPage() {
    if (state.currentSearchQuery && typeof highlightSearchTerm === "function") highlightSearchTerm(state.currentSearchQuery, state.searchMatchCase, state.searchWholeWord);
     
     const footnoteElements = textContent.querySelectorAll(
-        'a[epub\\:type="noteref"], a[epub\\:type="footnote"], a[epub\\:type="backlink"], a[href*="#R_"], a[id*="R_"], .epub-noteref, .epub-footnote, p[epub\\:type="footnote"], div[epub\\:type="footnote"], aside[epub\\:type="footnote"], li[epub\\:type="footnote"]'
+        'a[epub\\:type="noteref"], a[epub\\:type="footnote"], a[epub\\:type="backlink"], a[href*="#R_"], a[id*="R_"], .epub-noteref, .epub-footnote, p[epub\\:type="footnote"], div[epub\\:type="footnote"], aside[epub\\:type="footnote"], li[epub\\:type="footnote"], sup a[href*="#"], a.reference, .reference a'
     );
 
     footnoteElements.forEach(ref => {
@@ -1339,7 +1853,9 @@ export async function renderPage() {
             ref.onclick = async (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                if (href) openFootnote(href);
+                const origId = ref.getAttribute("data-orig-id") || "";
+                const target = href || (origId ? `#${origId}` : "");
+                if (target) openFootnote(target);
             };
         } else {
             // --- 2. DEFINITION / ENDNOTE (JUMP-BACK TRIGGER) ---
@@ -1362,14 +1878,30 @@ export async function renderPage() {
                 e.preventDefault();
                 e.stopPropagation();
 
-                const cleanHref = href.split('#').pop();
-                const cleanId = id;
+                const origId = ref.getAttribute("data-orig-id") || "";
+                const cleanHref = href.split("#").pop();
+                const cleanId = origId || id;
                 if (!cleanHref && !cleanId) return;
-                
+
+                const peeked = hasBookPath(state.currentDoc);
                 let targetPageIdx = -1;
                 let foundSelector = "";
 
-                // Priority search: Backward -> Current Page -> Forward
+                if (peeked) {
+                    const rec = lookupFootnoteMap(cleanId, href, "") || lookupFootnoteMap(cleanHref, href, "");
+                    const calloutPage = Number.isInteger(rec?.callout_page_index) ? rec.callout_page_index : -1;
+                    const calloutId = rec?.callout_id || cleanHref;
+                    if (calloutPage >= 0) {
+                        await ensurePeekedPage(calloutPage);
+                        targetPageIdx = calloutPage;
+                        foundSelector = footnotePointerSelector(calloutId, true);
+                        if (calloutId) {
+                            foundSelector += `, [href="#${escapeCssAttr(calloutId)}"]`;
+                        }
+                    }
+                }
+
+                if (targetPageIdx < 0) {
                 const searchOrder = [];
                 for (let i = state.viewPageIndex - 1; i >= 0; i--) searchOrder.push(i);
                 searchOrder.push(state.viewPageIndex);
@@ -1377,25 +1909,37 @@ export async function renderPage() {
 
                 for (const idx of searchOrder) {
                     const pageHtml = state.currentPages[idx];
-                    
-                    if (cleanHref && (pageHtml.includes(`id="${cleanHref}"`) || pageHtml.includes(`id='${cleanHref}'`))) {
+                    if (!pageHtml) continue;
+
+                    if (peeked) {
+                        if (cleanHref && (pageHasOrigAnchor(pageHtml, cleanHref) || pageHasAnchorId(pageHtml, cleanHref))) {
+                            targetPageIdx = idx;
+                            foundSelector = footnotePointerSelector(cleanHref, true);
+                            break;
+                        }
+                        if (cleanId && (pageHtml.includes(`href="#${cleanId}"`) || pageHtml.includes(`href='#${cleanId}'`))) {
+                            targetPageIdx = idx;
+                            foundSelector = `[href="#${escapeCssAttr(cleanId)}"]`;
+                            break;
+                        }
+                    } else if (cleanHref && pageHasAnchorId(pageHtml, cleanHref)) {
                         targetPageIdx = idx;
-                        foundSelector = `[id="${cleanHref}"]`;
+                        foundSelector = footnotePointerSelector(cleanHref, false);
                         break;
-                    }
-                    if (cleanId && (pageHtml.includes(`href="#${cleanId}"`) || pageHtml.includes(`href='#${cleanId}'`))) {
+                    } else if (cleanId && (pageHtml.includes(`href="#${cleanId}"`) || pageHtml.includes(`href='#${cleanId}'`))) {
                         targetPageIdx = idx;
                         foundSelector = `[href="#${cleanId}"]`;
                         break;
+                    } else if (cleanHref && (pageHtml.includes(`href="#${cleanHref}"`) || pageHtml.includes(`href='#${cleanHref}'`))) {
+                        targetPageIdx = idx;
+                        foundSelector = `[href="#${cleanHref}"]`;
+                        break;
                     }
-                    if (cleanHref && (pageHtml.includes(`href="#${cleanHref}"`) || pageHtml.includes(`href='#${cleanHref}'`))) {
-                         targetPageIdx = idx;
-                         foundSelector = `[href="#${cleanHref}"]`;
-                         break;
-                    }
+                }
                 }
 
                 if (targetPageIdx !== -1) {
+                    if (peeked) await ensurePeekedPage(targetPageIdx);
                     state.viewPageIndex = targetPageIdx;
                     state.autoScrollEnabled = false;
                     await renderPage();

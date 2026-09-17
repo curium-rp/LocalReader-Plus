@@ -1,8 +1,77 @@
 import json
+import os
 import re
+import shutil
+import stat
 import sys
+import time
+import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
+
+_save_locks_guard = threading.Lock()
+_save_locks: Dict[str, threading.RLock] = {}
+
+
+def _lock_for_path(path: Path) -> threading.RLock:
+    key = str(path)
+    with _save_locks_guard:
+        lock = _save_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _save_locks[key] = lock
+        return lock
+
+
+def _is_replace_retryable(exc: OSError) -> bool:
+    winerr = getattr(exc, "winerror", None)
+    # 5 ACCESS_DENIED, 32 SHARING_VIOLATION, 33 LOCK_VIOLATION
+    if winerr in (5, 32, 33):
+        return True
+    return isinstance(exc, PermissionError)
+
+
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 12) -> None:
+    """Swap tmp onto dest. Windows (and mapped Z: drives) often deny os.replace
+    while another handle still has library.json open, so retry then overwrite."""
+    delay = 0.03
+    last_err: Optional[OSError] = None
+    for _ in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            last_err = exc
+            if not _is_replace_retryable(exc):
+                raise
+            try:
+                if dst.exists():
+                    os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                pass
+            time.sleep(delay)
+            delay = min(delay * 1.6, 0.5)
+
+    # MoveFileEx replace is unreliable on subst/mapped/cloud drives.
+    with open(src, "rb") as reader:
+        payload = reader.read()
+    delay = 0.03
+    for _ in range(attempts):
+        try:
+            with open(dst, "wb") as writer:
+                writer.write(payload)
+                writer.flush()
+                os.fsync(writer.fileno())
+            src.unlink(missing_ok=True)
+            return
+        except OSError as exc:
+            last_err = exc
+            if not _is_replace_retryable(exc):
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.6, 0.5)
+    if last_err:
+        raise last_err
 
 def has_onnxruntime_gpu() -> bool:
     capi = Path(sys.prefix) / "Lib" / "site-packages" / "onnxruntime" / "capi"
@@ -206,11 +275,40 @@ def language_from_text_heuristic(text: str) -> Optional[str]:
 
 
 def safe_save_json(path: Path, data: Any, indent: Optional[int] = None):
-    """Atomic write to prevent corruption"""
-    temp_path = path.with_suffix(".tmp")
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=indent)
-    temp_path.replace(path)
+    """Atomic JSON write. Uses a unique tmp file (not a shared library.tmp) so
+    concurrent progress flushes cannot collide, then retries replace on Windows.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
+    )
+    with _lock_for_path(path):
+        try:
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=indent)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _replace_with_retry(tmp, path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+
+def save_json_rotate_old(path: Path, data: Any, indent: Optional[int] = 2):
+    """Copy live JSON to path.old (KOReader-style), then atomic-write path."""
+    path = Path(path)
+    old_path = Path(str(path) + ".old")
+    with _lock_for_path(path):
+        if path.exists():
+            try:
+                shutil.copy2(path, old_path)
+            except OSError as exc:
+                print(f"[JSON] Failed rotating {path.name} to .old: {exc}")
+    safe_save_json(path, data, indent=indent)
 
 
 def safe_init_json(path: Path, default_data: Any, indent: Optional[int] = None):

@@ -8,7 +8,19 @@ const index = {
   totalChars: 0,
 };
 
-let scrollRaf = 0;
+let ramIndexReady = true;
+
+export function setRamIndexReady(ready) {
+  ramIndexReady = Boolean(ready);
+}
+
+export function isRamIndexReady() {
+  return ramIndexReady;
+}
+
+function peekProgressPending() {
+  return isPeekEpub() && !ramIndexReady;
+}
 
 function stripTags(html) {
   return String(html || "")
@@ -19,15 +31,27 @@ function stripTags(html) {
     .trim();
 }
 
+function isPeekEpub(doc = state.currentDoc) {
+  // Library-folder peek pipeline is EPUB-only. PDF never has these fields.
+  return Boolean(
+    (doc && (doc.source_path || doc.path || doc.is_peek)) ||
+    (state.metadata && (state.metadata.source_path || state.metadata.path || state.metadata.is_peek))
+  );
+}
+
 export function getBookType() {
-  const stored = String(state.currentDoc?.bookType || "").toLowerCase();
-  if (stored === "pdf" || stored === "epub") return stored;
+  if (isPeekEpub()) return "epub";
+  const stored = String(state.currentDoc?.bookType || state.metadata?.bookType || "").toLowerCase();
+  if (stored === "epub") return "epub";
   const pages = state.currentPages || [];
-  if (pages[0] && String(pages[0]).includes("pdf-page")) return "pdf";
-  const name = String(state.currentDoc?.fileName || "").toLowerCase();
-  if (name.endsWith(".pdf")) return "pdf";
+  if (pages.some((page) => page && String(page).includes("pdf-page"))) return "pdf";
+  const name = String(
+    state.currentDoc?.fileName || state.currentDoc?.path || state.currentDoc?.source_path || ""
+  ).toLowerCase();
+  if (name.endsWith(".pdf") || stored === "pdf") return "pdf";
   if (name.endsWith(".epub")) return "epub";
-  return pages.length ? "epub" : "pdf";
+  // Library books are EPUB. Do not fall back to HTML-file (spine) paging.
+  return "epub";
 }
 
 export function indexDocument(pages) {
@@ -40,8 +64,10 @@ export function indexDocument(pages) {
     index.cumulative.push(running);
   }
   index.totalChars = running;
-  if (state.currentDoc && !state.currentDoc.bookType) {
-    state.currentDoc.bookType = getBookType();
+  if (state.currentDoc) {
+    const kind = getBookType();
+    state.currentDoc.bookType = kind;
+    if (kind === "epub" && isPeekEpub()) state.currentDoc.is_peek = true;
   }
   updateProgressDisplay();
 }
@@ -86,7 +112,24 @@ export function getProgressMetrics() {
   const viewIndex = Math.max(0, Math.min(state.viewPageIndex || 0, Math.max(0, pages.length - 1)));
   const bookType = getBookType();
 
-  if (bookType === "pdf") {
+  // Wait for Tier 2 RAM before publishing EPUB char-page totals.
+  // Spine length (HTML file count) must never be used as the page total.
+  if (peekProgressPending()) {
+    const savedTotal = Math.max(0, Number(state.currentDoc?.total_pages) || 0);
+    const savedCurrent = Math.max(0, Number(state.currentDoc?.current_page) || 0);
+    const savedPercent = Number(state.currentDoc?.progress_percent);
+    const hasSaved = savedTotal > 1;
+    return {
+      bookType: "epub",
+      currentPage: hasSaved ? savedCurrent || 1 : 1,
+      totalPages: hasSaved ? savedTotal : 1,
+      percent: hasSaved && Number.isFinite(savedPercent) ? savedPercent : 0,
+      hairline: hasSaved && Number.isFinite(savedPercent) ? savedPercent : 0,
+      pending: true,
+    };
+  }
+
+  if (bookType === "pdf" && !isPeekEpub()) {
     const total = Math.max(1, pages.length);
     const current = pages.length ? viewIndex + 1 : 1;
     const ratio = (viewIndex + intraPageRatio()) / total;
@@ -124,10 +167,10 @@ export function updateProgressDisplay() {
 
   const pageInput = document.getElementById("pageInput");
   const pageTotal = document.getElementById("pageTotal");
-  if (pageTotal) pageTotal.textContent = String(metrics.totalPages);
+  if (pageTotal) pageTotal.textContent = metrics.pending ? "…" : String(metrics.totalPages);
 
   if (pageInput) {
-    pageInput.disabled = metrics.totalPages <= 1;
+    pageInput.disabled = Boolean(metrics.pending) || metrics.totalPages <= 1;
     pageInput.style.backgroundColor = "transparent";
     pageInput.style.border = "none";
     pageInput.style.outline = "none";
@@ -146,6 +189,7 @@ export function updateProgressDisplay() {
 
 function writeProgressToDoc() {
   if (!state.currentDoc) return;
+  if (peekProgressPending()) return;
   const metrics = getProgressMetrics();
   state.currentDoc.current_page = metrics.currentPage;
   state.currentDoc.total_pages = metrics.totalPages;
@@ -159,7 +203,7 @@ export function jumpToDisplayedPage(displayedPage) {
   const metrics = getProgressMetrics();
   const pageNum = Math.max(1, Math.min(metrics.totalPages, displayedPage));
 
-  if (getBookType() === "pdf") {
+  if (getBookType() === "pdf" && !isPeekEpub()) {
     state.viewPageIndex = pageNum - 1;
     return true;
   }

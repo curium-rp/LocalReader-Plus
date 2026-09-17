@@ -511,6 +511,8 @@ body.reader-two-page #readerContent {
   position: absolute;
   inset: 0;
   z-index: 0;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 html[data-maximized="true"] #titlebarDrag,
@@ -930,6 +932,11 @@ html[data-fullscreen="true"] #titlebarDrag {
 
 .win-btn:hover {
   background-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.win-btn:active {
+  background-color: rgba(255, 255, 255, 0.18);
   color: #ffffff;
 }
 
@@ -1367,6 +1374,16 @@ body.horizontal-mode .voice-settings-button:not(.chrome-hidden) {
   display: none !important;
 }
 
+@media (max-width: 1100px) {
+  #emptyState {
+    display: none !important;
+  }
+}
+
+body.compact-empty-state #emptyState {
+  display: none !important;
+}
+
 .drop-overlay-content {
   text-align: center;
   padding: 2rem;
@@ -1604,20 +1621,16 @@ img.epub-image:not(.epub-icon).active-sentence {
   cursor: nwse-resize;
 }
 
-html[data-maximized="true"] #windowResizeLayer {
+html[data-maximized="true"] #windowResizeLayer,
+html[data-fullscreen="true"] #windowResizeLayer {
   display: none !important;
+  pointer-events: none !important;
 }
 
 /* RESPONSIVE BREAKPOINTS */
 @media (max-width: 1070px) {
   .topbar-center {
     display: none !important;
-  }
-}
-
-@media (max-width: 768px) {
-  .sidebar {
-    width: 70px;
   }
 }
 

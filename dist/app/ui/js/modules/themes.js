@@ -9,7 +9,37 @@ export const THEME_LIST = [
   { id: "twilight", name: "Twilight (Gray)", bg: "#292d3e", text: "#a6accd", icon: "T" }
 ];
 
-let currentThemeId = localStorage.getItem("lr_theme") || "dark";
+function getSafeStorage() {
+  try {
+    if (typeof window !== "undefined" && "localStorage" in window && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch (e) {}
+  return null;
+}
+
+const memStorage = new Map();
+const safeStorage = {
+  getItem: (key) => {
+    try {
+      const ls = getSafeStorage();
+      if (ls) return ls.getItem(key);
+    } catch (e) {}
+    return memStorage.get(key) || null;
+  },
+  setItem: (key, val) => {
+    try {
+      const ls = getSafeStorage();
+      if (ls) {
+        ls.setItem(key, val);
+        return;
+      }
+    } catch (e) {}
+    memStorage.set(key, String(val));
+  }
+};
+
+let currentThemeId = safeStorage.getItem("lr_theme") || "dark";
 
 export function getCurrentThemeId() {
   return currentThemeId;
@@ -18,7 +48,7 @@ export function getCurrentThemeId() {
 export async function setTheme(themeId, saveToBackend = true) {
   currentThemeId = themeId;
   document.documentElement.dataset.theme = themeId;
-  localStorage.setItem("lr_theme", themeId);
+  safeStorage.setItem("lr_theme", themeId);
   renderIcons();
   document.dispatchEvent(new CustomEvent("lr-theme-change", { detail: themeId }));
 
@@ -44,7 +74,7 @@ export async function initThemeSystem() {
   const legacyStyle = document.getElementById("localreader-safe-themes");
   if (legacyStyle) legacyStyle.remove();
 
-  let loadedThemeId = localStorage.getItem("lr_theme") || "dark";
+  let loadedThemeId = safeStorage.getItem("lr_theme") || "dark";
   try {
     const res = await fetch("/api/theme");
     if (res.ok) {

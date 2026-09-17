@@ -377,6 +377,11 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
 
     active_engine = engine_override if engine_override is not None else state_module.kokoro
 
+    if active_engine:
+        engine_voices = active_engine.get_voices()
+        if voice not in engine_voices and engine_voices:
+            voice = "af_heart" if "af_heart" in engine_voices else engine_voices[0]
+
     if tts_tasks and active_engine:
         for idx, t in enumerate(tts_tasks):
             t["index"] = f"task_{idx}" 
@@ -496,9 +501,15 @@ async def synthesize(request: SynthesisRequest):
     request.text = safe_text
     original_text = safe_text
 
+    active_model = getattr(state_module, "system_status", {}).get("active_model", "kokoro-v1.0")
+
     try:
         voices = state_module.kokoro.get_voices()
-        selected_voice = request.voice if request.voice in voices else "af_heart"
+        if request.voice in voices:
+            selected_voice = request.voice
+        else:
+            default_candidates = ["af_heart", "af_maple", "zf_001", "af_bella"]
+            selected_voice = next((v for v in default_candidates if v in voices), voices[0] if voices else "af_heart")
         main_voice_lang = get_language_from_voice(selected_voice)
     except Exception:
         selected_voice = "af_heart"
@@ -516,7 +527,11 @@ async def synthesize(request: SynthesisRequest):
     text = sanitize_typography_for_engine(text)
 
     try:
-        polyglot_segments = smart_polyglot_split(text, selected_voice, get_language_from_voice)
+        # If Kokoro 1.1 is used, bypass the polyglot language switcher and synthesize directly with selected voice
+        if active_model == "kokoro-v1.1":
+            polyglot_segments = [{'text': text, 'voice': selected_voice, 'lang': main_voice_lang, 'is_fallback': False}]
+        else:
+            polyglot_segments = smart_polyglot_split(text, selected_voice, get_language_from_voice)
         
         pause_settings = request.pause_settings or {}
         b_type = request.behavior_type or "N"
@@ -626,10 +641,11 @@ async def synthesize(request: SynthesisRequest):
                     continue
 
                 try:
+                    actual_seg_voice = seg_voice if seg_voice in voices else selected_voice
                     if has_punctuation:
                         seg_samples, sr = synthesize_with_pauses(
                             text=final_text, 
-                            voice=seg_voice, 
+                            voice=actual_seg_voice, 
                             speed=float(request.speed or 1.0), 
                             lang=final_engine_lang, 
                             pause_settings=pause_settings, 
@@ -646,7 +662,7 @@ async def synthesize(request: SynthesisRequest):
                             chunk_samples, sr = generate_locked_audio(
                                 kokoro_inst=state_module.kokoro, 
                                 text=chunk_dict["text"], 
-                                voice=seg_voice, 
+                                voice=actual_seg_voice, 
                                 speed=float(request.speed or 1.0), 
                                 lang=final_engine_lang, 
                                 target_len=full_paragraph_len
