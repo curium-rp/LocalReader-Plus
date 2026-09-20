@@ -1,1 +1,10 @@
+# Force GitHub to count project files inside dist/ as primary repo code
 dist/** linguist-vendored=false
+
+#Exclude bundled third-party UI libraries (Tailwind, Lucide) from language stats
+dist/app/ui/lib/** linguist-vendored
+
+#Exclude C headers and compilation helper stubs (zlib headers & stack check)
+dist/app/engine/native/zlib_inc/** linguist-vendored
+dist/app/engine/native/stack_chk.c linguist-vendored
+dist/app/engine/native/libz.tbd linguist-vendored
