@@ -187,7 +187,6 @@ async function populateRecentMenu() {
       btn.className = "menubar-recent-item";
       btn.dataset.index = String(num);
       btn.dataset.id = book.id;
-      btn.title = book.fileName || "";
       btn.innerHTML = `
         <span class="menubar-num"><u>${num}</u></span>
         <span class="menubar-recent-title">${escapeMenuText(book.fileName)}</span>

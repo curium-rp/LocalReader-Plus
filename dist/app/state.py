@@ -9,6 +9,24 @@ from kokoro_onnx import Kokoro, MAX_PHONEME_LENGTH, SAMPLE_RATE
 # --- Global State Instances ---
 kokoro = None  # The TTS engine instance
 
+def _load_initial_blend_expression() -> str:
+    try:
+        from .config import userdata_dir
+        import json
+        bleeding_file = userdata_dir / "bleeding" / "bleeding.json"
+        if bleeding_file.exists():
+            with open(bleeding_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("enabled"):
+                return data.get("expression", "")
+    except Exception:
+        pass
+    return ""
+
+# Voice blending: expression string set by /api/blending/apply when blending is active.
+# Empty string means blending is off and normal voice selection applies.
+blend_expression = _load_initial_blend_expression()
+
 system_status = {
     "is_loading": False,
     "last_error": None,
@@ -48,6 +66,10 @@ class PatchedKokoro(Kokoro):
         return voices
 
     def get_voice_style(self, voice: str):
+        from .routers.tts import is_blend_expression, compute_blended_style
+        if is_blend_expression(voice):
+            return compute_blended_style(self, voice)
+
         voices = self.get_voices()
         if voice not in voices:
             print(f"[PatchedKokoro] Warning: Voice '{voice}' not in loaded model. Falling back.")
@@ -94,15 +116,33 @@ class PatchedKokoro(Kokoro):
     def phonemize(self, text: str, lang: str):
         return self.tokenizer.phonemize(text, lang)
 
-    def create(self, text: str, voice: str, speed: float = 1.0, lang: str = "en-us"):
+    def _prepare(
+        self,
+        text: str,
+        voice: str | np.ndarray,
+        speed: float,
+        lang: str,
+        is_phonemes: bool = False,
+        sentence_pause: float = 0.25,
+        clause_pause: float = 0.1,
+    ):
+        if isinstance(voice, str):
+            voice = self.get_voice_style(voice)
+        return super()._prepare(
+            text, voice, speed, lang, is_phonemes, sentence_pause, clause_pause
+        )
+
+    def create(self, text: str, voice: str | np.ndarray, speed: float = 1.0, lang: str = "en-us"):
         try:
             phonemes = self.phonemize(text, lang)
             if not phonemes or not phonemes.strip():
                 return np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32), SAMPLE_RATE
 
+            style_vector = self.get_voice_style(voice) if isinstance(voice, str) else voice
+
             if len(phonemes) <= MAX_PHONEME_LENGTH:
                 audio, rate = self._create_audio(
-                    phonemes, self.get_voice_style(voice), speed
+                    phonemes, style_vector, speed
                 )
                 if audio.size == 0:
                     return (
@@ -111,14 +151,15 @@ class PatchedKokoro(Kokoro):
                     )
                 return audio, rate
 
-            return super().create(text, voice, speed, lang)
+            return super().create(text, style_vector, speed, lang)
 
         except ValueError as e:
             if "need at least one array to concatenate" in str(e):
                 try:
                     clean_text = "".join(c for c in text if c.isalnum() or c.isspace())
                     if clean_text.strip() and clean_text != text:
-                        return super().create(clean_text, voice, speed, lang)
+                        style_vector = self.get_voice_style(voice) if isinstance(voice, str) else voice
+                        return super().create(clean_text, style_vector, speed, lang)
                 except Exception:
                     pass
                 return np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32), SAMPLE_RATE

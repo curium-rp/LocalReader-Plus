@@ -353,18 +353,38 @@ function wireCardListHandlers(cardList, data) {
             try {
                 showToast(`Switching to ${modelId}...`);
                 state.audioBufferCache?.clear();
-                const res = await fetchJSON('/api/system/models/select', {
+                await fetchJSON('/api/system/models/select', {
                     method: 'POST',
                     body: JSON.stringify({ model_id: modelId }),
                 });
-                if (res?.default_voice) {
-                    state.voice = res.default_voice;
+
+                // Poll until model switch completes in backend engine
+                let attempts = 0;
+                while (attempts < 30) {
+                    await new Promise((r) => setTimeout(r, 400));
+                    attempts++;
+                    try {
+                        const status = await fetchJSON(`/api/system/status?t=${Date.now()}`);
+                        if (!status.is_loading && status.active_model === modelId && status.model_loaded) {
+                            break;
+                        }
+                    } catch (_) {}
                 }
+
                 _lastModelCatalogFingerprint = null; // force full re-render
                 await refreshModelManagerData();
+
+                // Refresh main reader voices for the new model
                 if (typeof window.loadVoices === 'function') {
                     await window.loadVoices();
                 }
+
+                // Refresh blending slots and voice choices for the new model
+                if (typeof window.refreshBlendingVoices === 'function') {
+                    await window.refreshBlendingVoices();
+                }
+
+                showToast(`Successfully switched to ${modelId}`);
             } catch (e) {
                 showToast(e.message || 'Failed to switch model');
                 _lastModelCatalogFingerprint = null;

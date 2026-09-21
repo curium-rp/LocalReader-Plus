@@ -29,7 +29,7 @@ state_module.providers = [p for p in ort_env.split(",") if p]
 
 from .models import AppSettings
 
-from .routers import settings, library, tts, system, export, timer, theme, render, view, redirect
+from .routers import settings, library, tts, system, export, timer, theme, render, view, redirect, blending
 from . import files_api
 
 # --- Lifespan Manager ---
@@ -154,6 +154,7 @@ app.include_router(timer.router)
 app.include_router(theme.router)
 app.include_router(render.router)
 app.include_router(view.router)
+app.include_router(blending.router)
 app.include_router(files_api.router)
 
 # --- Static Files ---

@@ -535,7 +535,6 @@ html[data-fullscreen="true"] #titlebarDrag {
 #pageNav,
 #searchBtn,
 #tocBtn,
-#docTitle,
 #osClock,
 #progressMetric,
 .progress-metric-hit,
@@ -568,8 +567,7 @@ html[data-fullscreen="true"] #titlebarDrag {
 .win-btn,
 #pageNav,
 #osClock,
-#searchBtn,
-#docTitle {
+#searchBtn {
   pointer-events: auto;
 }
 
@@ -617,7 +615,7 @@ html[data-fullscreen="true"] #titlebarDrag {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: center;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .topbar-icon-btn {

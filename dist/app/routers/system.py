@@ -234,18 +234,10 @@ def load_engine_logic(requested_model_id=None, requested_mode=None):
             cur_voice = current_settings.get("voice_id")
             avail_voices = state_module.kokoro.get_voices()
             if not cur_voice or cur_voice not in avail_voices:
-                if "af_heart" in avail_voices:
-                    new_voice = "af_heart"
-                elif "af_maple" in avail_voices:
-                    new_voice = "af_maple"
-                elif "zf_001" in avail_voices:
-                    new_voice = "zf_001"
-                else:
-                    new_voice = avail_voices[0] if avail_voices else "af_heart"
-                current_settings["voice_id"] = new_voice
+                current_settings["voice_id"] = ""
                 current_settings["selected_model"] = bundle.id
                 safe_save_json(settings_file, current_settings)
-                print(f"[ENGINE] Synchronized active voice to '{new_voice}' for {bundle.name}.")
+                print(f"[ENGINE] Active voice reset for {bundle.name} (user manages selection).")
         except Exception as err:
             print(f"[ENGINE] Failed to sync voice settings: {err}")
 
@@ -408,13 +400,11 @@ async def select_model_endpoint(request: ModelSelectRequest, background_tasks: B
     if system_status["is_downloading"]:
         return {"status": "busy", "message": "Cannot switch models while downloading"}
 
-    # Persist selected_model and valid default voice in settings.json
+    # Persist selected_model in settings.json
     try:
         with open(settings_file, "r", encoding="utf-8") as f:
             settings = json.load(f)
         settings["selected_model"] = model_id
-        target_voice = "af_maple" if model_id == "kokoro-v1.1" else "af_heart"
-        settings["voice_id"] = target_voice
         safe_save_json(settings_file, settings)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -428,7 +418,7 @@ async def select_model_endpoint(request: ModelSelectRequest, background_tasks: B
     return {
         "status": "switching",
         "selected_model": model_id,
-        "default_voice": target_voice,
+        "default_voice": "",
         "message": f"Switching to {bundle.name}...",
     }
 

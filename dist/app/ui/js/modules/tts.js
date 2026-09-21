@@ -11,6 +11,7 @@ import {
 import { revealInSpread } from "./horizontal.js";
 import { updateProgressDisplay, getProgressMetrics } from "./progress.js";
 import { updateWakeLock } from "./wakelock.js";
+import { VOICE_BENCHMARKS } from "./blending.js";
 
 let saveProgressTimeout = null;
 let currentSynthesisId = 0; // 🌟 ADDED: Bulletproof lock to prevent voice overlap
@@ -27,6 +28,14 @@ export function initAudioContext() {
   if (state.audioContext.state === "suspended") {
     state.audioContext.resume();
   }
+}
+
+export function getEffectiveVoice() {
+  if (state.blendEnabled && state.blendExpression) {
+    return state.blendExpression;
+  }
+  const voiceSelect = document.getElementById("voiceSelect");
+  return (voiceSelect && voiceSelect.value) ? voiceSelect.value : (state.voice || "af_heart");
 }
 
 function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
@@ -397,9 +406,9 @@ export async function playNext() {
       return; // STOP execution here. Do NOT send to backend!
   }
 
-  const voiceSelect = document.getElementById("voiceSelect");
+  const effectiveVoice = getEffectiveVoice();
   const speedRange = document.getElementById("speedRange");
-  const lookupKey = `${state.readingPageIndex}_${targetIndex}_${voiceSelect.value}_${speedRange.value}`;
+  const lookupKey = `${state.readingPageIndex}_${targetIndex}_${effectiveVoice}_${speedRange.value}`;
   
   if (state.audioBufferCache.has(lookupKey)) {
     if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return; // 🌟 Final check before cache play
@@ -413,7 +422,7 @@ export async function playNext() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: cleanText,
-        voice: voiceSelect.value,
+        voice: effectiveVoice,
         speed: parseFloat(speedRange.value),
         rules: state.rules,
         ignore_list: state.ignoreList,
@@ -610,7 +619,7 @@ async function preCacheNextSentences() {
   isPreloading = true;
 
   try {
-    const voiceSelect = document.getElementById("voiceSelect");
+    const effectiveVoice = getEffectiveVoice();
     const speedRange = document.getElementById("speedRange");
 
     const currentPage = state.readingPageIndex;
@@ -618,11 +627,13 @@ async function preCacheNextSentences() {
     
     // Dynamic sliding window: Keep exactly 4 behind and 6 ahead relative to current reading index
     for (const key of state.audioBufferCache.keys()) {
-        const [kPageStr, kIndexStr, kVoice, kSpeed] = key.split('_');
-        const kPage = parseInt(kPageStr);
-        const kIndex = parseInt(kIndexStr);
+        const parts = key.split('_');
+        const kPage = parseInt(parts[0]);
+        const kIndex = parseInt(parts[1]);
+        const kSpeed = parts[parts.length - 1];
+        const kVoice = parts.slice(2, -1).join('_');
         
-        if (kVoice !== voiceSelect.value || kSpeed !== speedRange.value || Math.abs(kPage - currentPage) > 1) {
+        if (kVoice !== effectiveVoice || kSpeed !== speedRange.value || Math.abs(kPage - currentPage) > 1) {
             state.audioBufferCache.delete(key);
             continue;
         }
@@ -728,7 +739,7 @@ async function preCacheNextSentences() {
       // 🌟 SKIP network preloading for local elements to prevent backend errors!
       if (bType === "Img" || (bType === "S" && cleanText.trim() === "•••")) continue;
 
-      const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${voiceSelect.value}_${speedRange.value}`;
+      const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${effectiveVoice}_${speedRange.value}`;
       if (state.audioBufferCache.has(cacheKey)) continue;
 
       const res = await fetch(`${API_URL}/api/synthesize`, {
@@ -736,7 +747,7 @@ async function preCacheNextSentences() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: cleanText,
-          voice: voiceSelect.value,
+          voice: effectiveVoice,
           speed: parseFloat(speedRange.value),
           rules: state.rules,
           ignore_list: state.ignoreList,
@@ -778,6 +789,10 @@ export async function loadVoices() {
     }
 
     const data = await fetchJSON(`/api/voices/available`);
+    if (data.blend && typeof data.blend === "object") {
+      state.blendEnabled = !!data.blend.enabled;
+      state.blendExpression = data.blend.expression || "";
+    }
     const categories = data.categories || {};
 
     voiceSelect.innerHTML = "";
@@ -827,6 +842,13 @@ export async function loadVoices() {
           label = `${voice.name} (${region} ${gender})`;
         } else {
           label = state.translations?.voices?.[voice.id] || voice.name;
+        }
+
+        const bm = VOICE_BENCHMARKS?.[voice.id];
+        if (bm && bm.grade && bm.dur) {
+          label = `[${bm.grade}] [${bm.dur}] ${label}`;
+        } else if (bm && bm.grade) {
+          label = `[${bm.grade}] ${label}`;
         }
 
         option.textContent = label;

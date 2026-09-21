@@ -321,23 +321,35 @@ def safe_init_json(path: Path, default_data: Any, indent: Optional[int] = None):
 def get_language_from_voice(voice: str) -> str:
     """
     Detect language from voice ID prefix.
+    Supports single voices and blend expressions.
     Returns appropriate language code for Kokoro TTS.
     """
-    if voice.startswith(("af_", "am_")):
+    if not voice or not isinstance(voice, str):
         return "en-us"
-    elif voice.startswith(("bf_", "bm_")):
+
+    target_voice = voice
+    if "+" in voice or "(" in voice:
+        try:
+            from .routers.tts import get_primary_voice
+            target_voice = get_primary_voice(voice)
+        except Exception:
+            target_voice = voice.split("+")[0].split("(")[0].strip()
+
+    if target_voice.startswith(("af_", "am_")):
+        return "en-us"
+    elif target_voice.startswith(("bf_", "bm_")):
         return "en-gb"
-    elif voice.startswith(("ff_", "fm_")):
+    elif target_voice.startswith(("ff_", "fm_")):
         return "fr-fr"
-    elif voice.startswith(("ef_", "em_")):
+    elif target_voice.startswith(("ef_", "em_")):
         return "es"
-    elif voice.startswith(("zf_", "zm_")):
+    elif target_voice.startswith(("zf_", "zm_")):
         return "cmn"
-    elif voice.startswith(("if_", "im_")):
+    elif target_voice.startswith(("if_", "im_")):
         return "it"
-    elif voice.startswith(("pf_", "pm_")):
+    elif target_voice.startswith(("pf_", "pm_")):
         return "pt-br"
-    elif voice.startswith(("jf_", "jm_")):
+    elif target_voice.startswith(("jf_", "jm_")):
         return "ja"
     else:
         return "en-us"

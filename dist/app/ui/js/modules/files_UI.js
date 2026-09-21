@@ -1,6 +1,6 @@
 import { fetchJSON } from "./api.js";
 import { showToast, renderIcons } from "./ui.js";
-import { selectDocument, loadLibrary } from "./library.js";
+import { selectDocument, loadLibrary, peekShelfStatus } from "./library.js";
 
 // State
 let allTreesData = null; // { active_id, paths, trees, total_books, flat_list }
@@ -139,7 +139,7 @@ function getCachedBook(epubPath, fileName) {
 function shelfStatusLabel(item) {
   const book = getCachedBook(item.path, item.name);
   if (!book) return "Add";
-  const s = String(book.shelf_status || "").toLowerCase().replace(/_/g, " ");
+  const s = peekShelfStatus(book);
   if (s === "hold" || s === "on hold") return "on hold";
   if (s === "finished") return "finished";
   return "reading";
@@ -147,8 +147,6 @@ function shelfStatusLabel(item) {
 
 function statusLabelClass(label) {
   if (label === "Add") return "text-blue-400 hover:text-blue-300";
-  if (label === "on hold") return "text-amber-400 hover:text-amber-300";
-  if (label === "finished") return "text-zinc-400 hover:text-zinc-300";
   return "text-emerald-400 hover:text-emerald-300";
 }
 
@@ -1622,7 +1620,7 @@ function createBookCard(file) {
         <span class="text-[8px] font-bold mt-1 text-blue-300/80">EPUB</span>
       </div>
       <div class="flex-1 min-w-0">
-        <h4 class="text-xs font-semibold text-zinc-100 group-hover:text-blue-400 line-clamp-2 transition-colors leading-tight" title="${file.name}">
+        <h4 class="text-xs font-semibold text-zinc-100 group-hover:text-blue-400 line-clamp-2 transition-colors leading-tight">
           ${file.title || file.name}
         </h4>
         <div class="flex items-center gap-1.5 mt-1 text-[10px] text-zinc-500">
@@ -1637,8 +1635,8 @@ function createBookCard(file) {
       ${
         inShelf
           ? `
-        <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded bg-zinc-800/80 border border-zinc-700/60 ${statusLabelClass(statusLabel)}">
-          <i data-lucide="check" class="w-3 h-3"></i> ${statusLabel}
+        <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded bg-zinc-800/80 border border-zinc-700/60 ${statusLabelClass(statusLabel)}" title="${statusLabel}">
+          <i data-lucide="check" class="w-3 h-3"></i> In library
         </span>
         <button class="fe-open-btn px-2 py-1 text-[10px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors">
           Open
@@ -1764,7 +1762,7 @@ function createBookDetailRow(file) {
   row.style.minWidth = `${detailsRowMinWidth()}px`;
   const lib = file.root_name || "";
   row.innerHTML = `
-    <div class="flex items-center gap-2 min-w-0 px-2 py-1.5" title="${file.name}">
+    <div class="flex items-center gap-2 min-w-0 px-2 py-1.5">
       <span class="text-sm shrink-0">📘</span>
       <span class="truncate font-medium text-zinc-200">${file.name}</span>
     </div>
@@ -1778,7 +1776,7 @@ function createBookDetailRow(file) {
     <div class="flex items-center px-2">
       ${
         inShelf
-          ? `<button type="button" class="fe-open-btn text-[10px] truncate ${statusLabelClass(statusLabel)}">${statusLabel}</button>`
+          ? `<button type="button" class="fe-open-btn text-[10px] truncate ${statusLabelClass(statusLabel)}" title="${statusLabel}">In library</button>`
           : `<button type="button" class="fe-add-btn text-[10px] truncate ${statusLabelClass(statusLabel)}">${statusLabel}</button>`
       }
     </div>

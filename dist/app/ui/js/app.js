@@ -65,6 +65,7 @@ import {
 } from "./modules/horizontal.js";
 import { initShortcuts } from "./shortcuts.js";
 import { initSearch, closeSearchMode, handleSearchPopupKeys } from "./search.js";
+import { initVoiceBlending } from "./modules/blending.js";
 
 window.state = state;
 
@@ -193,6 +194,7 @@ async function init() {
   initResizeBorders(); 
   mountFilesUI();
   mountHistoryUI();
+  initVoiceBlending();
 
   window.loadVoices = loadVoices;
   try { await loadVoices(); } catch (e) { console.error(e); }
@@ -1513,6 +1515,9 @@ async function startStatusPolling() {
         if (status.model_loaded) {
           state.audioBufferCache.clear();
           loadVoices();
+          if (typeof window.refreshBlendingVoices === 'function') {
+            window.refreshBlendingVoices();
+          }
         }
       }
     } catch (e) {}
