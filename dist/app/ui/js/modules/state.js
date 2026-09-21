@@ -34,6 +34,9 @@ export const state = {
     pauseSettings: { comma: 0, period: 0, spam: 0, question: 600, exclamation: 600, colon: 400, semicolon: 400, newline: 0 },
 
     // Voices & Language
+    voice: 'af_heart',
+    blendEnabled: false,
+    blendExpression: '',
     currentLangIndex: 0, // unused yet — keep for later (UI language cycling)
     currentTranslations: {}, // unused yet — keep for later (loaded locale strings)
     languages: ['en', 'fr', 'es', 'zh'], // unused yet — keep for later (supported UI locales)

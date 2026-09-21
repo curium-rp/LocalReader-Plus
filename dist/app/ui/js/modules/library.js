@@ -395,11 +395,12 @@ export function renderLibraryCard(item) {
   div.dataset.id = item.id;
   div.dataset.action = "select-doc";
   div.title = item.fileName;
+  const extracted = !isPeekShelfBook(item);
   div.className = `group select-none p-3 rounded-xl cursor-pointer border transition-all ${
     isSelected
       ? "bg-blue-600/10 border-blue-600/50 text-blue-400 hover:bg-blue-600/15"
       : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800/40"
-  }`;
+  }${extracted ? " opacity-70" : ""}`;
   div.innerHTML = `
                 <div class="flex items-start justify-between gap-2">
                     <div class="flex items-start gap-3 flex-1 min-w-0" data-action="select-doc" data-id="${item.id}">
@@ -756,7 +757,7 @@ export async function selectDocument(item) {
         
         if (docTitle) {
             docTitle.textContent = item.fileName;
-            docTitle.title = item.fileName || "";
+            docTitle.removeAttribute("title");
             docTitle.classList.remove("hidden");
         }
         if (pageNav) { pageNav.classList.remove("opacity-50", "pointer-events-none"); pageNav.removeAttribute("data-inactive"); }

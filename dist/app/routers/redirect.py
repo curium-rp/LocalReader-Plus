@@ -60,6 +60,7 @@ from ..logic.memories import (
     upsert_pdf_sidecar,
     delete_library_book,
     source_epub_is_present,
+    source_epub_was_replaced,
 )
 
 MISSING_BOOK_DETAIL = "Book missing from path"
@@ -112,7 +113,7 @@ def get_or_create_meta(doc_id: str) -> Optional[Dict[str, Any]]:
         meta_path = meta.get("source_path") or meta.get("path") or book_path
         if not meta_path:
             return None
-        if meta_maps_need_rebuild(meta):
+        if meta_maps_need_rebuild(meta) or source_epub_was_replaced(meta):
             src = Path(meta_path)
             if src.exists() and src.is_file():
                 cpp_manifest = call_peeker_manifest(src)

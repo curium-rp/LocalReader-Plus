@@ -213,6 +213,26 @@ def source_epub_is_present(epub_path: Path | str | None) -> bool:
         return False
 
 
+def source_epub_mtime(epub_path: Path | str | None) -> int:
+    """Integer Unix mtime of the bound .epub, or 0 if the file is missing."""
+    if not source_epub_is_present(epub_path):
+        return 0
+    try:
+        return int(Path(epub_path).stat().st_mtime)
+    except OSError:
+        return 0
+
+
+def source_epub_was_replaced(meta: Optional[Dict[str, Any]]) -> bool:
+    """True when the .epub mtime no longer matches info.json created_at."""
+    if not meta:
+        return False
+    mtime = source_epub_mtime(meta.get("source_path") or meta.get("path"))
+    if not mtime:
+        return False
+    return mtime != int(meta.get("created_at") or 0)
+
+
 def _peeker_call(fn, *args) -> bytes:
     lib = _load_peeker_lib()
     out = ctypes.c_void_p()
@@ -2229,7 +2249,7 @@ def intercept_manifest(
         "reader_pages_filtered": True,
         "bookType": "epub",
         "is_peek": True,
-        "created_at": int(time.time()),
+        "created_at": source_epub_mtime(epub_path) or int(time.time()),
     }
 
     # SAVE ONLY WHAT WE PLAN: userdata/library/<doc_id>/info.json (no content extract)

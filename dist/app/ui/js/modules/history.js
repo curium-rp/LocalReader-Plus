@@ -2,6 +2,7 @@ import { fetchJSON } from "./api.js";
 import { renderIcons } from "./ui.js";
 import {
   selectDocument,
+  isPeekShelfBook,
   peekShelfStatus,
   openShelfStatusMenu,
   resolveLibraryProgress,
@@ -389,11 +390,14 @@ function renderHistoryList() {
     const name = escapeHtml(item.fileName || item.title || "Untitled");
     const statusLabel = shelfStatusLabel(item);
     const row = document.createElement("div");
-    row.className = "history-details-row grid items-stretch hover:bg-zinc-900/80 transition-colors select-none cursor-pointer";
+    const extracted = !isPeekShelfBook(item);
+    const bookPath = item.source_path || item.path || "";
+    row.className = `history-details-row grid items-stretch hover:bg-zinc-900/80 transition-colors select-none cursor-pointer${extracted ? " opacity-70" : ""}`;
     row.style.gridTemplateColumns = template;
     row.style.minWidth = minW;
+    if (bookPath) row.title = bookPath;
     row.innerHTML = `
-      <div class="flex items-center gap-2 min-w-0 px-3 py-1.5" title="${name}">
+      <div class="flex items-center gap-2 min-w-0 px-3 py-1.5">
         <span class="text-sm shrink-0">📘</span>
         <span class="truncate font-medium text-zinc-200">${name}</span>
       </div>

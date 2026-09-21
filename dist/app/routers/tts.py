@@ -7,7 +7,7 @@ import html
 import hashlib
 import soundfile as sf
 import concurrent.futures
-from typing import Dict
+from typing import Dict, List, Tuple
 import sys
 import json
 from pathlib import Path
@@ -40,6 +40,118 @@ from ..models import SynthesisRequest
 from ..utils import get_language_from_voice
 from ..config import base_dir
 from kokoro_onnx import SAMPLE_RATE
+
+# ── Voice Mixing & Latent Style Vector Operations ─────────────────────────────
+_BLEND_STYLE_CACHE = {}
+
+
+def is_blend_expression(expr: str) -> bool:
+    """Check if a string is a voice blend expression."""
+    if not isinstance(expr, str):
+        return False
+    if "+" in expr:
+        return True
+    return bool(re.search(r"\w+\(\s*[\d.]+\s*\)", expr))
+
+
+def parse_blend_expression(expr: str) -> List[Tuple[str, float]]:
+    """
+    Parse blend string like:
+      'af_sky(0.30)+af_heart(0.70)'
+      'af_sky(30)+af_heart(70)'
+      'af_sky+af_heart'
+    Returns list of (voice_name, normalized_weight) where sum of weights is 1.0.
+    """
+    if not expr or not expr.strip():
+        return []
+
+    parts = [p.strip() for p in expr.split("+") if p.strip()]
+    raw_slots = []
+
+    for part in parts:
+        match = re.match(r"^([\w-]+)(?:\(([\d.]+)\))?$", part)
+        if match:
+            v_name = match.group(1).strip()
+            w_str = match.group(2)
+            weight = float(w_str) if w_str is not None else 1.0
+            raw_slots.append((v_name, max(0.0, weight)))
+        else:
+            raw_slots.append((part, 1.0))
+
+    if not raw_slots:
+        return []
+
+    total_w = sum(w for _, w in raw_slots)
+    if total_w <= 0:
+        return [(v, 1.0 / len(raw_slots)) for v, _ in raw_slots]
+
+    normalized = [(v, w / total_w) for v, w in raw_slots]
+    return normalized
+
+
+def get_primary_voice(expr: str) -> str:
+    """
+    Extract the dominant voice (highest weight) from a blend expression
+    to determine language prefix, phonemizer, and fallback behavior.
+    """
+    slots = parse_blend_expression(expr)
+    if not slots:
+        return "af_heart"
+    return max(slots, key=lambda s: s[1])[0]
+
+
+def get_english_weight_ratio(expr: str) -> float:
+    """
+    Calculate the normalized proportion (0.0 - 1.0) of English voices
+    (af_*, am_*, bf_*, bm_*) in a blend expression.
+    """
+    slots = parse_blend_expression(expr)
+    if not slots:
+        return 0.0
+    return sum(
+        w for v, w in slots
+        if v.startswith(("af_", "am_", "bf_", "bm_"))
+    )
+
+
+def compute_blended_style(kokoro_inst, expr: str) -> np.ndarray:
+    """
+    Compute or retrieve cached style vector for a blend expression.
+    Returns np.ndarray of shape (510, 1, 256) ready for ONNX inference.
+    """
+    slots = parse_blend_expression(expr)
+    voices_available = kokoro_inst.get_voices() if hasattr(kokoro_inst, "get_voices") else []
+    fallback_voice = "af_heart" if "af_heart" in voices_available else (voices_available[0] if voices_available else "af_heart")
+
+    if not slots:
+        return kokoro_inst.get_voice_style(fallback_voice)
+
+    cache_key = "+".join(f"{v}({w:.4f})" for v, w in slots)
+    if cache_key in _BLEND_STYLE_CACHE:
+        return _BLEND_STYLE_CACHE[cache_key]
+
+    blended = None
+
+    for voice_name, weight in slots:
+        if voice_name not in voices_available:
+            resolved_voice = fallback_voice
+        else:
+            resolved_voice = voice_name
+
+        style = super(kokoro_inst.__class__, kokoro_inst).get_voice_style(resolved_voice)
+        weighted_style = style.astype(np.float32) * float(weight)
+
+        if blended is None:
+            blended = weighted_style
+        else:
+            blended = blended + weighted_style
+
+    if blended is None:
+        blended = kokoro_inst.get_voice_style(fallback_voice)
+
+    _BLEND_STYLE_CACHE[cache_key] = blended
+    return blended
+
 
 router = APIRouter()
 
@@ -93,13 +205,17 @@ def generate_locked_audio(kokoro_inst, text, voice, speed, lang, target_len, is_
     
     for attempt in range(max_retries):
         try:
+            target_voice = voice
+            if isinstance(voice, str) and is_blend_expression(voice):
+                target_voice = kokoro_inst.get_voice_style(voice)
+
             # Export bypasses the lock to hit the 6-worker limit. 
             # Real-time uses the lock to drip-feed the engine.
             if is_export:
-                audio_data = kokoro_inst.create(text, voice, speed, lang)
+                audio_data = kokoro_inst.create(text, target_voice, speed, lang)
             else:
                 with realtime_lock:
-                    audio_data = kokoro_inst.create(text, voice, speed, lang)
+                    audio_data = kokoro_inst.create(text, target_voice, speed, lang)
                 
             if audio_data is not None and len(audio_data[0].flatten()) > 0:
                 # Bypass cache entirely during massive exports to prevent RAM bloat
@@ -379,7 +495,7 @@ def synthesize_with_pauses(text: str, voice: str, speed: float, lang: str, pause
 
     if active_engine:
         engine_voices = active_engine.get_voices()
-        if voice not in engine_voices and engine_voices:
+        if not is_blend_expression(voice) and voice not in engine_voices and engine_voices:
             voice = "af_heart" if "af_heart" in engine_voices else engine_voices[0]
 
     if tts_tasks and active_engine:
@@ -446,8 +562,15 @@ async def get_voices():
             categories[lang_code]["voices"].append({"id": voice_id, "name": display_name})
 
         for code in categories: categories[code]["voices"].sort(key=lambda x: x["name"])
-        return {"categories": categories}
-    except Exception: return {"categories": {}}
+        active_blend = getattr(state_module, "blend_expression", "")
+        return {
+            "categories": categories,
+            "blend": {
+                "enabled": bool(active_blend),
+                "expression": active_blend
+            }
+        }
+    except Exception: return {"categories": {}, "blend": {"enabled": False, "expression": ""}}
 
 @router.get("/api/locale/{lang}")
 async def get_locale(lang: str):
@@ -503,17 +626,25 @@ async def synthesize(request: SynthesisRequest):
 
     active_model = getattr(state_module, "system_status", {}).get("active_model", "kokoro-v1.0")
 
-    try:
-        voices = state_module.kokoro.get_voices()
-        if request.voice in voices:
-            selected_voice = request.voice
-        else:
-            default_candidates = ["af_heart", "af_maple", "zf_001", "af_bella"]
-            selected_voice = next((v for v in default_candidates if v in voices), voices[0] if voices else "af_heart")
+    active_blend = getattr(state_module, "blend_expression", "")
+    is_bleeding = bool(active_blend and is_blend_expression(active_blend)) or is_blend_expression(request.voice)
+
+    voices = state_module.kokoro.get_voices() if state_module.kokoro else []
+
+    if is_bleeding:
+        selected_voice = active_blend if (active_blend and is_blend_expression(active_blend)) else request.voice
         main_voice_lang = get_language_from_voice(selected_voice)
-    except Exception:
-        selected_voice = "af_heart"
-        main_voice_lang = "en-us"
+    else:
+        try:
+            if request.voice in voices:
+                selected_voice = request.voice
+            else:
+                default_candidates = ["af_heart", "af_maple", "zf_001", "af_bella"]
+                selected_voice = next((v for v in default_candidates if v in voices), voices[0] if voices else "af_heart")
+            main_voice_lang = get_language_from_voice(selected_voice)
+        except Exception:
+            selected_voice = "af_heart"
+            main_voice_lang = "en-us"
 
     try:
         rules_data = [r.model_dump() for r in request.rules] if request.rules else []
@@ -527,11 +658,23 @@ async def synthesize(request: SynthesisRequest):
     text = sanitize_typography_for_engine(text)
 
     try:
-        # If Kokoro 1.1 is used, bypass the polyglot language switcher and synthesize directly with selected voice
-        if active_model == "kokoro-v1.1":
-            polyglot_segments = [{'text': text, 'voice': selected_voice, 'lang': main_voice_lang, 'is_fallback': False}]
-        else:
+        # Language Switcher Activation Rules:
+        # 1. Kokoro 1.1-zh: completely disabled (prototype engine, direct synthesis only)
+        # 2. Bleeding mode: ENABLED only if English weight >= 50% (preserves hybrid voice on English,
+        #    swaps foreign segments to fixed default voices); DISABLED if < 50% to protect foreign blends
+        # 3. Single voice mode (Kokoro 1.0): normal language switcher enabled
+        enable_switcher = False
+        if active_model != "kokoro-v1.1":
+            if is_bleeding:
+                en_weight = get_english_weight_ratio(selected_voice)
+                enable_switcher = (en_weight >= 0.50)
+            else:
+                enable_switcher = True
+
+        if enable_switcher:
             polyglot_segments = smart_polyglot_split(text, selected_voice, get_language_from_voice)
+        else:
+            polyglot_segments = [{'text': text, 'voice': selected_voice, 'lang': main_voice_lang, 'is_fallback': False}]
         
         pause_settings = request.pause_settings or {}
         b_type = request.behavior_type or "N"
@@ -641,7 +784,16 @@ async def synthesize(request: SynthesisRequest):
                     continue
 
                 try:
-                    actual_seg_voice = seg_voice if seg_voice in voices else selected_voice
+                    if seg.get("is_fallback"):
+                        # Pure foreign fallback voice (e.g. jf_nezumi for JP, zf_xiaoxiao for ZH)
+                        # Clean of any blend voice override
+                        actual_seg_voice = seg_voice if (voices and seg_voice in voices) else selected_voice
+                    elif is_bleeding:
+                        # Main text segments in Bleeding mode use the hybrid blend voice
+                        actual_seg_voice = selected_voice
+                        final_engine_lang = main_voice_lang
+                    else:
+                        actual_seg_voice = seg_voice if (voices and seg_voice in voices) else selected_voice
                     if has_punctuation:
                         seg_samples, sr = synthesize_with_pauses(
                             text=final_text, 
