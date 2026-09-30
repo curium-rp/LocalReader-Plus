@@ -24,7 +24,6 @@ import {
   selectDocument,
   renderPage,
   processPdfBlob,
-  processJsonData,
   getSentencesForPage,
   updateActiveTOC,
 } from "./modules/library.js";
@@ -659,48 +658,22 @@ window.__lrProcessPendingNativeDrops = async function() {
 // Process any pending native drops queued before app.js finished loading
 window.__lrProcessPendingNativeDrops();
 
-async function openEpubByPathOrFallback(file) {
-  const filePath = file.path || (window.webUtils && window.webUtils.getPathForFile ? window.webUtils.getPathForFile(file) : null);
-  if (!filePath) {
-    // In native PyWebView on Windows, native_shell.dll catches the drop via OLE IDropTarget.
-    // If we reach here, it means the drop was handled by HTML5 without a native path.
-    showToast("App cannot read path from browser drop. Please use 'Open Files' instead.", "warning", 3500);
-    return;
-  }
-
-  showToast("Binding EPUB to shelf...", "info", 1200);
-  try {
-    const res = await fetchJSON("/api/explorer/add-to-shelf", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ epub_path: filePath }),
-    });
-
-    if (res && res.book) {
-      await loadLibrary();
-      document.dispatchEvent(new CustomEvent("lr-library-change"));
-      await selectDocument(res.book);
-      showToast("Book opened", "success", 1200);
-    }
-  } catch (err) {
-    console.error("[EPUB] Peek binding failed:", err);
-    showToast("Failed to open EPUB: " + err.message, "error");
-  }
+function isPdfFile(file) {
+  return Boolean(file && file.name && file.name.toLowerCase().endsWith(".pdf"));
 }
 
-
-// --- SAFELY MOUNT UPLOAD HANDLER ---
+// --- PDF file dialog. EPUB opens from Files explorer or native drop only. ---
 const pdfUpload = document.getElementById("pdfUpload");
 if (pdfUpload) {
   pdfUpload.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
-    if (file.name.toLowerCase().endsWith(".epub")) {
-      await openEpubByPathOrFallback(file);
-    } else {
-      processPdfBlob(file, file.name);
+    if (!isPdfFile(file)) {
+      showToast("EPUB opens from Files. This dialog is PDF only.", "warning", 3000);
+      e.target.value = "";
+      return;
     }
+    processPdfBlob(file, file.name);
     e.target.value = "";
   };
 }
@@ -1099,18 +1072,17 @@ document.body.addEventListener("drop", async (e) => {
   
   const file = e.dataTransfer.files[0];
   if (!file) return;
-  
+
   const name = file.name.toLowerCase();
-  if (!name.endsWith(".pdf") && !name.endsWith(".epub")) {
-    showToast("Please drop a PDF or EPUB file.");
+  if (name.endsWith(".epub")) {
+    showToast("Drop EPUB on the window, or use Files to open it.", "warning", 3500);
     return;
   }
-  
-  if (name.endsWith(".epub")) {
-    await openEpubByPathOrFallback(file);
-  } else {
-    processPdfBlob(file, file.name);
+  if (!name.endsWith(".pdf")) {
+    showToast("Please drop a PDF, or open EPUB from Files.");
+    return;
   }
+  processPdfBlob(file, file.name);
 });
 
 function closeSidebarMiniPopups() {

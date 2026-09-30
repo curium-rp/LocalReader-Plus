@@ -4,8 +4,7 @@ from num2words import num2words
 from functools import lru_cache
 
 try:
-    from phonemizer import phonemize
-    _has_phonemizer = True
+    from app.logic.syllable import phonemize, HAS_PHONEMIZER as _has_phonemizer
 except ImportError as e:
     print(f"[Warn] Phonemizer fail: {e}")
     _has_phonemizer = False

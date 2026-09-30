@@ -119,6 +119,36 @@ def extract_export_text(element) -> str:
     return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
+def load_export_document(doc_id: str) -> dict:
+    """Use the reader's RAM pipeline for bound EPUBs; retain extracted JSON support."""
+    from .redirect import get_book_source_path, get_library_content
+
+    if get_book_source_path(doc_id):
+        return get_library_content(doc_id)
+
+    content_file_new = content_dir / doc_id / f"{doc_id}.json"
+    content_file_legacy = content_dir / f"{doc_id}.json"
+    if content_file_new.exists():
+        content_file = content_file_new
+    elif content_file_legacy.exists():
+        content_file = content_file_legacy
+    else:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    with open(content_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@router.get("/api/export/document/{doc_id}")
+def get_export_document(doc_id: str):
+    """Finalize RAM chapter indexes/TOC targets without sending all HTML to the picker."""
+    doc_data = load_export_document(doc_id)
+    return {
+        "toc_map": doc_data.get("toc_map", []),
+        "page_count": len(doc_data.get("pages", [])),
+    }
+
+
 @router.get("/api/ffmpeg/status")
 async def get_ffmpeg_status():
     global ffmpeg_status
@@ -208,21 +238,11 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
         }
 
         try:
-            # 1. Load File (Supporting Legacy & New Paths)
-            content_file_new = content_dir / request.doc_id / f"{request.doc_id}.json"
-            content_file_legacy = content_dir / f"{request.doc_id}.json"
-            
-            if content_file_new.exists():
-                content_file = content_file_new
-            elif content_file_legacy.exists():
-                content_file = content_file_legacy
-            else:
-                export_status["error"] = "Document not found"
-                export_status["is_exporting"] = False
+            # 1. Resolve path-bound EPUBs through RAM, or load legacy extracted JSON.
+            doc_data = load_export_document(request.doc_id)
+            if not export_status["is_exporting"]:
+                export_status["error"] = "Export cancelled"
                 return
-
-            with open(content_file, "r", encoding="utf-8") as f:
-                doc_data = json.load(f)
 
             # Book name used to come from userdata/library.json. Catalog identity
             # now lives in peek/PDF sidecar info.json (library/<id> or metadata/<id>).
@@ -256,6 +276,9 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             is_first_toc_on_page = True
             if start_tts_id:
                 for idx, t in enumerate(toc_map):
+                    # Peek block IDs reset per HTML chapter (s_0, s_1, ...).
+                    if doc_data.get("is_peek") and t.get("page_index") != s_page:
+                        continue
                     t_target = t.get("target_tts_id")
                     t_anchor = (t.get("anchor_id") or "").split("#")[-1]
                     if t_target == start_tts_id or t_anchor == start_tts_id or t.get("id") == start_tts_id:
@@ -312,7 +335,11 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                             # 🌟 THE EXPORT HEADER RESCUE INTERCEPTOR 🌟
                             if not clean_text:
                                 search_ids = [x for x in [el_id, orig_id] if x]
-                                matched_toc = next((t for t in toc_map if (t.get("target_tts_id") and t.get("target_tts_id") in search_ids) or (t.get("id") and t.get("id") in search_ids)), None)
+                                page_toc = (
+                                    [t for t in toc_map if t.get("page_index") == curr_page_idx]
+                                    if doc_data.get("is_peek") else toc_map
+                                )
+                                matched_toc = next((t for t in page_toc if (t.get("target_tts_id") and t.get("target_tts_id") in search_ids) or (t.get("id") and t.get("id") in search_ids)), None)
                                 if matched_toc and matched_toc.get("title"):
                                     clean_text = matched_toc["title"]
                                     
@@ -559,7 +586,7 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             export_status["output_file"] = f"{safe_book_name}/{output_filename}"
 
         except Exception as e:
-            export_status["error"] = str(e)
+            export_status["error"] = str(e.detail) if isinstance(e, HTTPException) else str(e)
             if 'wav_file' in locals() and wav_file and not wav_file.closed:
                 wav_file.close()
             if 'temp_wav_path' in locals() and temp_wav_path.exists():

@@ -69,6 +69,35 @@ try:
         standardize_footnotes,
         _normalize_epub_html,
         pre_parse_clean,
+        force_formatting_markers,
+        restore_inline_markers,
+        escape_search_query,
+        html_to_search_text,
+        first_css_url,
+        epub_image_html,
+        scene_break_open_tag,
+        sandwich_allows_scene_break,
+        strip_scene_break_inner_wrappers,
+        climb_empty_ornament_wrapper,
+        ornament_scene_break_open_tag,
+        _drop_scene_break_target_ids,
+        nodes_in_document_order,
+        find_parent,
+        replace_with_html,
+        safe_unwrap,
+        html_has_narrative_besides_media,
+        HEADING_TAGS,
+        CSS_ORNAMENT_KEYWORDS,
+        ORNAMENT_KEYWORDS,
+        clean_scene_break_contents,
+        apply_image_loading,
+    )
+    from .epub_normalizer import (
+        assign_epub_block_ids,
+        assign_toc_target_ids,
+        parse_epub_toc,
+        build_toc_normalizer_inputs,
+        ensure_toc_normalizer_inputs,
     )
     from .smart_content_detector import detect_strict_scene_break
 except (ImportError, ValueError):
@@ -76,56 +105,37 @@ except (ImportError, ValueError):
         standardize_footnotes,
         _normalize_epub_html,
         pre_parse_clean,
+        force_formatting_markers,
+        restore_inline_markers,
+        escape_search_query,
+        html_to_search_text,
+        first_css_url,
+        epub_image_html,
+        scene_break_open_tag,
+        sandwich_allows_scene_break,
+        strip_scene_break_inner_wrappers,
+        climb_empty_ornament_wrapper,
+        ornament_scene_break_open_tag,
+        _drop_scene_break_target_ids,
+        nodes_in_document_order,
+        find_parent,
+        replace_with_html,
+        safe_unwrap,
+        html_has_narrative_besides_media,
+        HEADING_TAGS,
+        CSS_ORNAMENT_KEYWORDS,
+        ORNAMENT_KEYWORDS,
+        clean_scene_break_contents,
+        apply_image_loading,
+    )
+    from epub_normalizer import (
+        assign_epub_block_ids,
+        assign_toc_target_ids,
+        parse_epub_toc,
+        build_toc_normalizer_inputs,
+        ensure_toc_normalizer_inputs,
     )
     from smart_content_detector import detect_strict_scene_break
-
-# Legacy unzip pipeline helpers (imported, not copied)
-try:
-    from ..routers.library import (
-        force_formatting_markers,
-        restore_inline_markers,
-        assign_epub_block_ids,
-        assign_toc_target_ids,
-        escape_search_query,
-        html_to_search_text,
-        first_css_url,
-        epub_image_html,
-        scene_break_open_tag,
-        sandwich_allows_scene_break,
-        strip_scene_break_inner_wrappers,
-        climb_empty_ornament_wrapper,
-        _drop_scene_break_target_ids,
-        nodes_in_document_order,
-        find_parent,
-        HEADING_TAGS,
-        CSS_ORNAMENT_KEYWORDS,
-        ORNAMENT_KEYWORDS,
-        clean_scene_break_contents,
-        apply_image_loading,
-    )
-except (ImportError, ValueError):
-    from routers.library import (
-        force_formatting_markers,
-        restore_inline_markers,
-        assign_epub_block_ids,
-        assign_toc_target_ids,
-        escape_search_query,
-        html_to_search_text,
-        first_css_url,
-        epub_image_html,
-        scene_break_open_tag,
-        sandwich_allows_scene_break,
-        strip_scene_break_inner_wrappers,
-        climb_empty_ornament_wrapper,
-        _drop_scene_break_target_ids,
-        nodes_in_document_order,
-        find_parent,
-        HEADING_TAGS,
-        CSS_ORNAMENT_KEYWORDS,
-        ORNAMENT_KEYWORDS,
-        clean_scene_break_contents,
-        apply_image_loading,
-    )
 
 # ---------------------------------------------------------------------------
 # Native Engine Bridge (in-process shared library)
@@ -310,32 +320,6 @@ def call_peeker_stream_html(epub_path: Path | str) -> Dict[str, bytes]:
 
 
 # ---------------------------------------------------------------------------
-# DOM Helpers (peek-only image/scene-break rewrites)
-# ---------------------------------------------------------------------------
-def replace_with_html(node: Optional[Node], markup: str) -> None:
-    """Replace a node with parsed markup in the current DOM tree."""
-    if not node or node.parent is None:
-        return
-    destination_parent = node.parent
-    marker = "data-selectolax-replacement-root"
-    fragment = HTMLParser(f"<body><div {marker}>{markup}</div></body>")
-    wrapper = fragment.css_first(f"[{marker}]")
-    if wrapper is None:
-        node.decompose()
-        return
-    node.replace_with(wrapper)
-    moved_wrapper = destination_parent.css_first(f"[{marker}]")
-    if moved_wrapper is not None:
-        moved_wrapper.unwrap()
-
-
-def safe_unwrap(node: Optional[Node]) -> None:
-    if not node or node.parent is None or node.tag in ("body", "html", "head", None):
-        return
-    node.unwrap()
-
-
-# ---------------------------------------------------------------------------
 # Scene Break & Image Tag Interception
 # ---------------------------------------------------------------------------
 def sanitize_image_id(filename: str) -> str:
@@ -413,19 +397,6 @@ _NARRATIVE_CHARS = re.compile(
 )
 
 
-def html_has_narrative_besides_media(markup: str) -> bool:
-    """True when leftover readable text remains after stripping media tags."""
-    if not markup:
-        return False
-    stripped = re.sub(
-        r"<(?:svg|picture)\b[^>]*>.*?</(?:svg|picture)>", " ", markup, flags=re.I | re.S
-    )
-    stripped = re.sub(r"<(?:img|image)\b[^>]*/?>", " ", stripped, flags=re.I)
-    stripped = re.sub(r"<[^>]+>", " ", stripped)
-    leftover = re.sub(r"\s+", " ", stripped).strip()
-    return bool(leftover and _NARRATIVE_CHARS.search(leftover))
-
-
 _MEDIA_TAG_RE = re.compile(r"<(?:img|image|svg|picture|video|canvas)\b", re.I)
 _RESOURCE_ATTR_RE = re.compile(
     r"""(?:xlink:href|href|srcset|src)\s*=\s*(["'])(.*?)\1""",
@@ -459,7 +430,7 @@ def image_src_from_node(node: Optional[Node]) -> str:
         if cleaned:
             return cleaned
     html_frag = (node.html or "") + " "
-    parent = find_parent_tag(node, ("svg", "picture"))
+    parent = find_parent(node, ("svg", "picture"))
     if parent is not None:
         html_frag += parent.html or ""
     for match in _RESOURCE_ATTR_RE.finditer(html_frag):
@@ -517,47 +488,8 @@ def unique_image_map_id(image_map: Dict[str, str], zip_path: str) -> str:
     return candidate
 
 
-def build_toc_normalizer_inputs(
-    toc_map: Optional[List[Dict[str, Any]]],
-    spine: Optional[List[str]],
-) -> Tuple[Set[str], Dict[str, List[Dict[str, str]]]]:
-    titles: Set[str] = set()
-    rich: Dict[str, List[Dict[str, str]]] = {}
-    spine = list(spine or [])
-    for entry in toc_map or []:
-        title = str((entry or {}).get("title") or "").strip()
-        if not title:
-            continue
-        clean = " ".join(title.split()).lower()
-        titles.add(clean)
-        href = ""
-        pidx = (entry or {}).get("page_index", -1)
-        try:
-            pidx_i = int(pidx)
-        except (TypeError, ValueError):
-            pidx_i = -1
-        if 0 <= pidx_i < len(spine):
-            href = posixpath.basename(spine[pidx_i]).lower()
-        if href:
-            rich.setdefault(href, []).append({
-                "title": title,
-                "clean_title": clean,
-                "anchor": str((entry or {}).get("anchor_id") or ""),
-            })
-    return titles, rich
 
 
-def ensure_toc_normalizer_inputs(meta: dict) -> Tuple[Set[str], Dict[str, Any]]:
-    titles = meta.get("known_toc_titles")
-    rich = meta.get("rich_toc_map")
-    if titles is None or not isinstance(rich, dict):
-        titles_set, rich = build_toc_normalizer_inputs(meta.get("toc_map") or [], meta.get("spine") or [])
-        meta["known_toc_titles"] = sorted(titles_set)
-        meta["rich_toc_map"] = rich
-        return titles_set, rich
-    if isinstance(titles, set):
-        return titles, rich
-    return set(titles), rich
 
 
 def _spine_next_has_header(spine: List[str], idx: int, raw_htmls: Optional[Dict[str, bytes]]) -> bool:
@@ -652,19 +584,6 @@ def compact_empty_reader_pages(meta: dict, session: Dict[str, Any]) -> bool:
     return True
 
 
-def find_parent_tag(node, tags):
-    """Finds nearest ancestor matching any of the specified tags."""
-    if not node:
-        return None
-    wanted = {tags} if isinstance(tags, str) else set(tags)
-    cur = node.parent
-    while cur is not None:
-        if cur.tag in wanted:
-            return cur
-        cur = cur.parent
-    return None
-
-
 def intercept_image_tags(tree: HTMLParser, chapter_href: str, meta: dict) -> List[Tuple[str, str]]:
     """
     Intercepts and normalizes <img src> and <image href> tags in memory:
@@ -714,12 +633,12 @@ def intercept_image_tags(tree: HTMLParser, chapter_href: str, meta: dict) -> Lis
         chapter_images.append((matched_id, zip_path))
         stream_url = f"/api/library/image/{doc_id}/{urllib.parse.quote(matched_id)}"
 
-        in_s = find_parent_tag(img, "s") is not None
+        in_s = find_parent(img, "s") is not None
         item_loading = "eager" if in_s else default_loading
 
         clean_img_html = f'<img src="{stream_url}" class="epub-image" loading="{item_loading}" alt="Illustration">'
 
-        svg_parent = find_parent_tag(img, ("svg", "picture"))
+        svg_parent = find_parent(img, ("svg", "picture"))
         if svg_parent:
             replace_with_html(svg_parent, clean_img_html)
         elif img.tag == "image":
@@ -737,7 +656,7 @@ def intercept_image_tags(tree: HTMLParser, chapter_href: str, meta: dict) -> Lis
                     except Exception:
                         pass
 
-            anchor_parent = find_parent_tag(img, "a")
+            anchor_parent = find_parent(img, "a")
             if anchor_parent and anchor_parent.parent:
                 a_href = (anchor_parent.attributes.get("href") or "").lower()
                 if any(a_href.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg")):
@@ -991,6 +910,18 @@ class HybridMemoryManager:
                             session["chapters"][idx] = page_html
 
                 with self._lock:
+                    pages = [
+                        session["chapters"].get(i, "<p>[Missing Chapter]</p>")
+                        for i in range(len(spine))
+                    ]
+                try:
+                    pages = apply_peek_book_passes(pages, meta, session)
+                except Exception as e:
+                    print(f"[Tier 2] Book scene-break passes failed: {e}")
+                with self._lock:
+                    for idx, page_html in enumerate(pages):
+                        session["chapters"][idx] = page_html
+                    session["book_passes"] = True
                     session["status"] = "complete"
 
             except Exception as e:
@@ -1053,6 +984,11 @@ class HybridMemoryManager:
         intercept_scene_breaks(tree)
 
         assign_epub_block_ids(tree)
+
+        try:
+            wrap_local_ornament_images(tree)
+        except Exception as e:
+            print(f"[Memories] Local image scene-break wrap failed: {e}")
 
         # 6. Target HTML extraction & Marker restoration
         target = tree.body or tree.root
@@ -1152,7 +1088,7 @@ class HybridMemoryManager:
             or tree.css_first(f'[name="{jump_id}"]')
         )
         if el:
-            container = find_parent_tag(el, ("aside", "li", "p", "div")) or el.parent
+            container = find_parent(el, ("aside", "li", "p", "div")) or el.parent
             return (container or el).html
 
         return None
@@ -1725,85 +1661,6 @@ def delete_library_book(doc_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Master Manifest Interceptor ("Save Only What We Plan")
 # ---------------------------------------------------------------------------
-def parse_epub_toc(
-    epub_path: Path | str,
-    manifest: Dict[str, Any],
-    htmls: Optional[Dict[str, bytes]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Parses Table of Contents from EPUB2 NCX (toc.ncx) or EPUB3 HTML5 Nav (toc.xhtml / nav.xhtml).
-    Maps chapter targets to page indices based on spine.
-    """
-    toc_file = manifest.get("toc_file", "")
-    spine = manifest.get("spine", [])
-    raw = ""
-
-    if toc_file:
-        if htmls and toc_file in htmls:
-            raw = htmls[toc_file].decode("utf-8", errors="ignore")
-        elif Path(epub_path).exists():
-            try:
-                raw = call_peeker_single(epub_path, toc_file).decode("utf-8", errors="ignore")
-            except Exception:
-                pass
-
-    toc: List[Dict[str, Any]] = []
-
-    # 1. Try EPUB2 NCX
-    if toc_file and "ncx" in toc_file.lower() and raw:
-        try:
-            root = ET.fromstring(raw)
-            ns = "{http://www.daisy.org/z3986/2005/ncx/}"
-
-            def walk_ncx(elem, level=1):
-                for np in elem.findall(f"{ns}navPoint"):
-                    lbl = np.find(f"{ns}navLabel")
-                    title = ""
-                    if lbl is not None:
-                        t_node = lbl.find(f"{ns}text")
-                        if t_node is not None and t_node.text:
-                            title = t_node.text.strip()
-                    cnt = np.find(f"{ns}content")
-                    src = cnt.attrib.get("src", "") if cnt is not None else ""
-                    chref = src.split("#")[0]
-                    anchor = src.split("#")[1] if "#" in src else None
-                    pidx = -1
-                    for idx, s in enumerate(spine):
-                        if posixpath.basename(s).lower() == posixpath.basename(chref).lower():
-                            pidx = idx
-                            break
-                    if title:
-                        toc.append({"title": title, "level": level, "page_index": pidx, "anchor_id": anchor})
-                    walk_ncx(np, level + 1)
-
-            nav_map = root.find(f"{ns}navMap")
-            if nav_map is not None:
-                walk_ncx(nav_map)
-        except Exception as e:
-            print(f"[TOC] NCX parse error: {e}")
-
-    # 2. Try EPUB3 HTML5 Nav if NCX yielded nothing or file is xhtml
-    if not toc and raw and ("xhtml" in toc_file.lower() or "html" in toc_file.lower()):
-        try:
-            tree = HTMLParser(raw)
-            nav = tree.css_first('nav[epub\\:type="toc"]') or tree.css_first("nav#toc") or tree.css_first("nav")
-            if nav:
-                for a in nav.css("ol li a, ul li a"):
-                    title = a.text(strip=True)
-                    src = a.attributes.get("href", "")
-                    chref = src.split("#")[0]
-                    anchor = src.split("#")[1] if "#" in src else None
-                    pidx = -1
-                    for idx, s in enumerate(spine):
-                        if posixpath.basename(s).lower() == posixpath.basename(chref).lower():
-                            pidx = idx
-                            break
-                    if title:
-                        toc.append({"title": title, "level": 1, "page_index": pidx, "anchor_id": anchor})
-        except Exception as e:
-            print(f"[TOC] HTML parse error: {e}")
-
-    return toc
 
 
 def _spine_page_index(spine: Optional[List[str]], href_or_file: str) -> int:
@@ -1910,7 +1767,7 @@ def _is_footnote_callout(anchor: Optional[Node]) -> bool:
     classes = set((attrs.get("class") or "").lower().split())
     parent = anchor.parent
     parent_class = ((parent.attributes or {}).get("class") or "").lower() if parent is not None else ""
-    has_sup = find_parent_tag(anchor, "sup") is not None or anchor.css_first("sup") is not None
+    has_sup = find_parent(anchor, "sup") is not None or anchor.css_first("sup") is not None
     return (
         epub_type == "noteref"
         or role == "doc-noteref"
@@ -2150,7 +2007,7 @@ def extract_epub_footnotes(
             if rec is None:
                 continue
             callout_id = str((anchor.attributes or {}).get("id") or (anchor.attributes or {}).get("name") or "")
-            sup = find_parent_tag(anchor, "sup")
+            sup = find_parent(anchor, "sup")
             if sup is not None:
                 callout_id = callout_id or str((sup.attributes or {}).get("id") or "")
             if rec.get("callout_page_index") is None:
@@ -2225,7 +2082,17 @@ def intercept_manifest(
     # Parse ToC and Footnotes against the filtered reader spine
     toc_manifest = dict(cpp_manifest)
     toc_manifest["spine"] = spine
-    toc_map = parse_epub_toc(epub_path, toc_manifest, htmls)
+    toc_file = toc_manifest.get("toc_file", "")
+    raw_toc = ""
+    if toc_file:
+        if htmls and toc_file in htmls:
+            raw_toc = htmls[toc_file].decode("utf-8", errors="ignore")
+        elif epub_path.exists():
+            try:
+                raw_toc = call_peeker_single(epub_path, toc_file).decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+    toc_map = parse_epub_toc(toc_manifest, raw_toc)
     footnote_map = extract_epub_footnotes(htmls, spine)
     known_toc_titles, rich_toc_map = build_toc_normalizer_inputs(toc_map, spine)
 
@@ -2357,6 +2224,8 @@ def peek_classify_ornament(filename: str, data: Optional[bytes], count: int) -> 
         return {"kind": "symbols", "text": "".join([shape] * symbol_count)}
     if w and h and w <= 150 and h <= 150 and count > 5:
         return {"kind": "wrap"}
+    if count > 5 and not (w and h):
+        return {"kind": "wrap"}
     return {"kind": "skip"}
 
 
@@ -2487,6 +2356,54 @@ def peek_process_css_scene_breaks(
     return new_pages
 
 
+_LOCAL_ORNAMENT_CLASS_HINTS = frozenset({
+    "ornament", "fleuron", "decoration", "divider", "scenebreak",
+})
+
+
+def _wrap_image_scene_break(tag, chars: str) -> bool:
+    """Replace an ornament image (and empty wrappers) with a clean <s>…</s>."""
+    top_node = climb_empty_ornament_wrapper(tag)
+    if top_node is None or top_node.parent is None:
+        return False
+    open_tag = ornament_scene_break_open_tag(top_node, tag)
+    if chars == "@@S_WRAP@@":
+        _drop_scene_break_target_ids(tag)
+        inner = tag.html or ""
+    else:
+        inner = html.escape(chars)
+    replace_with_html(top_node, f"{open_tag}{inner}</s>")
+    return True
+
+
+def wrap_local_ornament_images(tree: HTMLParser) -> bool:
+    """Wrap publisher-marked ornament images in <s> before the whole-book count pass."""
+    blocks = nodes_in_document_order(
+        tree,
+        ("h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "img", "image"),
+    )
+    wrapped = False
+    for i, tag in enumerate(blocks):
+        if tag.tag not in ("img", "image") or tag.parent is None:
+            continue
+        if find_parent(tag, "s") or find_parent(tag, HEADING_TAGS):
+            continue
+        orig = (tag.attributes or {}).get("data-orig-class", "") or ""
+        hints = {part for part in re.split(r"[^a-zA-Z0-9]", orig.lower()) if part}
+        if not (hints & _LOCAL_ORNAMENT_CLASS_HINTS):
+            continue
+        if not sandwich_allows_scene_break(blocks, i):
+            continue
+        try:
+            if _wrap_image_scene_break(tag, "@@S_WRAP@@"):
+                wrapped = True
+        except Exception as e:
+            print(f"[Memories] Local ornament wrap failed: {e}")
+    if wrapped:
+        strip_scene_break_inner_wrappers(tree)
+    return wrapped
+
+
 def peek_process_image_scene_breaks(
     pages: List[str],
     image_map: Dict[str, str],
@@ -2545,18 +2462,10 @@ def peek_process_image_scene_breaks(
             if not sandwich_allows_scene_break(blocks, i):
                 continue
             chars = symbol_map[src]
-            top_node = climb_empty_ornament_wrapper(tag)
-            if top_node is None or top_node.parent is None:
-                continue
             try:
-                if chars == "@@S_WRAP@@":
-                    _drop_scene_break_target_ids(tag)
-                    img_html = tag.html or ""
-                    replace_with_html(top_node, f"<s>{img_html}</s>")
-                else:
-                    replace_with_html(top_node, f"<s>{html.escape(chars)}</s>")
-            except Exception:
-                pass
+                _wrap_image_scene_break(tag, chars)
+            except Exception as e:
+                print(f"[Memories] Image scene-break wrap failed: {e}")
         strip_scene_break_inner_wrappers(tree)
         target = tree.body or tree.root
         page_str = (target.html if target else tree.html) or ""

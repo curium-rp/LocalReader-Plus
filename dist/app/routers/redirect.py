@@ -37,7 +37,8 @@ from pydantic import BaseModel
 
 from ..config import content_dir
 from ..models import LibraryItem
-from ..routers.library import ProgressUpdatePayload, escape_search_query, html_to_search_text
+from ..routers.library import ProgressUpdatePayload
+from ..logic.html_normalizer import escape_search_query, html_to_search_text
 from ..logic.memories import (
     call_peeker_manifest,
     call_peeker_single,
@@ -475,13 +476,21 @@ def search_library_book(doc_id: str, q: str = Query(..., min_length=1), match_ca
 # 3. Reading Progress (progress.json + progress.json.old)
 # ---------------------------------------------------------------------------
 
+def content_backend(doc_id: str) -> Optional[str]:
+    """Sidecar kind for this id. Peek wins when both records exist."""
+    if is_peek_book(doc_id):
+        return "peek"
+    if is_pdf_sidecar_book(doc_id):
+        return "pdf"
+    return None
+
+
 def flush_progress_to_library(target_doc_id: Optional[str] = None) -> bool:
     """Rotate progress.json -> progress.json.old, then rewrite (same as peek flush)."""
     if not target_doc_id:
         return True
-    peek = is_peek_book(target_doc_id)
-    pdf = (not peek) and is_pdf_sidecar_book(target_doc_id)
-    if not peek and not pdf:
+    kind = content_backend(target_doc_id)
+    if kind is None:
         return False
     entry = load_any_progress(target_doc_id)
     if not entry:
@@ -491,7 +500,7 @@ def flush_progress_to_library(target_doc_id: Optional[str] = None) -> bool:
             target_doc_id,
             entry,
             rotate_old=True,
-            kind="pdf" if pdf else "peek",
+            kind=kind,
         )
         return True
     except Exception as e:
@@ -523,9 +532,8 @@ def update_book_progress_intercept(doc_id: str, payload: ProgressUpdatePayload, 
         "updated_at": time.time(),
     }
 
-    peek = is_peek_book(doc_id)
-    pdf = (not peek) and is_pdf_sidecar_book(doc_id)
-    if not peek and not pdf:
+    kind = content_backend(doc_id)
+    if kind is None:
         raise HTTPException(status_code=404, detail="Book not found")
     try:
         prev = load_any_progress(doc_id) or {}
@@ -537,7 +545,7 @@ def update_book_progress_intercept(doc_id: str, payload: ProgressUpdatePayload, 
             doc_id,
             entry,
             rotate_old=bool(flush),
-            kind="pdf" if pdf else "peek",
+            kind=kind,
         )
     except Exception as e:
         print(f"[Progress] Sidecar progress write failed for {doc_id}: {e}")

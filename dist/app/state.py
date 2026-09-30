@@ -5,6 +5,7 @@ import numpy as np
 import sys
 from typing import Optional, Dict
 from kokoro_onnx import Kokoro, MAX_PHONEME_LENGTH, SAMPLE_RATE
+from .logic.syllable import phonemizer_lock
 
 # --- Global State Instances ---
 kokoro = None  # The TTS engine instance
@@ -114,7 +115,9 @@ class PatchedKokoro(Kokoro):
         return audio, SAMPLE_RATE
 
     def phonemize(self, text: str, lang: str):
-        return self.tokenizer.phonemize(text, lang)
+        # Estimation/normalization workers also use the cached eSpeak backend.
+        with phonemizer_lock:
+            return self.tokenizer.phonemize(text, lang)
 
     def _prepare(
         self,
@@ -128,9 +131,11 @@ class PatchedKokoro(Kokoro):
     ):
         if isinstance(voice, str):
             voice = self.get_voice_style(voice)
-        return super()._prepare(
-            text, voice, speed, lang, is_phonemes, sentence_pause, clause_pause
-        )
+        # Long-text fallback calls the base tokenizer directly through _prepare.
+        with phonemizer_lock:
+            return super()._prepare(
+                text, voice, speed, lang, is_phonemes, sentence_pause, clause_pause
+            )
 
     def create(self, text: str, voice: str | np.ndarray, speed: float = 1.0, lang: str = "en-us"):
         try:

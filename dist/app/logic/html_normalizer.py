@@ -1,5 +1,7 @@
 import html
+import posixpath
 import re
+import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
@@ -17,7 +19,7 @@ except ImportError:
 
 
 BLOCK_TAGS = ("p", "div", "h1", "h2", "h3", "h4", "h5", "h6")
-HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 PROTECTED_CLASSES = {
     "epub-footnote",
     "epub-noteref",
@@ -29,12 +31,15 @@ PROTECTED_CLASSES = {
 }
 
 
-def iter_children(node: Optional[Node]) -> Iterable[Node]:
-    """Yield immediate children. Node.iter() yields all descendants."""
-    child = node.child if node is not None else None
-    while child is not None:
+def iter_children(node: Optional[Node], include_text: bool = False):
+    """Yield immediate children; Node.iter() would duplicate descendants."""
+    if node is None:
+        return
+    child = node.child
+    while child:
         next_child = child.next
-        yield child
+        if include_text or child.tag != "-text":
+            yield child
         child = next_child
 
 
@@ -549,7 +554,7 @@ def nuke_inline_toc(tree: HTMLParser) -> bool:
             and link_text_len / len(text_content) > 0.4
             and len(links) > 3
         ):
-            for child in list(iter_children(target)):
+            for child in list(iter_children(target, include_text=True)):
                 child.decompose()
             return True
     return False
@@ -1112,112 +1117,767 @@ def _normalize_epub_html(
         apply_super_fallback_headings(tree)
     finish()
 
+nodes_in_document_order = _nodes_in_document_order
+replace_with_html = _replace_with_html
 
-# Build TOC list from h1/h2/h3 headings found across all processed pages
-def generate_toc(pages: List[str]) -> List[Dict[str, Any]]:
-    toc: List[Dict[str, Any]] = []
-    junk = re.compile(r"^[\W_]+$")
 
-    for page_index, page_html in enumerate(pages):
-        tree = HTMLParser(page_html)
-        body = tree.body or tree.root
-        if body is None:
+
+_RUBY_REL = re.compile(r"position\s*:\s*relative", re.I)
+
+_RUBY_ABS = re.compile(r"position\s*:\s*absolute", re.I)
+
+_RUBY_NOWRAP = re.compile(r"white-space\s*:\s*nowrap", re.I)
+
+_RUBY_NEG_TOP = re.compile(r"top\s*:\s*-\s*[\d.]+", re.I)
+
+_RUBY_MARKER_RE = re.compile(
+    r"@@RUBY_S@@(.*?)@@RT_S@@(.*?)@@RT_E@@@@RUBY_E@@",
+    re.DOTALL,
+)
+
+
+
+def _node_style(node: Optional[Node]) -> str:
+    if node is None:
+        return ""
+    return (node.attributes or {}).get("style") or ""
+
+
+
+def _collect_text_excluding(node: Optional[Node], skip_tags) -> str:
+    if node is None:
+        return ""
+    skip = set(skip_tags)
+    parts = []
+
+    def walk(parent: Node) -> None:
+        child = parent.child
+        while child is not None:
+            nxt = child.next
+            tag = child.tag
+            if tag == "-text":
+                parts.append(child.text(strip=False) or "")
+            elif tag not in skip:
+                walk(child)
+            child = nxt
+
+    walk(node)
+    return "".join(parts)
+
+
+
+def _sanitize_ruby_text(text: str) -> str:
+    return (text or "").replace("@@", "").strip()
+
+
+
+def _ruby_marker(base: str, annotation: str) -> str:
+    return (
+        f"@@RUBY_S@@{_sanitize_ruby_text(base)}"
+        f"@@RT_S@@{_sanitize_ruby_text(annotation)}@@RT_E@@@@RUBY_E@@"
+    )
+
+
+
+def _replace_node_with_text(node: Optional[Node], text: str) -> None:
+    if not node or node.parent is None:
+        return
+    node.insert_before(text)
+    node.decompose()
+
+
+
+def _protect_native_ruby(tree: HTMLParser) -> None:
+    for ruby in list(tree.css("ruby")):
+        if ruby.parent is None:
             continue
-        for heading in _nodes_in_document_order(
-            body, ("h1", "h2", "h3", "h4", "h5", "h6")
-        ):
-            title = heading.text(strip=True)
-            if not title or len(title) >= 150 or junk.match(title):
-                continue
-            if any(
-                item["page_index"] == page_index and item["title"] == title
-                for item in toc
-            ):
-                continue
-            toc.append(
-                {
-                    "title": title,
-                    "level": int(heading.tag[1]),
-                    "page_index": page_index,
-                    "anchor_id": _get_attr(heading, "id") or None,
-                }
-            )
-
-    if not toc:
-        semantic = ("chapter", "chap", "title", "heading", "h1", "h2", "h3")
-        for page_index, page_html in enumerate(pages):
-            tree = HTMLParser(page_html)
-            body = tree.body or tree.root
-            if body is None:
-                continue
-            for element in _nodes_in_document_order(body, ("p", "div", "span")):
-                classes = _class_list(element)
-                if not classes or not any(
-                    marker in class_name.lower()
-                    for class_name in classes
-                    for marker in semantic
-                ):
-                    continue
-                title = element.text(strip=True)
-                if title and len(title) < 150 and not junk.match(title):
-                    toc.append(
-                        {
-                            "title": title,
-                            "level": 1,
-                            "page_index": page_index,
-                            "anchor_id": _get_attr(element, "id") or None,
-                        }
-                    )
-                    break
-
-    if not toc:
-        fallback = re.compile(
-            r"^(chapter|prologue|epilogue|part|volume|interlude)\b|"
-            r"^act\s*[\dIVXLCDM]+",
-            re.IGNORECASE,
+        annotation = "".join(
+            (rt.text(separator="", strip=True) or "").strip()
+            for rt in ruby.css("rt")
         )
-        for page_index, page_html in enumerate(pages):
-            tree = HTMLParser(page_html)
-            body = tree.body or tree.root
-            if body is None:
-                continue
-            checked = 0
-            for element in _nodes_in_document_order(body, ("p", "div")):
-                title = element.text(strip=True)
-                if not title or junk.match(title):
-                    continue
-                checked += 1
-                if len(title) < 100 and fallback.match(title):
-                    toc.append(
-                        {
-                            "title": title,
-                            "level": 1,
-                            "page_index": page_index,
-                            "anchor_id": _get_attr(element, "id") or None,
-                        }
-                    )
-                    break
-                if checked >= 2:
-                    break
+        base = _collect_text_excluding(ruby, ("rt", "rp")).strip()
+        if not base or not annotation:
+            continue
+        _replace_node_with_text(ruby, _ruby_marker(base, annotation))
 
-    if toc:
-        levels = sorted({item["level"] for item in toc})
-        level_map = {level: index + 1 for index, level in enumerate(levels)}
-        for item in toc:
-            item["level"] = level_map[item["level"]]
 
-    if len(toc) > 2:
-        duplicate_levels = sum(
-            toc[index]["page_index"] == toc[index - 1]["page_index"]
-            and toc[index]["level"] == toc[index - 1]["level"]
-            for index in range(1, len(toc))
+
+def _protect_fake_ruby(tree: HTMLParser) -> None:
+    for span in list(tree.css("span")):
+        if span.parent is None:
+            continue
+        style = _node_style(span)
+        if not (_RUBY_REL.search(style) and _RUBY_NOWRAP.search(style)):
+            continue
+        annotation = None
+        bases = []
+        for child in iter_children(span, include_text=False):
+            child_style = _node_style(child)
+            if _RUBY_ABS.search(child_style) and _RUBY_NEG_TOP.search(child_style):
+                annotation = child
+            else:
+                bases.append(child)
+        if annotation is None or not bases:
+            continue
+        annotation_text = (annotation.text(separator="", strip=True) or "").strip()
+        base_text = "".join(
+            (child.text(separator="", strip=True) or "") for child in bases
+        ).strip()
+        if not annotation_text or not base_text:
+            continue
+        _replace_node_with_text(span, _ruby_marker(base_text, annotation_text))
+
+
+# Unwrap a node inserting raw text markers before/after it
+def safe_unwrap_and_mark(
+    node: Optional[Node], prefix: str, suffix: str
+) -> None:
+    if not node or node.parent is None or node.tag in ("body", "html", "head", None):
+        return
+    if prefix:
+        node.insert_before(prefix)
+    if suffix:
+        node.insert_after(suffix)
+    node.unwrap()
+
+
+# Walk ancestors to find first matching tag
+def find_parent(node: Optional[Node], tags) -> Optional[Node]:
+    wanted = {tags} if isinstance(tags, str) else set(tags)
+    parent = node.parent if node is not None else None
+    while parent is not None:
+        if parent.tag in wanted:
+            return parent
+        parent = parent.parent
+    return None
+
+
+# Insert text before the first child of a node
+def prepend_text(node: Node, text: str) -> None:
+    if node.child is not None:
+        node.child.insert_before(text)
+    else:
+        node.insert_child(text)
+
+
+# Insert text after the last child of a node
+def append_text(node: Node, text: str) -> None:
+    if node.last_child is not None:
+        node.last_child.insert_after(text)
+    else:
+        node.insert_child(text)
+
+
+# Inject protection before burn
+def force_formatting_markers(tree: HTMLParser, current_href: str = "") -> None:
+    """
+    Force every formatting tag and style into indestructible markers.
+    Runs on the live tree as early as possible.
+    """
+    def normalize_paired_id(raw_id: str) -> str:
+        if not raw_id:
+            return ""
+        s = raw_id.strip()
+        m = re.match(r"^([a-zA-Z_\-]*?)(\d+)([a-zA-Z_\-]*)$", s)
+        if m:
+            pref, num, suf = m.group(1).lower(), m.group(2), m.group(3).lower()
+            return f"{pref}_{num}"
+        return s.lower()
+
+    def make_det_id(target_file, target_id):
+        if not target_file: target_file = current_href
+        elif target_file != current_href and current_href:
+            base_dir = posixpath.dirname(current_href)
+            target_file = posixpath.normpath(posixpath.join(base_dir, target_file))
+
+        norm_id = normalize_paired_id(target_id)
+        safe_file = re.sub(r'[^a-zA-Z0-9]', '_', target_file)
+        safe_id = re.sub(r'[^a-zA-Z0-9]', '_', norm_id)
+        return f"R_{safe_file}_{safe_id}"
+
+    # 🌟 EXTERNAL LINK SHIELD
+    for anchor in list(tree.css("a")):
+        if anchor.parent is None:
+            continue
+        href = (anchor.attributes or {}).get("href", "").strip()
+        if href.startswith(("http://", "https://", "mailto:")):
+            safe_href = urllib.parse.quote(href, safe="")
+            prepend_text(anchor, f"@@EXT_A|{safe_href}@@")
+            append_text(anchor, "@@EXT_A_OFF@@")
+            safe_unwrap(anchor)
+
+    # 🌟 FOOTNOTE EXTRACTION SHIELD
+    # Automated <sup> footnote matching: No keyword reliance.
+    # Matches <sup> anchor tags, epub:type="noteref", or role="doc-noteref".
+    for anchor in list(tree.css("a")):
+        if anchor.parent is None:
+            continue
+
+        # Skip anchors inside footnote definition blocks
+        p_check = anchor.parent
+        in_def = False
+        while p_check:
+            p_attrs = p_check.attributes or {}
+            if p_check.tag in ("aside", "dd") or (p_attrs.get("epub:type") or "").lower() in ("footnote", "endnote") or (p_attrs.get("role") or "").lower() in ("doc-footnote", "doc-endnote"):
+                in_def = True
+                break
+            p_check = p_check.parent
+        if in_def:
+            continue
+
+        attrs = anchor.attributes or {}
+        epub_type = (attrs.get("epub:type") or "").lower()
+        role = (attrs.get("role") or "").lower()
+        sup_tag = find_parent(anchor, "sup") or anchor.css_first("sup")
+        href = (attrs.get("href") or "").strip()
+
+        is_callout = (
+            epub_type == "noteref"
+            or role == "doc-noteref"
+            or (sup_tag is not None and "#" in href)
         )
-        if duplicate_levels / len(toc) >= 0.25:
-            for index in range(1, len(toc)):
-                if (
-                    toc[index]["page_index"] == toc[index - 1]["page_index"]
-                    and toc[index]["level"] == toc[index - 1]["level"]
-                ):
-                    toc[index]["level"] += 1
+        if not is_callout or "#" not in href:
+            continue
 
-    return sorted(toc, key=lambda item: item["page_index"])
+        parts = href.split("#")
+        if len(parts) > 1 and parts[1].strip():
+            det_id = make_det_id(parts[0], parts[1].strip())
+            tag_type = "SUP" if sup_tag else "A"
+
+            prepend_text(anchor, f"@@F_ON@@ @@F_S|{det_id}|{tag_type}@@ ")
+            append_text(anchor, f" @@F_OFF_{tag_type}@@")
+
+            if sup_tag:
+                safe_unwrap(sup_tag)
+            safe_unwrap(anchor)
+
+    for block in list(tree.css("*")):
+        if block.parent is None:
+            continue
+        attrs = block.attributes or {}
+        epub_type = (attrs.get("epub:type") or "").lower()
+        role = (attrs.get("role") or "").lower()
+        block_id = attrs.get("id", "")
+        classes = (attrs.get("class") or "").lower()
+
+        # Check for backlink inside block
+        backlink = next(
+            (
+                anchor for anchor in block.css("a")
+                if (anchor.attributes or {}).get("epub:type") == "backlink"
+                or (anchor.attributes or {}).get("role") == "doc-backlink"
+                or "↑" in anchor.text()
+                or "↩" in anchor.text()
+                or "^" in anchor.text()
+                or (block_id and "#" in ((anchor.attributes or {}).get("href") or ""))
+            ),
+            None,
+        )
+
+        is_def_block = (
+            epub_type in ("footnote", "endnote")
+            or role in ("doc-footnote", "doc-endnote")
+            or "footnote" in classes
+            or (block.tag in ("li", "p", "aside", "dd") and backlink is not None and (
+                normalize_paired_id(block_id) != block_id or bool(block_id)
+            ))
+        )
+        if not is_def_block:
+            continue
+        if "@@F_ON@@" in block.text():
+            continue
+
+        if not block_id and backlink:
+            backlink_attrs = backlink.attributes or {}
+            block_id = backlink_attrs.get("id") or backlink_attrs.get("name") or ""
+            if not block_id and "#" in (backlink_attrs.get("href") or ""):
+                block_id = backlink_attrs.get("href").split("#")[-1]
+        if not block_id:
+            continue
+
+        det_id = make_det_id(current_href, block_id)
+        note_num = footnote_number_from_id(block_id)
+        backlink_text = backlink.text(strip=True) if backlink else ""
+        remainder = (block.text(strip=True) or "")
+        if backlink_text and remainder.startswith(backlink_text):
+            remainder = remainder[len(backlink_text):].lstrip(" .:]-")
+        needs_label = bool(
+            note_num
+            and not re.search(r"\d+", backlink_text)
+            and not re.match(rf"^[\[\(]?{re.escape(note_num)}\b", remainder)
+        )
+        if backlink:
+            prepend_text(backlink, f"@@F_ON@@ @@F_E|{det_id}@@ ")
+            append_text(backlink, " @@F_OFF_A@@")
+            if needs_label:
+                backlink.insert_after(f"[{note_num}] ")
+            safe_unwrap(backlink)
+        else:
+            inner_nodes = nodes_in_document_order(block, ("p", "span", "div"))
+            inner = inner_nodes[0] if inner_nodes else block
+            label = f"[{note_num}] " if needs_label else ""
+            prepend_text(inner, f"@@F_ON@@ @@F_E|{det_id}@@ @@F_OFF_A@@ {label}")
+
+    # 🌟 RUBY SHIELD (native <ruby> and CSS furigana hacks)
+    _protect_native_ruby(tree)
+    _protect_fake_ruby(tree)
+
+    # 🌟 FORMATTING SHIELD (RESTORED)
+    bold_regex = re.compile(r'\b(bold|bld|strong|calibre_bold|fw-bold|font-bold|b-text)\b', re.IGNORECASE)
+    ital_regex = re.compile(r'\b(italic|it|em|emphasis|oblique|calibre_italic|fs-italic|i-text)\b', re.IGNORECASE)
+    und_regex = re.compile(r'\b(underline|u-text|calibre_under)\b', re.IGNORECASE)
+    del_regex = re.compile(r'\b(strike|strikethrough|line-through|del)\b', re.IGNORECASE)
+
+    for tag in list(tree.css("span, font, p, div, a")):
+        if tag.parent is None:
+            continue
+        attrs = tag.attributes or {}
+        style = (attrs.get("style") or "").lower()
+        class_str = (attrs.get("class") or "").lower()
+
+        is_bold = 'bold' in style or '600' in style or '700' in style or '800' in style or '900' in style or 'bolder' in style or bold_regex.search(class_str)
+        is_ital = 'italic' in style or 'oblique' in style or ital_regex.search(class_str)
+        is_und = 'underline' in style or und_regex.search(class_str)
+        is_del = 'line-through' in style or del_regex.search(class_str)
+
+        if is_bold or is_ital or is_und or is_del:
+            if is_bold:
+                prepend_text(tag, "@@B_ON@@")
+                append_text(tag, "@@B_OFF@@")
+            if is_ital:
+                prepend_text(tag, "@@I_ON@@")
+                append_text(tag, "@@I_OFF@@")
+            if is_und:
+                prepend_text(tag, "@@U_ON@@")
+                append_text(tag, "@@U_OFF@@")
+            if is_del:
+                prepend_text(tag, "@@D_ON@@")
+                append_text(tag, "@@D_OFF@@")
+
+            if "style" in (tag.attributes or {}):
+                del tag.attrs["style"]
+            if "class" in (tag.attributes or {}):
+                del tag.attrs["class"]
+
+            if tag.tag in ("span", "font"):
+                safe_unwrap(tag)
+
+    mapping = [
+        (("b", "strong"), "@@B_ON@@", "@@B_OFF@@"),
+        (("i", "em", "cite", "dfn"), "@@I_ON@@", "@@I_OFF@@"),
+        (("u", "ins"), "@@U_ON@@", "@@U_OFF@@"),
+        (("del", "s", "strike"), "@@D_ON@@", "@@D_OFF@@"),
+    ]
+
+    for tags, on, off in mapping:
+        for tag in list(tree.css(", ".join(tags))):
+            safe_unwrap_and_mark(tag, on, off)
+
+    for line_break in list(tree.css("br")):
+        line_break.insert_before("@@BR@@")
+        line_break.decompose()
+
+
+
+# Restore wrap: convert @@ protection markers back into real HTML tags
+def restore_inline_markers(markup: str) -> str:
+    restored = (
+        markup
+        .replace("@@B_ON@@", "<b>").replace("@@B_OFF@@", "</b>")
+        .replace("@@I_ON@@", "<i>").replace("@@I_OFF@@", "</i>")
+        .replace("@@U_ON@@", "<u>").replace("@@U_OFF@@", "</u>")
+        .replace("@@D_ON@@", "<del>").replace("@@D_OFF@@", "</del>")
+        .replace("@@F_ON@@ ", "").replace("@@F_ON@@", "")
+        .replace(" @@F_OFF_A@@", "</a>").replace("@@F_OFF_A@@", "</a>")
+        .replace(" @@F_OFF_SUP@@", "</sup></a>")
+        .replace("@@F_OFF_SUP@@", "</sup></a>")
+        .replace(" @@BR@@ ", "<br>").replace("@@BR@@", "<br>")
+    )
+    restored = re.sub(
+        r"@@F_S\|([^@|]*)\|SUP@@\s*",
+        r'<a epub:type="noteref" href="#\1"><sup>',
+        restored,
+    )
+    restored = re.sub(
+        r"@@F_S\|([^@|]*)\|A@@\s*",
+        r'<a epub:type="noteref" href="#\1">',
+        restored,
+    )
+    restored = re.sub(
+        r"@@F_E\|([^@|]*)@@\s*",
+        r'<a epub:type="footnote" id="\1">',
+        restored,
+    )
+    restored = _RUBY_MARKER_RE.sub(
+        lambda match: (
+            f"<ruby>{html.escape(html.unescape(match.group(1)), quote=False)}"
+            f"<rp>(</rp><rt>{html.escape(html.unescape(match.group(2)), quote=False)}</rt>"
+            f"<rp>)</rp></ruby>"
+        ),
+        restored,
+    )
+    # 🌟 RESTORE EXTERNAL LINKS
+    def _restore_ext_link(match):
+        raw_url = urllib.parse.unquote(match.group(1))
+        inner_text = match.group(2)
+        safe_url = html.escape(raw_url, quote=True)
+        return f'<a href="{safe_url}" class="external-link" target="_blank" rel="noopener noreferrer">{inner_text}</a>'
+
+    return re.sub(
+        r"@@EXT_A\|([^@|]+)@@(.*?)@@EXT_A_OFF@@",
+        _restore_ext_link,
+        restored,
+        flags=re.DOTALL,
+    )
+
+ORNAMENT_KEYWORDS = (
+    "circle", "box", "square", "star", "break", "line", "ornament",
+    "orn", "sep", "div", "divider", "fleuron", "diamond", "decoration",
+)
+
+CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")\s]+)['"]?\s*\)""", re.I)
+
+CSS_ORNAMENT_KEYWORDS = ("background", "url(", "content:", "image", "list-style")
+
+
+
+# True if node is or is a direct child of a heading tag
+def block_is_or_in_heading(node) -> bool:
+    if node is None:
+        return False
+    if node.tag in HEADING_TAGS:
+        return True
+    return find_parent(node, HEADING_TAGS) is not None
+
+
+
+# Walk blocks list left/right from start to find the first with text
+def nearest_text_block(blocks, start, step):
+    idx = start
+    while 0 <= idx < len(blocks):
+        if blocks[idx].text(strip=True):
+            return blocks[idx]
+        idx += step
+    return None
+
+
+
+# True if surrounding blocks are text, allowing a scene break here
+def sandwich_allows_scene_break(blocks, index) -> bool:
+    """True only when the node sits between content and is not next to a heading."""
+    prev_node = nearest_text_block(blocks, index - 1, -1)
+    next_node = nearest_text_block(blocks, index + 1, 1)
+    if not prev_node or not next_node:
+        return False
+    if block_is_or_in_heading(prev_node) or block_is_or_in_heading(next_node):
+        return False
+    return True
+
+
+
+# Extract first url() value from a block's data-orig-class CSS
+def first_css_url(block: str) -> str:
+    match = CSS_URL_RE.search(block or "")
+    if not match:
+        return ""
+    url = match.group(1).strip()
+    if url.lower().startswith(("data:", "http:", "https:", "file:")):
+        return ""
+    return url.split("#")[0].split("?")[0]
+
+
+
+_NARRATIVE_CHARS = re.compile(
+    r"[A-Za-z0-9\u00C0-\u024F\u0400-\u04FF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]"
+)
+
+_EPUB_IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
+
+_S_BLOCK = re.compile(r"<s\b[^>]*>.*?</s>", re.I | re.S)
+
+_LOADING_ATTR = re.compile(r"""\bloading\s*=\s*(["']?)[A-Za-z]*\1""", re.I)
+
+
+
+# True if page HTML has readable text beyond just images and scene breaks
+def html_has_narrative_besides_media(markup: str) -> bool:
+    """True when leftover text remains after stripping images (mixed/bad EPUB page)."""
+    if not markup:
+        return False
+    stripped = re.sub(
+        r"<(?:svg|picture)\b[^>]*>.*?</(?:svg|picture)>", " ", markup, flags=re.I | re.S
+    )
+    stripped = re.sub(r"<(?:img|image)\b[^>]*/?>", " ", stripped, flags=re.I)
+    stripped = re.sub(r"<[^>]+>", " ", stripped)
+    leftover = re.sub(r"\s+", " ", stripped).strip()
+    return bool(leftover and _NARRATIVE_CHARS.search(leftover))
+
+
+
+# Build <img> tag HTML for an EPUB image
+def epub_image_html(src: str, loading: str, extra_attrs: str = "") -> str:
+    extra = f" {extra_attrs.strip()}" if extra_attrs and extra_attrs.strip() else ""
+    return f'<img src="{src}" class="epub-image" loading="{loading}"{extra}>'
+
+
+
+# Set loading= attribute on an img node
+def _set_img_loading_attr(tag: str, loading: str) -> str:
+    if "epub-image" not in tag:
+        return tag
+    if _LOADING_ATTR.search(tag):
+        return _LOADING_ATTR.sub(f'loading="{loading}"', tag, count=1)
+    return re.sub(r"\s*/?>$", f' loading="{loading}">', tag)
+
+
+
+# Rewrite all img loading= attributes in a fragment
+def _rewrite_epub_image_loading(fragment: str, loading: str) -> str:
+    return _EPUB_IMG_TAG.sub(lambda m: _set_img_loading_attr(m.group(0), loading), fragment)
+
+
+
+# Apply eager/lazy loading attribute across all pages based on content
+def apply_image_loading(pages: List[str]) -> List[str]:
+    """Standalone single image HTML stays lazy. Mixed pages, multi-image pages, and <s> images become eager."""
+    if not pages:
+        return pages
+    out = []
+    for page_html in pages:
+        if not page_html or "epub-image" not in page_html:
+            out.append(page_html)
+            continue
+        img_count = len(_EPUB_IMG_TAG.findall(page_html))
+        is_standalone = img_count == 1 and not html_has_narrative_besides_media(page_html)
+        page_loading = "lazy" if is_standalone else "eager"
+        rewritten = _rewrite_epub_image_loading(page_html, page_loading)
+        rewritten = _S_BLOCK.sub(
+            lambda m: _rewrite_epub_image_loading(m.group(0), "eager"),
+            rewritten,
+        )
+        out.append(rewritten)
+    return out
+
+
+
+# Return the outermost <s> wrapper tag for a scene break node
+def scene_break_open_tag(tag) -> str:
+    s_tag = "<s"
+    orig_id = (tag.attributes or {}).get("id")
+    data_id = (tag.attributes or {}).get("data-orig-id")
+    if orig_id:
+        s_tag += f' id="{html.escape(orig_id)}"'
+    if data_id:
+        s_tag += f' data-orig-id="{html.escape(data_id)}"'
+    return s_tag + ">"
+
+
+
+SCENE_BREAK_INNER_WRAPPERS = (
+    "div", "p", "figure", "section", "span", "a", "center", "blockquote",
+)
+
+
+
+# Climb DOM to find empty ornament wrapper containing a scene break
+def climb_empty_ornament_wrapper(tag):
+    top_node = tag
+    curr = tag.parent
+    while curr and curr.tag in SCENE_BREAK_INNER_WRAPPERS:
+        if curr.tag == "section":
+            break
+        if curr.text(strip=True) or len(curr.css("img, image")) > 1:
+            break
+        top_node = curr
+        curr = curr.parent
+    return top_node
+
+
+def ornament_scene_break_open_tag(top_node, img=None) -> str:
+    """Prefer a wrapper/img id so <s> keeps the TTS target after the wrap."""
+    candidates = [top_node, img]
+    if top_node is not None:
+        candidates.append(top_node.css_first("[id], [data-orig-id]"))
+    for node in candidates:
+        if node is None:
+            continue
+        attrs = node.attributes or {}
+        if attrs.get("id") or attrs.get("data-orig-id"):
+            return scene_break_open_tag(node)
+    return "<s>"
+
+
+
+# Remove s_ ids from inner scene-break nodes to prevent TOC collision
+def _drop_scene_break_target_ids(node) -> None:
+    """Keep <s> from stealing heading/fragment ids off ornament images."""
+    if node is None:
+        return
+    for key in ("id", "data-orig-id"):
+        try:
+            if (node.attributes or {}).get(key) is not None:
+                del node.attrs[key]
+        except Exception:
+            pass
+
+
+
+# Remove empty wrapper divs/p inside <s> scene break elements
+def strip_scene_break_inner_wrappers(tree) -> bool:
+    """Inside <s>, unwrap leftover containers so only symbols or one image remain."""
+    modified = False
+    for s_tag in tree.css("s"):
+        if s_tag.parent is None:
+            continue
+        while True:
+            wrappers = [
+                child
+                for child in iter_children(s_tag)
+                if child.tag in SCENE_BREAK_INNER_WRAPPERS
+            ]
+            if not wrappers:
+                break
+            for wrapper in wrappers:
+                if wrapper.parent is None:
+                    continue
+                wrapper.unwrap()
+                modified = True
+        media = s_tag.css_first("img, image, svg")
+        if media:
+            for child in list(iter_children(s_tag, include_text=True)):
+                if child.parent is None:
+                    continue
+                if child == media or child.tag in ("img", "image", "svg"):
+                    continue
+                if child.css_first("img, image, svg"):
+                    continue
+                child.decompose()
+                modified = True
+        # Climb stopped at the img: drop empty div/p wrappers still sitting around <s>.
+        curr = s_tag.parent
+        while curr is not None and curr.tag in SCENE_BREAK_INNER_WRAPPERS:
+            if curr.tag == "section":
+                break
+            parent = curr.parent
+            if parent is None:
+                break
+            if curr.text(strip=True):
+                break
+            if len(list(curr.css("s"))) != 1:
+                break
+            if len(curr.css("img, image, svg")) > len(s_tag.css("img, image, svg")):
+                break
+            curr.unwrap()
+            modified = True
+            curr = parent
+    return modified
+
+
+
+# Post-pass: remove stray inner tags from all scene break elements
+def clean_scene_break_contents(pages: List[str]) -> List[str]:
+    """Final pass: drop div/p/span spam left inside injected <s> scene breaks."""
+    if not pages:
+        return pages
+    new_pages = []
+    for page_html in pages:
+        if not page_html or "<s" not in page_html:
+            new_pages.append(page_html)
+            continue
+        tree = HTMLParser(page_html)
+        if not strip_scene_break_inner_wrappers(tree):
+            new_pages.append(page_html)
+            continue
+        target = tree.body or tree.root
+        page_str = (target.html if target else tree.html) or ""
+        page_str = re.sub(r">\s*\n+\s*<", "><", page_str)
+        new_pages.append(page_str)
+    return new_pages
+
+
+_SEARCH_BLOCK_TAGS = {
+    "p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
+    "blockquote", "section", "article", "header", "footer", "ul", "ol", "table",
+    "thead", "tbody", "tfoot", "pre", "hr", "dd", "dt", "figure", "figcaption",
+    "n", "nav", "aside", "main",
+}
+
+
+# Inline formatting: concatenate so ``the ne<em>xt</em> day`` stays ``the next day``.
+_SEARCH_GLUE_TAGS = {
+    "em", "i", "b", "strong", "u", "s", "strike", "del", "ins", "mark",
+    "small", "big", "sub", "sup", "span", "font", "a", "abbr", "cite",
+    "q", "code", "dfn", "ruby", "rt", "rp",
+}
+
+
+
+# Strip HTML tags from page for plain-text search
+def html_to_search_text(page_html: str) -> str:
+    """Plain text for search: keep real word spaces, do not split words at inline tags.
+
+    selectolax ``text(separator=" ")`` joins every node with a space, which
+    turns ``the ne<em>xt</em> day`` into ``the ne xt day``.
+    """
+    tree = HTMLParser(page_html)
+    target = tree.body if tree.body else tree
+    if target is None:
+        return ""
+    parts = []
+    only_glue_since_text = True
+    crossed_block = False
+
+    def append_text(text: str) -> None:
+        nonlocal only_glue_since_text, crossed_block
+        if not text:
+            return
+        if parts:
+            prev = parts[-1]
+            has_ws = prev[-1].isspace() or text[0].isspace()
+            if not has_ws and (crossed_block or not only_glue_since_text):
+                parts.append(" ")
+        parts.append(text)
+        only_glue_since_text = True
+        crossed_block = False
+
+    def walk(node):
+        nonlocal only_glue_since_text, crossed_block
+        child = node.child
+        while child is not None:
+            nxt = child.next
+            tag = child.tag
+            if tag == "-text":
+                append_text(child.text(strip=False) or "")
+            elif tag not in ("script", "style", "rt", "rp"):
+                is_block = tag in _SEARCH_BLOCK_TAGS
+                is_glue = tag in _SEARCH_GLUE_TAGS
+                if is_block:
+                    crossed_block = True
+                elif not is_glue:
+                    only_glue_since_text = False
+                walk(child)
+                if is_block:
+                    crossed_block = True
+                elif not is_glue:
+                    only_glue_since_text = False
+            child = nxt
+
+    walk(target)
+    return "".join(parts)
+
+
+
+# Escape and normalize quote variants in a search query
+def escape_search_query(q_norm: str) -> str:
+    """Escape each word, then join with ``\\s+``.
+
+    Do not ``re.escape`` the whole phrase then replace spaces: Python 3.13
+    escapes spaces as ``\\ ``, and a follow-up ``\\s+`` swap leaves a stray
+    backslash so two-word queries never match.
+    """
+    tokens = [token for token in re.split(r"\s+", q_norm) if token]
+    escaped_tokens = [
+        re.escape(token).replace("'", r"['‘’´`]").replace('"', r'["“”]')
+        for token in tokens
+    ]
+    return r"\s+".join(escaped_tokens)

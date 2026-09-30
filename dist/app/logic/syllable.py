@@ -1,4 +1,14 @@
 import re
+import threading
+
+# All callers import app.logic.syllable so eSpeak shares one lock.
+# Audio inference stays outside this lock.
+phonemizer_lock = threading.RLock()
+
+
+def phonemize(*args, **kwargs):
+    with phonemizer_lock:
+        return _phonemize(*args, **kwargs)
 
 # --- THE NUMBER ENGINE ---
 try:
@@ -9,12 +19,13 @@ except ImportError:
 
 # --- THE PHONEME ENGINE ---
 try:
-    from phonemizer import phonemize
+    from phonemizer import phonemize as _phonemize
     from phonemizer.backend.espeak.wrapper import EspeakWrapper
     import espeakng_loader
     
-    EspeakWrapper.set_library(espeakng_loader.get_library_path())
-    EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
+    with phonemizer_lock:
+        EspeakWrapper.set_library(espeakng_loader.get_library_path())
+        EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
     
     HAS_PHONEMIZER = True
 except ImportError:

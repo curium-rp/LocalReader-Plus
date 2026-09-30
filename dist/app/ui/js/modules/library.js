@@ -830,6 +830,7 @@ function fillPeekedBookInBackground(openedId, item) {
         } catch (e) {}
         const hadHole = spreadIdxs.some((i) => !oldPages[i]) || !oldPages[viewIdx];
 
+        const oldViewHtml = oldPages[viewIdx];
         state.currentPages = full.pages;
         if (Array.isArray(full.toc_map)) state.tocMap = full.toc_map;
         if (full.footnote_map && typeof full.footnote_map === "object") {
@@ -849,7 +850,8 @@ function fillPeekedBookInBackground(openedId, item) {
         state.readingPageIndex = clampIdx(readingIdx);
         state.currentSentenceIndex = sentenceIdx;
         renderTOC();
-        if (hadHole || oldLen !== newLen) {
+        const newViewHtml = (state.currentPages || [])[state.viewPageIndex];
+        if (hadHole || oldLen !== newLen || oldViewHtml !== newViewHtml) {
             renderPage();
         }
     }).catch((err) => {

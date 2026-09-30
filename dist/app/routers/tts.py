@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import threading
 import multiprocessing
+from ..logic.syllable import estimate_phonemes
 
 # Add app logic to path for imports
 base_dir_parent = Path(__file__).parent.parent
@@ -22,7 +23,6 @@ if str(base_dir_parent) not in sys.path:
 try:
     from logic.smart_content_detector import filter_text_for_tts
     from logic.text_normalizer import apply_custom_pronunciations, fix_special_formats
-    from logic.syllable import estimate_phonemes
     from logic.language_switcher import smart_polyglot_split  
     from logic.japanese_g2p import pure_japanese_to_romaji
     from logic.chinese_g2p import cleanse_chinese_text 
@@ -30,7 +30,6 @@ except ImportError:
     sys.path.append(str(base_dir_parent / "logic"))
     from smart_content_detector import filter_text_for_tts
     from text_normalizer import apply_custom_pronunciations, fix_special_formats
-    from syllable import estimate_phonemes
     from language_switcher import smart_polyglot_split  
     from japanese_g2p import pure_japanese_to_romaji
     from chinese_g2p import cleanse_chinese_text 

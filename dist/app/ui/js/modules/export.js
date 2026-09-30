@@ -5,7 +5,7 @@ import { showToast, renderIcons } from './ui.js';
 let exportPollInterval = null;
 let ffmpegPollInterval = null;
 
-function selectExportFormat() {
+function selectExportFormat(exportDocument = null) {
     return new Promise((resolve) => {
         const modal = document.getElementById('exportFormatModal');
         modal.classList.remove('hidden');
@@ -28,11 +28,12 @@ function selectExportFormat() {
         let isSeparateMode = toggleSeparateFiles.checked; // 🌟 NEW
         let selectedSingleIndex = null;
 
-        let tocItems = state.tocMap && state.tocMap.length > 0 
-            ? [...state.tocMap] 
+        const tocMap = exportDocument ? exportDocument.toc_map : state.tocMap;
+        let tocItems = tocMap && tocMap.length > 0
+            ? tocMap.map(item => ({ ...item }))
             : [{ title: "Start of Document", page_index: 0, level: 1 }];
 
-        const maxPage = state.currentPages ? state.currentPages.length : 1;
+        const maxPage = exportDocument ? exportDocument.page_count : (state.currentPages ? state.currentPages.length : 1);
         tocItems.push({ title: "End of Book", page_index: maxPage, level: 1, isVirtual: true });
 
         function renderExportToc() {
@@ -296,8 +297,20 @@ export async function startExport() {
     if (!state.currentDoc) { showToast("No document selected"); return; }
     if (!window.isEngineReady) { showToast("Voice engine not ready"); return; }
 
+    const exportDocId = state.currentDoc.id;
     try {
-        const tasks = await selectExportFormat();
+        const doc = state.currentDoc;
+        const isPeek = doc.is_peek !== false && String(doc.bookType || '').toLowerCase() !== 'pdf'
+            && Boolean(doc.source_path || doc.path || doc.is_peek);
+        let exportDocument = null;
+        if (isPeek) {
+            showToast("Preparing book for export...");
+            // RAM loading can remove empty chapters and resolve per-chapter TOC IDs.
+            // Keep this snapshot local so export does not change the reader's position.
+            exportDocument = await fetchJSON(`/api/export/document/${encodeURIComponent(exportDocId)}`);
+            if (state.currentDoc?.id !== exportDocId) return;
+        }
+        const tasks = await selectExportFormat(exportDocument);
         if (!tasks || tasks.length === 0) return; 
 
         if (tasks[0].format === "mp3") {
@@ -339,7 +352,7 @@ export async function startExport() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    doc_id: state.currentDoc.id,
+                    doc_id: exportDocId,
                     voice: voiceSelect.value,
                     speed: parseFloat(speedRange.value),
                     rules: state.rules,
