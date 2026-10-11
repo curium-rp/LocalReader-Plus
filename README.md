@@ -457,9 +457,3 @@ This project is made possible thanks to the following open-source libraries and 
 
 </br>
 
----
-
-### Credits
-
-### 🔘Based on the initial project by [LocalReader-Pro](https://github.com/revisionhiep-create/LocalReader-Pro)
-
