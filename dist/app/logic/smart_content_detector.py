@@ -1,27 +1,9 @@
 """
-Content Detection & Processing Module for LocalReader plus.
+Content Detection & pattern scene break.
 """
 
 import re
 from typing import Tuple
-
-
-
-def filter_text_for_tts(text: str) -> str:
-    """
-    Strips non-spoken formatting markers out of the text before TTS engine ingestion.
-    CRITICAL FIX: We no longer delete <s> (Scene) or [IMAGE] markers here!
-    If we delete them here, the frontend media player skips them entirely.
-    """
-    text = re.sub(r'\[DIM\].*?\[/DIM\]', '', text, flags=re.DOTALL)
-    
-    # Clean up standard Headers brackets but KEEP the text inside
-    text = re.sub(r'\[/?H[1-6]\]', '', text)
-    
-    # Do NOT run the re.sub for <s> or IMAGE! Let the frontend intercept them.
-    return text.strip()
-
-
 
 
 # =========================================

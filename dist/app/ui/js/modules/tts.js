@@ -7,7 +7,12 @@ import {
   findTocEntryForPage,
   clearActiveSentenceHighlights,
   validTags,
+  getCurrentReaderElement,
+  getReaderSpeechPage,
+  isReaderTextBlank,
 } from "./library.js";
+import { isSyncActive, syncState, recordSyncAudio, suppressSyncAudio, clearTimeCutAudio } from "../falco_api/falcotype-sync-state.js";
+import { SyncSpeechCache } from "../falco_api/sync-speech-cache.js";
 import { revealInSpread } from "./horizontal.js";
 import { updateProgressDisplay, getProgressMetrics } from "./progress.js";
 import { updateWakeLock } from "./wakelock.js";
@@ -15,6 +20,84 @@ import { VOICE_BENCHMARKS } from "./blending.js";
 
 let saveProgressTimeout = null;
 let currentSynthesisId = 0; // 🌟 ADDED: Bulletproof lock to prevent voice overlap
+let preparedSyncAudio = null;
+let pausedSyncSource = null;
+let standaloneCacheOwner = "";
+const syncSpeechKey = () => JSON.stringify([getEffectiveVoice(), document.getElementById("speedRange")?.value,
+  state.rules, state.ignoreList, state.pauseSettings, state.behaviorSettings]);
+let syncPrecacheGeneration = 0;
+const syncAudioCache = new SyncSpeechCache(async (unit, signal) => {
+  const res = await fetch(`${API_URL}/api/synthesize?audio_format=pcm_f32le`, {
+    method: "POST", signal, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(unit.payload),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => null);
+    throw new Error(typeof error?.detail === "string" ? error.detail : "Synthesis failed");
+  }
+  const data = await res.arrayBuffer();
+  if (signal.aborted) throw new DOMException("Audio preparation cancelled.", "AbortError");
+  const buffer = pcmAudioBuffer(res, data, state.audioContext);
+  if (signal.aborted) throw new DOMException("Audio preparation cancelled.", "AbortError");
+  return buffer;
+});
+
+export function clearSyncPrecache() {
+  syncPrecacheGeneration++;
+  syncAudioCache.clear();
+}
+
+function syncCacheUnit(speech, pageIndex, index, speechKey) {
+  const [voice, speed, rules, ignore, pauses, behaviors] = JSON.parse(speechKey);
+  return {
+    key: JSON.stringify([syncState.sessionId, state.currentDoc.id, pageIndex, index,
+      speech.cleanText, speech.bType, speechKey]),
+    payload: { text: speech.cleanText, behavior_type: speech.bType, voice, speed: Number(speed),
+      rules, ignore_list: ignore, pause_settings: pauses, behavior_settings: behaviors },
+  };
+}
+
+async function preCacheSyncSentences() {
+  if (!isSyncActive() || !syncState.audioEnabled || !state.audioContext) return;
+  const owner = ++syncPrecacheGeneration, doc = state.currentDoc, session = syncState.sessionId;
+  const selectionGeneration = syncState.generation;
+  const pageIndex = state.readingPageIndex, index = state.currentSentenceIndex, speechKey = syncSpeechKey();
+  const valid = () => owner === syncPrecacheGeneration && doc === state.currentDoc &&
+    session === syncState.sessionId && selectionGeneration === syncState.generation &&
+    syncState.audioEnabled && speechKey === syncSpeechKey();
+  const retained = [], forward = [];
+  try {
+    for (let previous = pageIndex - 1; index + retained.length < 2 && previous >= 0; previous--) {
+      const mapped = await getReaderSpeechPage(previous);
+      if (!valid()) return;
+      if (!mapped) continue;
+      const needed = 2 - index - retained.length;
+      const units = mapped.sentences.slice(-needed).map((text, offset) => {
+        const cursor = Math.max(0, mapped.sentences.length - needed) + offset;
+        return syncCacheUnit(readerSpeechUnit(text, mapped.elements[cursor], previous), previous, cursor, speechKey);
+      });
+      retained.unshift(...units);
+    }
+    let page = pageIndex, cursor = Math.max(0, index - 2);
+    while (forward.length < 6 && page < state.currentPages.length) {
+      const mapped = await getReaderSpeechPage(page);
+      if (!valid()) return;
+      if (mapped) for (; cursor < mapped.sentences.length; cursor++) {
+        const speech = readerSpeechUnit(mapped.sentences[cursor], mapped.elements[cursor], page);
+        const unit = syncCacheUnit(speech, page, cursor, speechKey);
+        retained.push(unit);
+        if (page > pageIndex || cursor > index) forward.push(unit);
+        if (forward.length === 6) break;
+      }
+      page++; cursor = 0;
+    }
+    if (!valid()) return;
+    syncAudioCache.retain(retained);
+    // Blank transitions and local media pauses do not need synthesis requests.
+    await syncAudioCache.preload(forward.filter(unit => !isReaderTextBlank(unit.payload.text) && unit.payload.behavior_type !== "Img" &&
+      !(unit.payload.behavior_type === "S" && !/[\p{L}\p{N}]/u.test(unit.payload.text))), valid);
+  } catch { /* Lookahead failures are retried as explicit foreground preparation. */ }
+}
 
 // Create a silent audio element to force the OS to recognize the media session
 const osMediaAnchor = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
@@ -25,9 +108,24 @@ export function initAudioContext() {
     state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
     console.log("[WebAudio] AudioContext initialized");
   }
-  if (state.audioContext.state === "suspended") {
+  if (state.audioContext.state === "suspended" && !syncState.userPaused) {
     state.audioContext.resume();
   }
+}
+
+// Keep buffers at the source rate; Web Audio converts to the device rate on playback.
+function pcmAudioBuffer(response, data, context) {
+  const sampleRate = Number(response.headers.get("X-Audio-Sample-Rate"));
+  const channels = Number(response.headers.get("X-Audio-Channels"));
+  const frames = Number(response.headers.get("X-Audio-Frames"));
+  if (response.headers.get("X-Audio-Format") !== "pcm_f32le" || channels !== 1 ||
+      !Number.isFinite(sampleRate) || sampleRate <= 0 ||
+      !Number.isSafeInteger(frames) || frames <= 0 || data.byteLength !== frames * 4) {
+    throw new Error("Invalid PCM audio response.");
+  }
+  const buffer = context.createBuffer(channels, frames, sampleRate);
+  buffer.copyToChannel(new Float32Array(data), 0);
+  return buffer;
 }
 
 export function getEffectiveVoice() {
@@ -39,8 +137,12 @@ export function getEffectiveVoice() {
 }
 
 function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
+  const synthesisId = currentSynthesisId;
+  const doc = state.currentDoc;
+  const pageIndex = state.readingPageIndex, sentenceIndex = state.currentSentenceIndex;
   if (state.currentAudioSource) {
     try {
+      state.currentAudioSource.onended = null;
       state.currentAudioSource.stop();
       state.currentAudioSource.disconnect();
     } catch (e) {}
@@ -93,6 +195,8 @@ function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
     });
   }
   source.onended = async () => {
+    if (source !== state.currentAudioSource || synthesisId !== currentSynthesisId ||
+        doc !== state.currentDoc || pageIndex !== state.readingPageIndex || sentenceIndex !== state.currentSentenceIndex) return;
     state.currentAudioSource = null;
     if (state.currentGainNode) {
       try { state.currentGainNode.disconnect(); } catch (e) {}
@@ -107,6 +211,18 @@ function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
     // Clean up UI instantly when audio finishes
     setMonitorPreview(displayChars, { center: bType === "Img" || bType === "S" });
 
+    if (isSyncActive()) {
+      state.isPlaying = false;
+      syncState.playback = "ended";
+      syncState.audioEnded = true;
+      osMediaAnchor.pause();
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+      syncPlayPauseIcons("play");
+      updateWakeLock();
+      saveProgress();
+      return;
+    }
+
     state.currentSentenceIndex++;
     console.log(`Sentence ended, moving to ${state.currentSentenceIndex}`);
     await playNext();  
@@ -114,19 +230,21 @@ function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
   };
 
   state.currentAudioSource = source;
+  if (isSyncActive()) syncState.playback = "playing";
   source.start(0);
+  recordSyncAudio();
 
   // --- DYNAMIC AUDIO-SYNCED VISUAL TIMER ---
   const centerStatus = bType === "Img" || bType === "S";
   if (centerStatus) {
       const durationMs = audioBuffer.duration * 1000;
-      const endTime = Date.now() + durationMs;
+      const endTime = state.audioContext.currentTime + audioBuffer.duration;
       
       if (state.jumpTimer) clearInterval(state.jumpTimer);
       
       state.jumpTimer = setInterval(() => {
-          if (!state.isPlaying) return clearInterval(state.jumpTimer);
-          const remaining = endTime - Date.now();
+          if (!state.isPlaying) return;
+          const remaining = (endTime - state.audioContext.currentTime) * 1000;
           
           if (remaining > 0) {
               setMonitorPreview(`${displayChars} (${Math.ceil(remaining / 1000)}s)`, { center: true });
@@ -153,8 +271,14 @@ function syncPlayPauseIcons(icon) {
 }
 
 export function stopPlayback() {
+  pausedSyncSource = null;
   state.isPlaying = false;
+  syncState.playbackGeneration++;
+  preparedSyncAudio = null;
+  syncPrecacheGeneration++;
+  syncAudioCache.cancelPending();
   currentSynthesisId++; // 🌟 Instantly invalidate any pending server downloads
+  if (isSyncActive() && syncState.playback !== "ended" && syncState.playback !== "error") syncState.playback = "paused";
 
   // Pause the silent audio and tell the OS we stopped
   osMediaAnchor.pause();
@@ -186,9 +310,113 @@ export function stopPlayback() {
   saveProgress(true); // 🌟 Session buffer: flush checkpoint on pause/stop
 }
 
-export async function playNext() {
+export async function pauseSyncPlayback() {
+  if (!isSyncActive() || syncState.advancement !== "status") return stopPlayback();
+  if (syncState.userPaused) return;
+  syncState.userPaused = true;
+  if (!state.currentAudioSource) {
+    stopPlayback();
+    syncState.playback = "paused";
+    return;
+  }
+  pausedSyncSource = { source: state.currentAudioSource, doc: state.currentDoc, session: syncState.sessionId,
+    revision: syncState.selectionRevision, speech: syncSpeechKey() };
+  state.isPlaying = false;
+  syncState.playbackGeneration++;
+  syncState.playback = "paused";
+  osMediaAnchor.pause();
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+  syncPlayPauseIcons("play");
+  updateWakeLock();
+  await state.audioContext.suspend();
+  saveProgress(true);
+}
+
+export async function resumeSyncPlayback() {
+  if (!isSyncActive() || syncState.transitioning) return;
+  const practice = syncState.practiceStatus;
+  if (syncState.advancement === "status" && (!practice || practice.selection_revision !== syncState.selectionRevision ||
+      (!["preparing", "running"].includes(practice.run_state) && !(syncState.userPaused && practice.run_state === "paused" && practice.user_paused)) ||
+      (practice.run_state === "running" && (practice.clock_paused || performance.now() >= syncState.practiceDeadline)))) {
+    throw new Error("Practice must be ready before resuming audio.");
+  }
+  const paused = pausedSyncSource;
+  syncState.userPaused = false;
+  if (!syncState.audioEnabled || syncState.audioEnded) return;
+  if (paused && paused.source === state.currentAudioSource && paused.doc === state.currentDoc &&
+      paused.session === syncState.sessionId && paused.revision === syncState.selectionRevision && paused.speech === syncSpeechKey()) {
+    state.isPlaying = true;
+    await state.audioContext.resume();
+    if (paused !== pausedSyncSource || !state.isPlaying) return;
+    pausedSyncSource = null;
+    syncState.playback = "playing";
+    osMediaAnchor.play()?.catch(() => {});
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+    syncPlayPauseIcons("pause");
+    updateWakeLock();
+    preCacheNextSentences();
+    return;
+  }
+  startPlayback();
+}
+
+function readerSpeechUnit(text, currentEl, pageIndex) {
+  let bType = "N";
+  const hasNarrative = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(
+    currentEl ? (currentEl.textContent || "") : text);
+  const heading = currentEl?.closest('h1, h2, h3, h4, h5, h6');
+  const headingTag = text.match(/<h([1-6])/i);
+  if (heading) bType = heading.tagName.toUpperCase();
+  else if (!currentEl && headingTag) bType = "H" + headingTag[1];
+  else if (currentEl?.tagName.toLowerCase() === 's' || currentEl?.closest('s, .scene-break') ||
+      /<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
+  else if (currentEl?.tagName.toLowerCase() === 'img' || (!hasNarrative &&
+      (currentEl?.querySelector('img, svg') || /<img|<svg|\[IMAGE_/i.test(text)))) bType = "Img";
+
+  let cleanText = text.replace(/<(?:rt|rp)\b[^>]*>[\s\S]*?<\/(?:rt|rp)>/gi, '')
+    .replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ').trim().replace(/\s+([,.:;!?])/g, '$1');
+  if (text.endsWith('\n')) cleanText += '\n';
+  let rescuedTitle = null;
+  if (!cleanText.trim() && bType.startsWith("H")) {
+    const sentenceId = currentEl ? currentEl.dataset?.sentenceId || currentEl.getAttribute('id') ||
+      currentEl.closest('[id^="s_"]')?.getAttribute('id') : text.match(/id=['"]([^'"]+)['"]/)?.[1];
+    const origId = currentEl ? currentEl.getAttribute('data-orig-id') ||
+      currentEl.closest('[id^="s_"]')?.getAttribute('data-orig-id') : text.match(/data-orig-id=['"]([^'"]+)['"]/)?.[1];
+    rescuedTitle = findTocEntryForPage(pageIndex, sentenceId, origId)?.title || null;
+    if (rescuedTitle) cleanText = rescuedTitle;
+    else bType = /<s\b/i.test(text) || currentEl?.closest('s, .scene-break') ? "S" :
+      /<img|<svg/i.test(text) || currentEl?.querySelector('img, svg') ? "Img" : "S";
+  }
+  if (bType === "Img" && !cleanText.trim()) cleanText = "Image.";
+  if (bType === "S" && !cleanText.trim()) cleanText = "•••";
+  const displayChars = (rescuedTitle || (bType === "Img" ? "🖼️ [Viewing Image]" :
+    bType === "S" && currentEl ? currentEl.textContent.trim() || cleanText.trim() || "•••" : cleanText.trim()))
+    .replace(/<[^>]+>/g, '').trim();
+  return { cleanText, bType, displayChars };
+}
+
+export async function playNext({ prepareOnly = false } = {}) {
+  if (suppressSyncAudio()) return true;
   currentSynthesisId++; // 🌟 Generate unique lock ID for this synthesis request
   const mySynthesisId = currentSynthesisId;
+  const doc = state.currentDoc, session = syncState.sessionId, revision = syncState.selectionRevision;
+  let requestedSpeech = null;
+  const valid = () => mySynthesisId === currentSynthesisId && doc === state.currentDoc &&
+    (!prepareOnly ? state.isPlaying : isSyncActive() && session === syncState.sessionId && revision === syncState.selectionRevision);
+  const ready = (buffer, type, display) => {
+    if (!valid()) return false;
+    if (prepareOnly) {
+      if (requestedSpeech && requestedSpeech !== syncSpeechKey()) throw new Error("Reader voice settings changed during preparation.");
+      preparedSyncAudio = { buffer, type, display, doc, session, revision,
+        speech: requestedSpeech || syncSpeechKey() };
+      syncState.playback = "ready";
+    } else {
+      playAudioBuffer(buffer, type, display);
+      if (isSyncActive()) preCacheNextSentences();
+    }
+    return true;
+  };
 
   // 🌟 SELF-RECOVERING ONE-TIME CHECK (Session Memory)
   // Ensures the language switcher isn't interrupted on subsequent plays or jumps
@@ -215,13 +443,20 @@ export async function playNext() {
   }
 
   const targetIndex = state.currentSentenceIndex;
-  if (!state.isPlaying || !window.isEngineReady) {
+  if (mySynthesisId !== currentSynthesisId) return;
+  if ((!prepareOnly && !state.isPlaying) || !window.isEngineReady) {
     stopPlayback();
     return;
   }
 
   const text = state.readingSentences[state.currentSentenceIndex];
   if (!text || typeof text !== "string") {
+    if (isSyncActive()) {
+      syncState.error = "No current sentence is ready.";
+      syncState.playback = "error";
+      stopPlayback();
+      return;
+    }
     if (state.readingPageIndex < state.currentPages.length - 1) {
       state.readingPageIndex++;
       state.currentSentenceIndex = 0;
@@ -275,12 +510,10 @@ export async function playNext() {
               alignImg(); 
               setTimeout(alignImg, 450); 
           } else {
-              const safeTop = containerRect.top + (containerRect.height * 0.10);
-              const safeBottom = containerRect.bottom - (containerRect.height * 0.20);
-              
-              if (elRect.bottom > safeBottom || elRect.top < safeTop) {
-                  const targetScroll = relativeTop - (containerRect.height * 0.15);
-                  scrollerNode.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
+              const outsideBand = elRect.top < containerRect.top + containerRect.height * 0.10 ||
+                  elRect.bottom > containerRect.bottom - containerRect.height * 0.20;
+              if (outsideBand) {
+                  scrollerNode.scrollTo({ top: Math.max(0, relativeTop - containerRect.height * 0.15), behavior: 'smooth' });
               }
           }
       }
@@ -291,82 +524,15 @@ export async function playNext() {
   updateProgressDisplay();
   saveProgress();
 
-  let bType = "N";
-  const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
+  const currentEl = isSyncActive() ? getCurrentReaderElement() : (state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null);
 
   // 🌟 THE PHANTOM IMAGE AUTO-SKIP: Move forward automatically if we hit a duplicate image during playback
-  if (currentEl && currentEl.tagName.toLowerCase() === 'img' && currentEl.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n')) {
+  if (!isSyncActive() && currentEl && currentEl.tagName.toLowerCase() === 'img' && currentEl.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n')) {
       state.currentSentenceIndex++;
       return playNext();
   }
 
-  const hasNarrativeTextInCurrent = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(
-      currentEl ? (currentEl.textContent || "") : text
-  );
-
-  if (currentEl) {
-      const hMatch = currentEl.closest('h1, h2, h3, h4, h5, h6');
-      if (hMatch) bType = hMatch.tagName.toUpperCase(); 
-      else if (currentEl.tagName.toLowerCase() === 's' || currentEl.closest('s, .scene-break')) bType = "S";
-      else if (currentEl.tagName.toLowerCase() === 'img' || (!hasNarrativeTextInCurrent && currentEl.querySelector('img, svg'))) bType = "Img";
-      else if (/<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
-      else if ((/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) && !hasNarrativeTextInCurrent) bType = "Img";
-  } else {
-      const hMatch = text.match(/<h([1-6])/i);
-      if (hMatch) bType = "H" + hMatch[1];
-      else if (/<s\b/i.test(text) || /class="scene-break"/i.test(text)) bType = "S";
-      else if ((/<img|<svg/i.test(text) || /\[IMAGE_/i.test(text)) && !hasNarrativeTextInCurrent) bType = "Img";
-  }
-
-  let cleanText = text.replace(/<(?:rt|rp)\b[^>]*>[\s\S]*?<\/(?:rt|rp)>/gi, '').replace(/<\/?br\s*\/?>/gi, ' ').replace(validTags, '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
-  cleanText = cleanText.replace(/\s+([,.:;!?])/g, '$1');
-  if (text.endsWith('\n')) cleanText += '\n'; 
-
-  // 🌟 THE IMAGE HEADER RESCUE INTERCEPTOR 🌟
-  let rescuedTitle = null;
-  if (cleanText.trim() === "" && bType.startsWith("H")) {
-      let sentenceId = null;
-      let origId = null;
-      if (currentEl) {
-          sentenceId = currentEl.dataset?.sentenceId || currentEl.getAttribute('id') || currentEl.closest('[id^="s_"]')?.getAttribute('id') || currentEl.id;
-          origId = currentEl.getAttribute('data-orig-id') || currentEl.closest('[id^="s_"]')?.getAttribute('data-orig-id');
-      } else {
-          const idMatch = text.match(/id=['"]([^'"]+)['"]/);
-          if (idMatch) sentenceId = idMatch[1];
-          const origMatch = text.match(/data-orig-id=['"]([^'"]+)['"]/);
-          if (origMatch) origId = origMatch[1];
-      }
-
-      const matchedToc = findTocEntryForPage(
-          state.readingPageIndex,
-          sentenceId,
-          origId
-      );
-      if (matchedToc && matchedToc.title) {
-          rescuedTitle = matchedToc.title;
-          cleanText = rescuedTitle;
-      }
-      
-      // If it failed to rescue, downgrade it to an image/silence so the API doesn't crash on empty text
-      if (!rescuedTitle) {
-          bType = (/<s\b/i.test(text) || (currentEl && (currentEl.tagName.toLowerCase() === 's' || currentEl.closest('s, .scene-break')))) ? "S" : (/<img|<svg/i.test(text) || (currentEl && currentEl.querySelector('img, svg'))) ? "Img" : "S";
-      }
-  }
-
-  if (bType === "Img" && cleanText.trim() === "") cleanText = "Image.";
-  if (bType === "S" && cleanText.trim() === "") cleanText = "•••";
-
-  let displayChars = cleanText.trim();
-  if (rescuedTitle) {
-      displayChars = rescuedTitle;
-  } else if (bType === "Img") {
-      displayChars = "🖼️ [Viewing Image]";
-  } else if (bType === "S" && currentEl) {
-      displayChars = currentEl.textContent.trim() || cleanText.trim() || "•••";
-  }
-
-  // 🌟 Failsafe: Strip ANY remaining malformed tags before displaying in UI
-  displayChars = displayChars.replace(/<[^>]+>/g, '').trim();
+  const { cleanText, bType, displayChars } = readerSpeechUnit(text, currentEl, state.readingPageIndex);
 
   setMonitorPreview("⏳ Loading...", { center: true });
 
@@ -376,7 +542,7 @@ export async function playNext() {
   // Generate a silent buffer locally for Images and empty Scene Breaks.
   // This prevents the TTS API from crashing on punctuation or "Image." strings
   // which previously caused `stopPlayback()` to trigger and permanently stick the player!
-  if (bType === "Img" || (bType === "S" && cleanText.trim() === "•••")) {
+  if (bType === "Img" || (bType === "S" && (cleanText.trim() === "•••" || (isSyncActive() && !/[\p{L}\p{N}]/u.test(cleanText))))) {
       initAudioContext();
       
       // Dynamically fetch duration from UI settings (convert ms to seconds)
@@ -400,24 +566,45 @@ export async function playNext() {
       const sampleRate = state.audioContext.sampleRate || 44100;
       const silentBuffer = state.audioContext.createBuffer(1, Math.floor(sampleRate * durationSeconds), sampleRate);
       
-      if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return;
+      if (!valid()) return false;
       
-      playAudioBuffer(silentBuffer, bType, displayChars);
-      return; // STOP execution here. Do NOT send to backend!
+      return ready(silentBuffer, bType, displayChars);
   }
 
   const effectiveVoice = getEffectiveVoice();
   const speedRange = document.getElementById("speedRange");
   const lookupKey = `${state.readingPageIndex}_${targetIndex}_${effectiveVoice}_${speedRange.value}`;
+  requestedSpeech = syncSpeechKey();
+
+  if (isSyncActive()) {
+    try {
+      const unit = syncCacheUnit({ cleanText, bType, displayChars }, state.readingPageIndex, targetIndex, requestedSpeech);
+      const buffer = await syncAudioCache.get(unit);
+      if (!valid() || requestedSpeech !== syncSpeechKey()) return false;
+      return ready(buffer, bType, displayChars);
+    } catch (error) {
+      if (!valid() || error.name === "AbortError") return false;
+      syncState.playback = "error";
+      syncState.audioEnded = false;
+      syncState.error = error.message;
+      stopPlayback();
+      if (prepareOnly) throw error;
+      showToast(error.message);
+      return false;
+    }
+  }
   
-  if (state.audioBufferCache.has(lookupKey)) {
-    if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return; // 🌟 Final check before cache play
-    playAudioBuffer(state.audioBufferCache.get(lookupKey), bType, displayChars);
-    return;
+  const cacheOwner = JSON.stringify([doc.id, requestedSpeech]);
+  if (standaloneCacheOwner !== cacheOwner) {
+    state.audioBufferCache.clear();
+    standaloneCacheOwner = cacheOwner;
+  }
+  if (!isSyncActive() && state.audioBufferCache.has(lookupKey)) {
+    return ready(state.audioBufferCache.get(lookupKey), bType, displayChars);
   }
 
   try {
-    const res = await fetch(`${API_URL}/api/synthesize`, {
+    const res = await fetch(`${API_URL}/api/synthesize?audio_format=pcm_f32le`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -432,44 +619,87 @@ export async function playNext() {
       }),
     });
 
-    if (!res.ok) throw new Error("Synthesis failed");
+    if (!res.ok) {
+      const error = await res.json().catch(() => null);
+      throw new Error(typeof error?.detail === "string" ? error.detail : "Synthesis failed");
+    }
 
-    const blob = await res.blob();
     initAudioContext();
-    const arrayBuffer = await blob.arrayBuffer();
+    const arrayBuffer = await res.arrayBuffer();
 
     // 🌟 THE BULLETPROOF CHECK: Abort if user jumped or paused while waiting for network
-    if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return;
+    if (!valid()) return false;
+    if (requestedSpeech !== syncSpeechKey()) return playNext({ prepareOnly });
 
-    const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
-    state.audioBufferCache.set(lookupKey, audioBuffer);
+    const audioBuffer = pcmAudioBuffer(res, arrayBuffer, state.audioContext);
+    if (!valid()) return false;
+    if (!isSyncActive()) state.audioBufferCache.set(lookupKey, audioBuffer);
     
-    // 🌟 Double-check after decoding (since decodeAudioData is asynchronous)
-    if (!state.isPlaying || currentSynthesisId !== mySynthesisId) return;
-
-    playAudioBuffer(audioBuffer, bType, displayChars);
+    return ready(audioBuffer, bType, displayChars);
   } catch (e) {
     if (currentSynthesisId !== mySynthesisId) return; 
     
     console.error("Synthesis error:", e);
+    if (isSyncActive()) {
+      syncState.playback = "error";
+      syncState.audioEnded = false;
+      syncState.error = e.message;
+    }
     showToast(e.message);
     stopPlayback();
+    if (prepareOnly) throw e;
   }
+}
+
+export async function prepareSyncPlayback() {
+  stopPlayback();
+  // An acknowledged silent preparation can resume an idle practice without Play.
+  syncState.userPaused = false;
+  syncState.playback = "loading";
+  syncState.audioEnded = false;
+  syncState.error = "";
+  if (suppressSyncAudio()) return;
+  initAudioContext();
+  if (!await playNext({ prepareOnly: true })) throw new Error("Reader selection changed during audio preparation.");
+  preCacheNextSentences();
 }
 
 export function togglePlayback() {
   if (state.isPlaying) {
-    stopPlayback();
+    if (isSyncActive() && syncState.advancement === "status") void pauseSyncPlayback();
+    else stopPlayback();
   } else {
-    initAudioContext();
-    state.isPlaying = true;
-    syncPlayPauseIcons("pause");
-    updateWakeLock();
-    playNext();
+    startPlayback();
   }
 }
 
+export function startPlayback() {
+  if (isSyncActive() && syncState.transitioning) return;
+  if (isSyncActive() && !syncState.audioEnabled) return;
+  if (state.isPlaying) return;
+  if (isSyncActive() && syncState.userPaused) { void resumeSyncPlayback().catch(error => showToast(error.message)); return; }
+  if (suppressSyncAudio()) return;
+  initAudioContext();
+  state.isPlaying = true;
+  if (isSyncActive()) {
+    syncState.playback = "loading";
+    syncState.audioEnded = false;
+    syncState.bookEnded = false;
+    syncState.error = "";
+  }
+  syncPlayPauseIcons("pause");
+  updateWakeLock();
+  const prepared = preparedSyncAudio;
+  preparedSyncAudio = null;
+  if (prepared && prepared.doc === state.currentDoc && prepared.session === syncState.sessionId &&
+      prepared.revision === syncState.selectionRevision && prepared.speech === syncSpeechKey()) {
+    currentSynthesisId++;
+    playAudioBuffer(prepared.buffer, prepared.type, prepared.display);
+  } else playNext();
+}
+
 export async function jumpToSentence(i) {
+  if (isSyncActive()) clearTimeCutAudio();
   // Re-enable auto-scroll and restore reading focus
   state.autoScrollEnabled = true;
 
@@ -545,7 +775,7 @@ export async function jumpToSentence(i) {
 export async function saveProgress(flushImmediately = false) {
   if (!state.currentDoc) return;
 
-  const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
+  const currentEl = isSyncActive() ? getCurrentReaderElement() : (state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null);
   let sentenceIdString = null;
   if (currentEl) {
       sentenceIdString = currentEl.dataset?.sentenceId || currentEl.getAttribute('id') || currentEl.closest('[id^="s_"]')?.getAttribute('id') || currentEl.id || null;
@@ -612,7 +842,8 @@ export async function saveProgress(flushImmediately = false) {
 
 let isPreloading = false;
 
-async function preCacheNextSentences() {
+export async function preCacheNextSentences() {
+  if (isSyncActive()) return preCacheSyncSentences();
   const MAX_FORWARD = 6; 
 
   if (!state.audioContext || isPreloading) return;
@@ -621,6 +852,8 @@ async function preCacheNextSentences() {
   try {
     const effectiveVoice = getEffectiveVoice();
     const speedRange = document.getElementById("speedRange");
+    const doc = state.currentDoc, speechKey = syncSpeechKey();
+    const valid = () => !isSyncActive() && doc === state.currentDoc && speechKey === syncSpeechKey();
 
     const currentPage = state.readingPageIndex;
     const currentIndex = state.currentSentenceIndex;
@@ -650,6 +883,7 @@ async function preCacheNextSentences() {
     let targetSentences = state.readingSentences;
 
     for (let i = 1; i <= MAX_FORWARD; i++) {
+      if (!valid()) return;
       targetSentenceIndex++; 
 
       if (targetSentenceIndex >= targetSentences.length) {
@@ -658,6 +892,7 @@ async function preCacheNextSentences() {
           targetSentenceIndex = 0; 
           try {
             targetSentences = await getSentencesForPage(targetPageIndex);
+            if (!valid()) return;
             if (!targetSentences || targetSentences.length === 0) break;
           } catch (err) {
             break;
@@ -742,7 +977,7 @@ async function preCacheNextSentences() {
       const cacheKey = `${targetPageIndex}_${targetSentenceIndex}_${effectiveVoice}_${speedRange.value}`;
       if (state.audioBufferCache.has(cacheKey)) continue;
 
-      const res = await fetch(`${API_URL}/api/synthesize`, {
+      const res = await fetch(`${API_URL}/api/synthesize?audio_format=pcm_f32le`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -758,9 +993,9 @@ async function preCacheNextSentences() {
       });
 
       if (res.ok) {
-        const blob = await res.blob();
-        const arrayBuffer = await blob.arrayBuffer();
-        const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
+        const arrayBuffer = await res.arrayBuffer();
+        if (!valid()) return;
+        const audioBuffer = pcmAudioBuffer(res, arrayBuffer, state.audioContext);
         state.audioBufferCache.set(cacheKey, audioBuffer);
       }
     }
@@ -807,10 +1042,6 @@ export async function loadVoices() {
       const group = document.createElement("optgroup");
       group.label = state.translations?.languages?.[langCode] || category.label;
       category.voices.forEach((voice) => {
-        const voiceId = voice.id.toLowerCase();
-        const cleanId = voiceId.includes("_") ? voiceId.split("_").pop() : voiceId;
-        if (["alpha", "beta", "omega", "psi"].includes(cleanId)) return;
-
         const option = document.createElement("option");
         option.value = voice.id;
 

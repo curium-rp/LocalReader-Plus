@@ -1,3 +1,5 @@
+.falcotype-chunk-unit { background: color-mix(in srgb, var(--text-content, #ccc) 7%, transparent); }
+
 :root {
   --reader-font-family: Georgia, serif;
   --reader-font-size: 18px;

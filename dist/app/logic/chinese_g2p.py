@@ -1,5 +1,5 @@
 import re
-import jaconv
+import threading
 from typing import Dict
 
 class UltimateChineseProcessor:
@@ -10,6 +10,14 @@ class UltimateChineseProcessor:
     preserves math/system symbols, and patches Web Novel polyphony (多音字) natively.
     """
     def __init__(self, custom_user_dict: Dict[str, str] = None):
+        try:
+            import jaconv
+        except ImportError as e:
+            raise ImportError(
+                "Chinese text processing is unavailable. Install LocalReader's "
+                "optional requirements-cjk.txt (jaconv)."
+            ) from e
+        self._jaconv = jaconv
        #print("[System] Initializing Acoustic Shield for Mandarin...")#
         
         # 🌟 1. THE POLYPHONY HOMOPHONE HACK (Xianxia & Web Novels) 🌟
@@ -98,8 +106,8 @@ class UltimateChineseProcessor:
             text = text.replace(word, replacement)
 
         # Step 2: Width Normalization (Mojimoji handles the heavy lifting)
-        text = jaconv.h2z(text, ascii=False)
-        text = jaconv.z2h(text, kana=False)
+        text = self._jaconv.h2z(text, ascii=False)
+        text = self._jaconv.z2h(text, kana=False)
         
         # 🌟 NEW: Native Python Width Supplement
         # Mojimoji sometimes misses Chinese-specific full-width Alphanumerics.
@@ -128,9 +136,16 @@ class UltimateChineseProcessor:
         text = re.sub(r'-+', '-', text)      
         return re.sub(r'\s+', ' ', text).strip()
 
-# Singleton Instance
-chinese_processor = UltimateChineseProcessor()
+# Optional dependencies are loaded only when this language is requested.
+chinese_processor = None
+_processor_lock = threading.Lock()
 
 def cleanse_chinese_text(text: str) -> str:
     """Public wrapper called by tts.py"""
+    global chinese_processor
+    if not text.strip():
+        return ""
+    with _processor_lock:
+        if chinese_processor is None:
+            chinese_processor = UltimateChineseProcessor()
     return chinese_processor.process(text)

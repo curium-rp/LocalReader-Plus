@@ -65,6 +65,9 @@ import {
 import { initShortcuts } from "./shortcuts.js";
 import { initSearch, closeSearchMode, handleSearchPopupKeys } from "./search.js";
 import { initVoiceBlending } from "./modules/blending.js";
+import { initFalcoTypeBridge } from "./falco_api/falcotype-bridge.js";
+import { isSyncActive } from "./falco_api/falcotype-sync-state.js";
+import { selectSyncPosition, advanceSync, selectPreviousSync } from "./falco_api/falcotype-sync.js";
 
 window.state = state;
 
@@ -189,6 +192,7 @@ async function init() {
   renderIcons();
   await initThemeSystem();
   initTopBar();
+  initFalcoTypeBridge();
   initProgress();
   initResizeBorders(); 
   mountFilesUI();
@@ -432,6 +436,10 @@ if (hiddenModeBtn) hiddenModeBtn.onclick = performSafeJump;
 
 // --- NAVIGATION & KEYBOARD LOGIC ---
 document.getElementById("skipBack").onclick = async () => {
+  if (isSyncActive()) {
+    try { await selectPreviousSync(); } catch (error) { showToast(error.message); }
+    return;
+  }
   if (state.currentSentenceIndex > 0) {
     safeJumpToSentence(state.currentSentenceIndex - 1);
   } else {
@@ -454,6 +462,10 @@ document.getElementById("skipBack").onclick = async () => {
 };
 
 document.getElementById("skipForward").onclick = async () => {
+  if (isSyncActive()) {
+    try { await advanceSync(); } catch (error) { showToast(error.message); }
+    return;
+  }
   if (state.currentSentenceIndex < state.readingSentences.length - 1) {
     safeJumpToSentence(state.currentSentenceIndex + 1);
   } else {
@@ -1403,6 +1415,10 @@ document.addEventListener("keydown", (e) => {
 });
 
 function safeJumpToSentence(index) {
+    if (isSyncActive()) {
+        selectSyncPosition(state.readingPageIndex, index).catch(error => showToast(error.message));
+        return;
+    }
     state.autoScrollEnabled = true;
     const wasPlaying = state.isPlaying;
     if (wasPlaying) {
@@ -1425,7 +1441,9 @@ window.addEventListener("jump-to-sentence", (e) => {
     }
     // 3. Engage the lock and perform the jump
     isJumpingLock = true;
-    safeJumpToSentence(e.detail);
+    if (isSyncActive() && typeof e.detail === "object") {
+        selectSyncPosition(e.detail.page_index, e.detail.sentence_index).catch(error => showToast(error.message));
+    } else safeJumpToSentence(e.detail);
     
     // 🌟 FIX: Sync the TOC indicator with the new CSS image size layout shift!
     setTimeout(() => {

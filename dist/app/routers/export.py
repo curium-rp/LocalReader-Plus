@@ -429,8 +429,8 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                             behavior_type=el_data["b_type"],
                             behavior_settings=dict(self.req.behavior_settings) if self.req.behavior_settings else None,
                         )
+                        response = synthesize(synth_req)  # Already running in the export worker.
                         async def _get_audio():
-                            response = await synthesize(synth_req)
                             chunks = [chunk async for chunk in response.body_iterator]
                             return b"".join(chunks)
 

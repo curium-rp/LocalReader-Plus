@@ -2,7 +2,6 @@ import os
 import sys
 import glob
 import time
-import socket
 import signal
 import threading
 import uvicorn
@@ -12,6 +11,8 @@ from pathlib import Path
 # --- 1. ARCHITECTURAL SETUP: ABSOLUTE PATH ANCHORING ---
 base_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(base_dir))
+from app.runtime import runtime
+from app.logic.local_server import bind_server_socket, server_url
 
 from platform_driver import get_platform_driver
 get_platform_driver().configure_engine()
@@ -331,30 +332,22 @@ class WindowApi:
         get_platform_driver().start_move(self._window, screen_x, screen_y)
 
 
-def find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        s.listen(1)
-        return s.getsockname()[1]
-
-def is_port_in_use(port):
-    """Reliable socket check - guarantees the window opens the millisecond Uvicorn binds"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('127.0.0.1', port)) == 0
-
 _server = None
 
-def run_server(port: int):
+def run_server(listener):
     global _server
     try:
         setup_hardware()
         from app.server import app
-        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="critical")
+        host, port = listener.getsockname()
+        config = uvicorn.Config(app, host=host, port=port, log_level="critical")
         _server = uvicorn.Server(config)
-        _server.run()
+        _server.run(sockets=[listener])
     except Exception as e:
         print(f"[ERROR] Server error: {e}")
         sys.exit(1)
+    finally:
+        listener.close()
 
 SPLASH_HTML = (
     "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
@@ -367,11 +360,14 @@ def main():
     print("=" * 50)
     print(f"Project root: {base_dir}")
 
-    port = find_free_port()
-    url = f"http://127.0.0.1:{port}"
-    print(f"\n[INIT] Starting FastAPI server on 127.0.0.1:{port}...")
+    listener = bind_server_socket(runtime.host)
+    host, port = listener.getsockname()
+    url = server_url(host, port, embedded=runtime.submodule)
+    print(f"\n[INIT] Starting FastAPI server on {runtime.host}:{port}...")
+    if runtime.submodule:
+        print(f"[INIT] FalcoType submodule; read-only models: {runtime.models_dir}")
     print("[INIT] Creating application window...")
-    threading.Thread(target=run_server, args=(port,), daemon=True).start()
+    threading.Thread(target=run_server, args=(listener,), daemon=True).start()
 
     storage_path = base_dir / "webview_data"
     window_state = WindowStateManager()
@@ -404,7 +400,9 @@ def main():
 
         def attach_ui():
             for _ in range(250):
-                if is_port_in_use(port):
+                if _server is not None and _server.started:
+                    if runtime.submodule:
+                        print(f"[FALCOTYPE_URL] {url}", flush=True)
                     window.load_url(url)
                     return
                 time.sleep(0.02)
@@ -507,3 +505,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

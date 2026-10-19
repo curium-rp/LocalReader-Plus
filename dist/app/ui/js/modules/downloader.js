@@ -2,7 +2,46 @@ import { state } from './state.js';
 import { fetchJSON } from './api.js';
 import { renderIcons, showToast } from './ui.js';
 
+const embeddedReader = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('embedded') === '1';
+let modelManagementLocked = embeddedReader;
+
+function applyModelPolicy(status) {
+    const wasLocked = modelManagementLocked;
+    modelManagementLocked = embeddedReader || status.submodule_mode === true ||
+        status.models_read_only === true || status.downloads_allowed === false;
+    for (const id of ['modelManagerBtn', 'openModelManagerFromDrawerBtn', 'setupBtn', 'engineMode']) {
+        const control = document.getElementById(id);
+        if (control) control.disabled = modelManagementLocked;
+    }
+    const managerButton = document.getElementById('modelManagerBtn');
+    if (managerButton) {
+        managerButton.hidden = modelManagementLocked;
+        managerButton.style.display = modelManagementLocked ? 'none' : '';
+    }
+    const drawerButton = document.getElementById('openModelManagerFromDrawerBtn');
+    if (drawerButton) {
+        drawerButton.hidden = modelManagementLocked;
+        drawerButton.style.display = modelManagementLocked ? 'none' : '';
+    }
+    if (modelManagementLocked) {
+        for (const id of ['engineStatusPopup', 'kokoroDownloadPopup']) {
+            const popup = document.getElementById(id);
+            if (popup) {
+                popup.classList.add('hidden');
+                popup.style.display = 'none';
+            }
+        }
+    } else if (wasLocked) {
+        for (const id of ['engineStatusPopup', 'kokoroDownloadPopup']) {
+            const popup = document.getElementById(id);
+            if (popup) popup.style.display = '';
+        }
+    }
+}
+
 export function updateEngineStatusUI(status, selectedModelExists) {
+    applyModelPolicy(status);
     const engineStatusDot = document.getElementById('engineStatusDot');
     const setupArea = document.getElementById('setupArea');
     const setupBtn = document.getElementById('setupBtn');
@@ -36,7 +75,12 @@ export function updateEngineStatusUI(status, selectedModelExists) {
         if (engineStatusDot) engineStatusDot.className = `sidebar-status-dot ${className}`;
     };
 
-    if (status.is_downloading) {
+    if (status.engine_owner === 'localreader') {
+        setEngineDot("w-2.5 h-2.5 rounded-full bg-yellow-500");
+        if (setupArea) setupArea.style.display = 'none';
+        if (exportArea) exportArea.style.display = 'none';
+        if (drawerActiveModelName) drawerActiveModelName.textContent = 'LocalReader';
+    } else if (status.is_downloading) {
         setEngineDot("w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse");
         if (exportArea) exportArea.style.display = 'none';
         if (setupArea) setupArea.style.display = 'block';
@@ -67,6 +111,14 @@ export function updateEngineStatusUI(status, selectedModelExists) {
             setupBtn.innerHTML = '<i data-lucide="download-cloud" class="w-3.5 h-3.5"></i><span class="text-xs font-bold">Setup Voice Engine</span>';
         }
         renderIcons();
+    }
+    if (modelManagementLocked) {
+        if (setupArea) setupArea.style.display = 'none';
+        if (setupBtn) setupBtn.disabled = true;
+        if (engineStatusDot) engineStatusDot.title = status.last_error ||
+            (status.engine_owner === 'localreader' ? 'TTS assigned to LocalReader' : 'FalcoType shared model');
+    } else if (engineStatusDot) {
+        engineStatusDot.title = status.last_error || '';
     }
 }
 
@@ -118,6 +170,10 @@ export function showInt8WarningModal(onConfirm) {
 }
 
 export async function startKokoroDownload(modelType) {
+    if (modelManagementLocked) {
+        showToast('Models are managed by FalcoType');
+        return;
+    }
     if (modelType !== "gpu" && modelType !== "cpu") return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
         showToast("No internet connection. Please check your network.");
@@ -140,6 +196,7 @@ export function wireEngineDownloadPopup() {
     engineDownloadWired = true;
     const onPick = (e) => {
         e.stopPropagation();
+        if (modelManagementLocked) return;
         const btn = e.target.closest("[data-download-model]");
         if (!btn || btn.disabled) return;
         const modelType = btn.dataset.downloadModel;
@@ -181,6 +238,7 @@ function stopModelManagerPoll() {
 }
 
 export async function openModelManagerModal() {
+    if (modelManagementLocked) return;
     const modal = document.getElementById('modelManagerModal');
     if (!modal) return;
     modal.classList.remove('hidden');
@@ -213,6 +271,8 @@ let _lastReportedError = null;
 function getModelCatalogFingerprint(data) {
     // Captures everything that changes card structure: install state, active model, download target, error
     return JSON.stringify({
+        readOnly: data.models_read_only,
+        downloadsAllowed: data.downloads_allowed,
         active: data.active_model,
         models: (data.models || []).map((m) => ({
             id: m.id,
@@ -252,7 +312,9 @@ function buildCardHtml(model, data) {
     const hasSharedVoicesReady = !model.installed && model.voices_already_installed;
 
     let actionHtml = '';
-    if (isActive) {
+    if (data.models_read_only && !isActive) {
+        actionHtml = `<span class="text-xs text-zinc-400">${model.installed ? 'Shared model' : 'Not installed'}</span>`;
+    } else if (isActive) {
         // In Use: show badge only. No delete button — user must switch first.
         actionHtml = `
             <span class="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-500/20 text-green-400 border border-green-500/40 flex items-center gap-1.5">
@@ -464,6 +526,7 @@ function wireCardListHandlers(cardList, data) {
 }
 
 function renderModelManagerCatalog(data) {
+    applyModelPolicy(data);
     const cardList = document.getElementById('modelManagerCardList');
     const hwBadge = document.getElementById('modelManagerHardwareBadge');
     const statusMsg = document.getElementById('modelManagerStatusMsg');

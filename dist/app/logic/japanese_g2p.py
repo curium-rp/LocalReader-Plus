@@ -4,24 +4,9 @@ import os
 import json
 import urllib.request
 import html
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
-
-# ==========================================
-# DEPENDENCY INJECTION & GRACEFUL DEGRADATION
-# ==========================================
-try:
-    import fugashi
-    import jaconv
-except ImportError as e:
-    raise ImportError(f"[Fatal] Missing core NLP dependency. Run: pip install fugashi unidic-lite jaconv\nError: {e}")
-
-try:
-    from jamdict import Jamdict
-    JAMDICT_AVAILABLE = True
-except ImportError:
-    JAMDICT_AVAILABLE = False
-
 
 class UltimateJapaneseG2P:
     """
@@ -91,12 +76,27 @@ class UltimateJapaneseG2P:
 
     def __init__(self, custom_user_dict: Dict[str, str] = None):
         try:
+            import fugashi
+            import jaconv
+        except ImportError as e:
+            raise ImportError(
+                "Japanese speech is unavailable. Install LocalReader's optional "
+                "requirements-cjk.txt (fugashi, unidic-lite, jaconv)."
+            ) from e
+        self._jaconv = jaconv
+        try:
             self.tagger = fugashi.Tagger()
         except Exception as e:
-            print(f"[Engine Warning] Fugashi/Unidic initialization failed: {e}")
-            self.tagger = None
+            raise ImportError(
+                "Japanese tokenizer could not initialize. Install or repair "
+                "fugashi and unidic-lite in LocalReader's Python runtime."
+            ) from e
 
-        self.jmd = Jamdict() if JAMDICT_AVAILABLE else None
+        try:
+            from jamdict import Jamdict
+            self.jmd = Jamdict()
+        except (ImportError, OSError, RuntimeError):
+            self.jmd = None
         self.pitch_dict = {}
         self._ensure_kanjium_database()
 
@@ -303,8 +303,8 @@ class UltimateJapaneseG2P:
         text = re.sub(r'[“”〝〟「」『』≪≫"\'`<>\(\)（）\[\]【】]', '', text)
 
         # Full-width digits and ASCII normalized to half-width
-        text = jaconv.h2z(text, ascii=False, digit=True)
-        text = jaconv.z2h(text, kana=False, digit=True, ascii=True)
+        text = self._jaconv.h2z(text, ascii=False, digit=True)
+        text = self._jaconv.z2h(text, kana=False, digit=True, ascii=True)
 
         # Apply multi-character custom dictionary terms (length >= 2) before tokenization
         for kanji, katakana in sorted(self.custom_dict.items(), key=lambda x: len(x[0]), reverse=True):
@@ -414,7 +414,7 @@ class UltimateJapaneseG2P:
             if m in self.MORA_MAP:
                 out.append(self.MORA_MAP[m])
             else:
-                rom = jaconv.kata2alphabet(m)
+                rom = self._jaconv.kata2alphabet(m)
                 rom = rom.replace('o-', 'oh').replace('u-', 'oo').replace('a-', 'ah')
                 out.append(rom if rom else m)
 
@@ -446,13 +446,13 @@ class UltimateJapaneseG2P:
             if isinstance(entry, dict):
                 readings = list(entry.keys())
                 if readings:
-                    return jaconv.hira2kata(readings[0])
+                    return self._jaconv.hira2kata(readings[0])
 
         if self.jmd and re.search(r'[\u4e00-\u9faf]', surface):
             try:
                 result = self.jmd.lookup(surface, strict=True)
                 if result.names:
-                    return jaconv.hira2kata(result.names[0].kana[0].text)
+                    return self._jaconv.hira2kata(result.names[0].kana[0].text)
             except Exception:
                 pass
 
@@ -497,7 +497,7 @@ class UltimateJapaneseG2P:
 
             tokens.append({
                 'surface': surface,
-                'pron': jaconv.hira2kata(pron),
+                'pron': self._jaconv.hira2kata(pron),
                 'pos1': pos1
             })
 
@@ -576,7 +576,7 @@ class UltimateJapaneseG2P:
                 i += 1
                 continue
 
-            reading_hira = jaconv.kata2hira(pron)
+            reading_hira = self._jaconv.kata2hira(pron)
             downstep = self.get_downstep(surface, reading_hira)
 
             morae = self._get_morae(pron)
@@ -618,9 +618,16 @@ class UltimateJapaneseG2P:
         return raw_sentence
 
 
-# Singleton Instance
-japanese_processor = UltimateJapaneseG2P()
+# Do not initialize dictionaries or optional NLP packages during server startup.
+japanese_processor = None
+_processor_lock = threading.Lock()
 
 def pure_japanese_to_romaji(text: str) -> str:
     """Public wrapper to maintain backward compatibility."""
+    global japanese_processor
+    if not text.strip():
+        return ""
+    with _processor_lock:
+        if japanese_processor is None:
+            japanese_processor = UltimateJapaneseG2P()
     return japanese_processor.convert(text)

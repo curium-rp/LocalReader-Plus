@@ -212,8 +212,6 @@ async function fetchVoices() {
         const category = categories[lang];
         const categoryLabel = category.label || lang;
         (category.voices || []).forEach((v) => {
-          const cleanId = v.id.toLowerCase().split("_").pop();
-          if (["alpha", "beta", "omega", "psi"].includes(cleanId)) return;
           availableVoices.push({
             id: v.id,
             name: v.name,

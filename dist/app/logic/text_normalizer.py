@@ -4,7 +4,7 @@ from num2words import num2words
 from functools import lru_cache
 
 try:
-    from app.logic.syllable import phonemize, HAS_PHONEMIZER as _has_phonemizer
+    from .syllable import phonemize, HAS_PHONEMIZER as _has_phonemizer
 except ImportError as e:
     print(f"[Warn] Phonemizer fail: {e}")
     _has_phonemizer = False
@@ -19,7 +19,7 @@ HARD_G_WORDS = (
 )
 
 STUTTER_MAP = {
-    'b': 'bih', 'c': 'kih', 'd': 'dih', 'f': 'fih', 'g': 'guh', 'h': 'huh', 
+    'd': 'dih', 'f': 'fih', 'g': 'guh', 'h': 'huh', 
     'j': 'jih', 'k': 'kih', 'l': 'lih', 'm': 'mih', 'n': 'nih', 'p': 'pih',
     'q': 'kwih', 'r': 'rih', 's': 'sih', 't': 'tih', 'v': 'vih', 'w': 'wuh', 
     'x': 'zih', 'y': 'yih', 'z': 'zih',
@@ -35,6 +35,10 @@ STUTTER_MAP = {
 }
 
 CONTEXT_MAP = {
+    'b': {
+        # Preserve existing cluster sounds (br/bl/bw) outside the listed exception.
+        'text': lambda w: 'buh' if w.startswith(('butter',)) else STUTTER_MAP.get(w[:2], 'bih')
+    },
     'a': {
         'ipa': {'eɪ': 'ay', 'æ': 'ah', 'ə': 'uhh', 'ɑ': 'ah', 'a': 'ah'},
         'text': lambda w: 'ay' if w.startswith(('ac', 'ap', 'av', 'ag', 'at', 'al')) and len(w) >= 3 and w.endswith('e') else 'ah'
@@ -56,12 +60,12 @@ CONTEXT_MAP = {
         'text': lambda w: 'yoo' if w.startswith(('uni', 'use', 'uta', 'uro')) else 'uhh'
     },
     'c': {
-        'ipa': {'s': 'sih', 'k': 'kih', 'tʃ': 'chih', 'ʃ': 'shih'},
-        'text': lambda w: 'sih' if w.startswith(('ce', 'ci', 'cy')) else ('chih' if w.startswith('ch') and not w.startswith(('chaos', 'chord', 'chorus', 'chrome', 'chronic', 'chef')) else 'kih')
+        'ipa': {'s': 'sih', 'k': 'kuh', 'tʃ': 'chih', 'ʃ': 'shih'},
+        'text': lambda w: 'sih' if w.startswith(('ce', 'ci', 'cy')) else ('chih' if w.startswith('ch') and not w.startswith(('chaos', 'chord', 'chorus', 'chrome', 'chronic', 'chef')) else 'kuh')
     },
     'ch': {
-        'ipa': {'k': 'kih', 'ʃ': 'shih', 'tʃ': 'chih'},
-        'text': lambda w: 'kih' if w.startswith(('chaos', 'chord', 'chorus', 'chrome', 'chronic', 'charisma', 'choir')) else ('shih' if w.startswith(('chef', 'champagne', 'chiffon')) else 'chih')
+        'ipa': {'k': 'kuh', 'ʃ': 'shih', 'tʃ': 'chih'},
+        'text': lambda w: 'kuh' if w.startswith(('chaos', 'chord', 'chorus', 'chrome', 'chronic', 'charisma', 'choir')) else ('shih' if w.startswith(('chef', 'champagne', 'chiffon')) else 'chih')
     },
     'g': {
         'ipa': {'dʒ': 'jih', 'g': 'guh', 'ɡ': 'guh'},
@@ -644,14 +648,17 @@ def apply_custom_pronunciations(text: str, rules: List[Dict[str, Any]], ignore_l
         if not item: 
             continue
         
-        clean_item = normalize_unicode_quotes(str(item))
+        clean_item = normalize_unicode_quotes(str(item)).strip()
+        if not clean_item:
+            continue
         escaped_item = re.escape(clean_item)
         
-        start_bound = r'(?<!\w)' if clean_item[0].isalnum() else r''
-        end_bound = r'(?!\w)' if clean_item[-1].isalnum() else r''
+        start_bound = r'(?<!\w)' if re.match(r'\w', clean_item[0]) else r''
+        end_bound = r'(?!\w)' if re.match(r'\w', clean_item[-1]) else r''
         
         pat = f"{start_bound}{escaped_item}{end_bound}"
-        text = re.sub(pat, "", text, flags=re.IGNORECASE)
+        # Preserve separation when an ignored symbol sits between two words.
+        text = re.sub(pat, " ", text, flags=re.IGNORECASE)
 
     for rule in rules:
         orig = rule.get("original", "")
@@ -676,8 +683,8 @@ def apply_custom_pronunciations(text: str, rules: List[Dict[str, Any]], ignore_l
             escaped_orig = re.escape(clean_orig)
             
             if word_boundary:
-                start_bound = r'(?<!\w)' if clean_orig[0].isalnum() else r''
-                end_bound = r'(?!\w)' if clean_orig[-1].isalnum() else r''
+                start_bound = r'(?<!\w)' if re.match(r'\w', clean_orig[0]) else r''
+                end_bound = r'(?!\w)' if re.match(r'\w', clean_orig[-1]) else r''
                 pat = f"{start_bound}{escaped_orig}{end_bound}"
             else:
                 pat = escaped_orig

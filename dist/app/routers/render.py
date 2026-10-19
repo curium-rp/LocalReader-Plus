@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
 import json
+import math
 from ..config import render_file, settings_file
 from ..utils import safe_save_json
 
@@ -16,6 +17,7 @@ DEFAULT_RENDER = {
     "paragraph_spacing": 1.1,
     "text_align": "justify",
     "text_indent": True,
+    "text_indent_size": 1.1,
     "hyphenation": True,
     "indent_mode": "follow",
     "h1_align": "center",
@@ -81,6 +83,7 @@ class RenderSettings(BaseModel):
     paragraph_spacing: Optional[float] = None
     text_align: Optional[str] = None
     text_indent: Optional[bool] = None
+    text_indent_size: Optional[float] = None
     hyphenation: Optional[bool] = None
     indent_mode: Optional[str] = None
     h1_align: Optional[str] = None
@@ -124,6 +127,15 @@ def _sanitize(data: dict) -> dict:
         if out.get(key) not in VALID_HEADING_ALIGN:
             out[key] = DEFAULT_RENDER[key]
     out["text_indent"] = bool(out.get("text_indent", True))
+    try:
+        indent_size = float(out.get("text_indent_size"))
+        if not math.isfinite(indent_size):
+            raise ValueError("Invalid indent size")
+        out["text_indent_size"] = round(max(0, min(4, indent_size)), 1)
+    except (TypeError, ValueError):
+        out["text_indent_size"] = DEFAULT_RENDER["text_indent_size"]
+    if out["text_indent_size"] == 0:
+        out["text_indent"] = False
     out["hyphenation"] = out.get("hyphenation", True) is not False
     out["two_page_landscape"] = bool(out.get("two_page_landscape", False))
     out["horizontal_mode"] = bool(out.get("horizontal_mode", False))
@@ -194,6 +206,9 @@ async def get_render():
 async def save_render(settings: RenderSettings):
     current = _load_render()
     incoming = settings.model_dump(exclude_none=True)
+    # Older clients can still turn indentation back on after a zero-sized indent.
+    if incoming.get("text_indent") is True and "text_indent_size" not in incoming and current["text_indent_size"] == 0:
+        incoming["text_indent_size"] = DEFAULT_RENDER["text_indent_size"]
     current.update(incoming)
     current = _sanitize(current)
     try:

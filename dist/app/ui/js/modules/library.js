@@ -4,6 +4,7 @@ import { showToast, renderIcons, stripHTML, highlightSearchTerm, showFootnoteMod
 import { applyReaderTypography, getRenderState } from "./typography.js";
 import { isHorizontalMode, layoutSpreads, revealInSpread, updateHorizontalSpreadFocus, wantsSpreadTwoPage, isStandaloneIllustrationPage, getActiveSpreadPages } from "./horizontal.js";
 import { indexDocument, updateProgressDisplay, getProgressMetrics, setRamIndexReady, isRamIndexReady } from "./progress.js";
+import { isSyncActive } from "../falco_api/falcotype-sync-state.js";
 
 // Tags that survive EPUB/PDF restore; stripped when extracting spoken/preview text.
 export const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|ins|del|strike|sub|sup|mark|small|big|abbr|cite|dfn|q|code|pre|ruby|rt|rp|figure|figcaption|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|caption|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer|address|dd|dt|summary)\b[^>]*>/gi;
@@ -145,16 +146,17 @@ async function ensurePeekedPage(pageIdx) {
     if (!state.currentPages) return false;
     if (state.currentPages[pageIdx]) return true;
     if (!state.currentDoc?.id) return false;
+    const doc = state.currentDoc, pages = state.currentPages;
 
-    const key = `${state.currentDoc.id}:${pageIdx}`;
+    const key = `${doc.id}:${pageIdx}`;
     const pending = _peekInflight.get(key);
     if (pending) return pending;
 
     const request = (async () => {
         try {
-            const chapter = await fetchJSON(`/api/books/${state.currentDoc.id}/chapter/${pageIdx}`);
-            if (chapter?.html) {
-                if (!state.currentPages) return false;
+            const chapter = await fetchJSON(`/api/books/${doc.id}/chapter/${pageIdx}`);
+            if (typeof chapter?.html === "string") {
+                if (doc !== state.currentDoc || pages !== state.currentPages) return false;
                 while (state.currentPages.length <= pageIdx) state.currentPages.push("");
                 state.currentPages[pageIdx] = chapter.html;
                 if (isRamIndexReady()) indexDocument(state.currentPages);
@@ -577,6 +579,8 @@ export async function selectDocument(item) {
 
     markPeekEpub(item);
     state.currentDoc = item;
+    state.readingSentences = [];
+    state.sentenceElements = [];
 
     // ── BR toggle: sync to this book's stored setting ─────────────────────
     const _brBtn   = document.getElementById("brToggleBtn");
@@ -1234,6 +1238,7 @@ function injectParagraphSentences(root) {
     const blocks = Array.from(root.querySelectorAll('[id^="s_"]:not(h1, h2, h3, h4, h5, h6), [data-sentence-id]:not(h1, h2, h3, h4, h5, h6)'));
 
     blocks.forEach(paragraph => {
+        if (paragraph.matches("s, img")) return;
         if (paragraph.id && !paragraph.dataset.sentenceId) {
             paragraph.dataset.sentenceId = paragraph.id;
         }
@@ -1325,6 +1330,12 @@ function collectReaderElements(root) {
 }
 
 function readerElementToTtsValue(element) {
+    if (element.hasAttribute("data-falco-unit") || element.querySelector("[data-falco-unit]")) {
+        const clean = element.cloneNode(true);
+        clean.removeAttribute("data-falco-unit");
+        clean.querySelectorAll("[data-falco-unit]").forEach(node => node.removeAttribute("data-falco-unit"));
+        return readerElementToTtsValue(clean);
+    }
     if (element.tagName.toLowerCase() === 's') {
         return element.outerHTML;
     }
@@ -1378,10 +1389,149 @@ function readerElementToTtsValue(element) {
     return `${pause > 0 ? `[PAUSE_${pause}] ` : ''}${clone.outerHTML}`;
 }
 
-export async function getSentencesForPage(pageIndex) {
+let currentVisualPage = null;
+let visualPageRevision = 0;
+
+function resolveReaderChapterBoundaries(elements, entries) {
+    if (!elements.length) return null;
+    const root = elements[0].getRootNode();
+    const anchors = [...root.querySelectorAll("[id], [data-block-id]")];
+    const boundaries = [];
+    for (const item of entries) {
+        const target = String(item.target_tts_id || item.id || item.anchor_id || "");
+        const anchor = target && anchors.find(node => node.id === target || node.getAttribute("data-block-id") === target);
+        // A TOC anchor can wrap several <n> units, sit inside one, or precede
+        // the first unit. Resolve it in canonical DOM order without splitting N.
+        let index = anchor ? elements.findIndex(element => element === anchor || element.contains(anchor) ||
+            anchor.contains(element) || !!(anchor.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)) : -1;
+        if (index < 0 && entries.length === 1 && !target) index = 0;
+        if (index < 0) return null;
+        boundaries.push({ index, id: JSON.stringify([item.page_index, target.slice(0, 512)]) });
+    }
+    boundaries.sort((a, b) => a.index - b.index);
+    return boundaries;
+}
+
+// Only resolved top-level TOC boundaries may carry Chapter identity across HTML
+// pages. Inspect the last relevant source page, without scanning the whole book.
+export function readerChapterScopes(elements, pageIndex) {
+    if (!elements.length) return [];
+    const entries = (Array.isArray(state.tocMap) ? state.tocMap : []).filter(item => item && Number.isInteger(item.page_index) && item.page_index >= 0 &&
+        Number.isFinite(Number(item.level)));
+    const level = entries.length ? Math.min(...entries.map(item => Number(item.level))) : 0;
+    const top = entries.filter(item => Number(item.level) === level).sort((a, b) => a.page_index - b.page_index);
+    const fallback = `page:${pageIndex}`;
+    let currentId = fallback, previous = null;
+    for (const item of top) if (item.page_index < pageIndex) previous = item;
+    if (previous) {
+        const markup = state.currentPages?.[previous.page_index];
+        if (typeof markup === "string" && markup) {
+            const prior = resolveReaderChapterBoundaries(buildReaderPage(markup).elements,
+                top.filter(item => item.page_index === previous.page_index));
+            if (prior?.length) currentId = prior.at(-1).id;
+        }
+    }
+    const boundaries = resolveReaderChapterBoundaries(elements, top.filter(item => item.page_index === pageIndex));
+    if (!boundaries) return [{ id: fallback, start: 0, end: elements.length }];
+    const scopes = []; let start = 0;
+    for (const boundary of boundaries) {
+        if (boundary.index > start) scopes.push({ id: currentId, start, end: boundary.index });
+        start = boundary.index; currentId = boundary.id;
+    }
+    scopes.push({ id: currentId, start, end: elements.length });
+    return scopes;
+}
+
+function buildReaderPage(markup) {
+    const root = document.createElement("div");
+    root.innerHTML = markup;
+    root.querySelectorAll("[data-falco-unit]").forEach(node => node.removeAttribute("data-falco-unit"));
+    injectParagraphSentences(root);
+    const elements = collectReaderElements(root);
+    elements.forEach((element, index) => element.setAttribute("data-falco-unit", String(index)));
+    return { root, elements };
+}
+
+export async function getReaderSpeechPage(pageIndex, { requireLoaded = false } = {}) {
+    const doc = state.currentDoc;
+    const sentences = await getSentencesForPage(pageIndex, { requireLoaded });
+    if (doc !== state.currentDoc) throw new Error("Book changed while mapping audio.");
+    const markup = state.currentPages?.[pageIndex];
+    if (!markup || !sentences.length) return null;
+    // Looking ahead must never replace the published visual page or its revision.
+    const { elements } = buildReaderPage(markup);
+    if (elements.length !== sentences.length || elements.some((el, i) => readerElementToTtsValue(el) !== sentences[i])) {
+        throw new Error("Reader audio sentence mapping is unavailable.");
+    }
+    return { elements, sentences };
+}
+
+export function readerUnitKind(element) {
+    if (/^H[1-6]$/.test(element.tagName)) return "heading";
+    if (element.tagName.toLowerCase() === "s") return "scene";
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll("rt, rp").forEach(node => node.remove());
+    if (!clone.textContent.trim() && (clone.matches("img") || clone.querySelector("img, svg, picture"))) return "image";
+    return "text";
+}
+
+// Match Book's removal of invisible formatting and reader pause markers. This
+// does not discard ruby/footnote text: their existing speech gates stay intact.
+export function isReaderTextBlank(text) {
+    return !String(text ?? "").replace(/\[PAUSE_\d+\]\s*/g, "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+}
+
+export function getReaderPageContent(pageIndex = state.readingPageIndex) {
+    const markup = state.currentPages?.[pageIndex];
+    if (!state.currentDoc?.id || !markup) return null;
+    const tocKey = JSON.stringify(state.tocMap || []);
+    if (!currentVisualPage || currentVisualPage.bookId !== state.currentDoc.id ||
+        currentVisualPage.pageIndex !== pageIndex || currentVisualPage.markup !== markup ||
+        currentVisualPage.language !== state.uiLanguage || currentVisualPage.tocKey !== tocKey) {
+        const { root, elements } = buildReaderPage(markup);
+        if (!elements.length) return null;
+        currentVisualPage = { bookId: state.currentDoc.id, pageIndex, markup, root, elements,
+            language: state.uiLanguage, tocKey, revision: ++visualPageRevision };
+    }
+    return currentVisualPage;
+}
+
+export function getCurrentReaderElement() {
+    const page = getReaderPageContent();
+    const element = page?.elements[state.currentSentenceIndex];
+    if (!element || readerElementToTtsValue(element) !== state.readingSentences?.[state.currentSentenceIndex]) return null;
+    return element;
+}
+
+export function getSyncPageContent() {
+    const page = getReaderPageContent();
+    if (!page || page.elements.length !== state.readingSentences?.length || !getCurrentReaderElement()) return null;
+    if (!page.payload) page.payload = { book_id: String(page.bookId), page_index: page.pageIndex, page_revision: page.revision,
+        html: page.root.innerHTML, units: page.elements.map((element, index) => ({ index, kind: readerUnitKind(element) })),
+        chapters: readerChapterScopes(page.elements, page.pageIndex) };
+    return page.payload;
+}
+
+export function getCurrentSentenceContent() {
+    const pageIndex = state.readingPageIndex;
+    const index = state.currentSentenceIndex;
+    const sentence = state.readingSentences?.[index];
+    const markup = state.currentPages?.[pageIndex];
+    if (!state.currentDoc?.id || !Number.isInteger(index) || index < 0 || typeof sentence !== "string" || !markup) return null;
+    const page = getReaderPageContent();
+    const element = page?.elements[index];
+    if (!element) return page?.elements.length ? null : sentence;
+    // During a page change the reading sentence array may still belong to the old page.
+    if (readerElementToTtsValue(element) !== sentence) return null;
+    if (element.tagName.toLowerCase() === "n") return `<p>${element.innerHTML}</p>`;
+    return element.outerHTML;
+}
+
+export async function getSentencesForPage(pageIndex, { requireLoaded = false } = {}) {
     if (!state.currentPages) return [];
     if (!state.currentPages[pageIndex] && hasBookPath(state.currentDoc)) {
-        await ensurePeekedPage(pageIndex);
+        const loaded = await ensurePeekedPage(pageIndex);
+        if (!loaded && requireLoaded) throw new Error(`Reader chapter ${pageIndex + 1} could not be loaded. Retry to continue.`);
     }
     if (!state.currentPages[pageIndex]) return [];
     const pageText = state.currentPages[pageIndex];
@@ -1519,6 +1669,15 @@ export async function renderPage() {
                         e.target.classList.contains('epub-image') &&
                         !e.target.closest('s');
                     const triggerJump = () => {
+                        if (isSyncActive()) {
+                            const pageIndex = Number(tag.closest("[data-page-index]")?.dataset.pageIndex ?? state.viewPageIndex);
+                            const pageElements = state.sentenceElements.filter(element =>
+                                Number(element.closest("[data-page-index]")?.dataset.pageIndex ?? state.viewPageIndex) === pageIndex);
+                            window.dispatchEvent(new CustomEvent("jump-to-sentence", {
+                                detail: { page_index: pageIndex, sentence_index: pageElements.indexOf(tag) },
+                            }));
+                            return;
+                        }
                         state.readingPageIndex = state.viewPageIndex;
                         state.readingSentences = [...state.viewSentences];
                         state.autoScrollEnabled = true; 
@@ -1556,6 +1715,12 @@ export async function renderPage() {
                     e.stopPropagation();
                     const isImg = e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'img' && e.target.classList.contains('epub-image') && !e.target.closest('s');
                     const triggerJump = () => {
+                        if (isSyncActive()) {
+                            window.dispatchEvent(new CustomEvent("jump-to-sentence", {
+                                detail: { page_index: state.viewPageIndex, sentence_index: i },
+                            }));
+                            return;
+                        }
                         state.readingPageIndex = state.viewPageIndex;
                         state.readingSentences = [...state.viewSentences];
                         state.autoScrollEnabled = true; 

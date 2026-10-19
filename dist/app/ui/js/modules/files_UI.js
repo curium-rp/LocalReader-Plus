@@ -9,6 +9,7 @@ let historyStack = [];
 let historyIndex = -1;
 let currentViewMode = "details"; // 'details' (list) by default!
 let activeFilterQuery = "";
+let contentView = "directory"; // The latest search or folder action chooses the visible view.
 let libraryCache = new Map(); // path -> book object
 let expandedFolders = new Set();
 let expandedRoots = new Set();
@@ -16,6 +17,16 @@ let envWorkingPaths = [];
 let envSelectedIndex = -1;
 let sortKey = "name";
 let sortDir = "asc";
+const FOLDER_REFRESH_COOLDOWN_MS = 60_000;
+const folderRefreshTimes = new Map(); // Successful refreshes in this running session only.
+const treeRefreshTimes = new Map();
+let folderRefreshTimer = null;
+let folderRefreshTask = null;
+let treeRefreshTask = null;
+let pendingFolderRefresh = null;
+let folderRefreshError = null;
+let explorerOpenRevision = 0;
+let treeLoadRevision = 0;
 
 const COL_STORAGE_KEY = "lr-fe-col-widths-v3";
 const HANDLE_W = 5;
@@ -260,9 +271,6 @@ export function mountFilesUI() {
           <button id="feUpBtn" class="p-1.5 rounded hover:bg-zinc-800 disabled:opacity-30 disabled:pointer-events-none text-zinc-300" title="Up to Parent (Alt+Up)">
             <i data-lucide="arrow-up" class="w-3.5 h-3.5"></i>
           </button>
-          <button id="feRefreshBtn" class="p-1.5 rounded hover:bg-zinc-800 text-zinc-300 transition-colors" title="Rescan All Paths">
-            <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
-          </button>
         </div>
 
         <!-- Breadcrumb Address Bar -->
@@ -325,7 +333,7 @@ export function mountFilesUI() {
               <button id="feTreeAddBtn" class="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-blue-400 transition-colors" title="Add Book Folder">
                 <i data-lucide="plus" class="w-3.5 h-3.5"></i>
               </button>
-              <button id="feTreeRescanAllBtn" class="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors" title="Rescan All Paths">
+              <button id="feTreeRefreshBtn" class="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-30" title="Rescan current library path and all subfolders" aria-label="Rescan current library path and all subfolders">
                 <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
               </button>
             </div>
@@ -347,6 +355,10 @@ export function mountFilesUI() {
               </div>
             </div>
             <div class="flex items-center gap-2 shrink-0">
+              <button id="feRefreshBtn" type="button" class="flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded border border-zinc-700/60 transition-colors disabled:opacity-30" title="Refresh current folder" aria-label="Refresh current folder">
+                <i data-lucide="rotate-cw" class="w-3 h-3 text-zinc-400"></i>
+                <span>Refresh</span>
+              </button>
               <span id="feBannerStats" class="text-[11px] text-zinc-400 bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded">0 items</span>
               <button id="feBannerOpenOSBtn" class="flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded border border-zinc-700/60 transition-colors" title="Open folder in File Explorer">
                 <i data-lucide="external-link" class="w-3 h-3 text-zinc-400"></i>
@@ -363,7 +375,10 @@ export function mountFilesUI() {
 
       <!-- Bottom Status Bar -->
       <div class="flex items-center justify-between px-3 py-1.5 bg-zinc-950 border-t border-zinc-800/80 text-[11px] text-zinc-500 select-none">
-        <div id="feStatusLeft">Ready</div>
+        <div class="min-w-0">
+          <div id="feStatusLeft">Ready</div>
+          <div id="feLastScanned" class="text-[10px] truncate">Last scanned: never</div>
+        </div>
         <div id="feStatusRight" class="truncate max-w-md font-mono text-[10px]"></div>
       </div>
 
@@ -452,8 +467,11 @@ function wireExplorerEvents() {
   document.getElementById("feBackBtn")?.addEventListener("click", goBack);
   document.getElementById("feForwardBtn")?.addEventListener("click", goForward);
   document.getElementById("feUpBtn")?.addEventListener("click", goUp);
-  document.getElementById("feRefreshBtn")?.addEventListener("click", handleRescanAll);
-  document.getElementById("feTreeRescanAllBtn")?.addEventListener("click", handleRescanAll);
+  document.getElementById("feRefreshBtn")?.addEventListener("click", () => requestFolderRefresh(true));
+  document.getElementById("feTreeRefreshBtn")?.addEventListener("click", () => {
+    const info = findNodeAcrossTrees(currentPath);
+    if (info?.root?.id) handleRefreshRoot(info.root.id);
+  });
 
   document.getElementById("feAddFolderBtn")?.addEventListener("click", handlePickFolderNative);
   document.getElementById("feTreeAddBtn")?.addEventListener("click", handlePickFolderNative);
@@ -477,17 +495,31 @@ function wireExplorerEvents() {
   const searchInput = document.getElementById("feSearchInput");
   const searchClear = document.getElementById("feSearchClearBtn");
 
+  const activateSearch = () => {
+    if (!activeFilterQuery || contentView === "search") return;
+    contentView = "search";
+    cancelScheduledFolderRefresh();
+    renderActiveDirectory();
+  };
+  searchInput?.addEventListener("focus", activateSearch);
+  searchInput?.addEventListener("click", activateSearch);
+
   searchInput?.addEventListener("input", (e) => {
     activeFilterQuery = e.target.value.trim().toLowerCase();
+    contentView = activeFilterQuery ? "search" : "directory";
+    if (activeFilterQuery) cancelScheduledFolderRefresh();
     searchClear?.classList.toggle("hidden", !activeFilterQuery);
     renderActiveDirectory();
+    if (!activeFilterQuery) scheduleFolderRefresh();
   });
 
   searchClear?.addEventListener("click", () => {
     if (searchInput) searchInput.value = "";
     activeFilterQuery = "";
+    contentView = "directory";
     searchClear?.classList.add("hidden");
     renderActiveDirectory();
+    scheduleFolderRefresh();
   });
 
   document.getElementById("feViewGridBtn")?.addEventListener("click", () => {
@@ -836,6 +868,7 @@ async function handlePromptFolderPath() {
  * Scans a given folder path via files_api.py, registers it, and renders multi-root tree.
  */
 async function scanAndLoadFolder(folderPath, pathId = null) {
+  contentView = "directory";
   try {
     showToast("Scanning folder for EPUBs...", "info");
     const payload = { path: folderPath };
@@ -849,6 +882,7 @@ async function scanAndLoadFolder(folderPath, pathId = null) {
 
     if (res) {
       if (res.all_trees) {
+        ++treeLoadRevision;
         allTreesData = res.all_trees;
       } else {
         await reloadTree(false);
@@ -870,11 +904,37 @@ async function scanAndLoadFolder(folderPath, pathId = null) {
 }
 
 /**
- * Rescans a single root path.
+ * Rescans one library path and its descendants without changing the visible view.
  */
-async function handleRescanRoot(pathId, folderPath) {
-  if (!folderPath) return;
-  await scanAndLoadFolder(folderPath, pathId);
+async function handleRefreshRoot(pathId) {
+  if (treeRefreshTask) return;
+  const root = allTreesData?.trees?.find(item => String(item.id) === String(pathId));
+  if (!root) return;
+  const request = { id: String(root.id), rootPath: root.path, name: root.name, cacheSession: root.cache_session };
+  treeRefreshTask = request;
+  cancelScheduledFolderRefresh();
+  updateFolderRefreshUI();
+  try {
+    // Finish an ongoing shallow refresh before starting the full scan.
+    await folderRefreshTask?.promise;
+    if (!allTreesData?.trees?.some(item => String(item.id) === request.id && item.path === request.rootPath)) return;
+    const res = await fetchJSON(`/api/explorer/path/${encodeURIComponent(request.id)}/rescan`, { method: "POST" });
+    const refreshed = applyTreeRefresh(res, request);
+    if (refreshed) {
+      treeRefreshTimes.set(treeRefreshKey({ ...request, cacheSession: refreshed.cache_session }), performance.now());
+      folderRefreshError = null;
+      if (isFilesUIOpen()) {
+        renderAll();
+        showToast(`Rescanned ${refreshed.name}: ${refreshed.total_books} books`, "success", 1800);
+      }
+    }
+  } catch (err) {
+    console.warn("[files_UI] Library path rescan failed:", err);
+    if (isFilesUIOpen()) showToast("Library path rescan failed: " + err.message, "error");
+  } finally {
+    treeRefreshTask = null;
+    resumePendingFolderRefresh();
+  }
 }
 
 /**
@@ -888,6 +948,7 @@ async function handleDeleteRoot(pathId, rootName) {
     showToast(`Removing ${rootName}...`, "info", 1000);
     const res = await fetchJSON(`/api/explorer/path/${pathId}`, { method: "DELETE" });
     if (res && res.all_trees) {
+      ++treeLoadRevision;
       allTreesData = res.all_trees;
       expandedRoots.delete(String(pathId));
 
@@ -907,22 +968,153 @@ async function handleDeleteRoot(pathId, rootName) {
   }
 }
 
-/**
- * Rescans all registered paths.
- */
-async function handleRescanAll() {
+function folderRefreshKey(request) {
+  return JSON.stringify([request.cacheSession, request.id, request.rootPath, request.path]);
+}
+
+function treeRefreshKey(request) {
+  return JSON.stringify([request.cacheSession, request.id, request.rootPath]);
+}
+
+function updateFolderRefreshUI() {
+  const info = findNodeAcrossTrees(currentPath);
+  const label = document.getElementById("feLastScanned");
+  if (label) {
+    const timestamp = Number(allTreesData?.last_scanned_at || 0);
+    label.textContent = timestamp > 0
+      ? `Last scanned: ${new Date(timestamp * 1000).toLocaleString()}` : "Last scanned: never";
+    label.title = "Last successful explorer scan across library folders";
+    if (treeRefreshTask) label.textContent += ` · Rescanning ${treeRefreshTask.name}…`;
+    else if (folderRefreshTask?.path === currentPath) label.textContent += " · Refreshing…";
+    else if (pendingFolderRefresh?.path === currentPath) label.textContent += " · Waiting to refresh…";
+    else if (folderRefreshError?.path === currentPath) {
+      label.textContent += " · Refresh failed";
+      label.title = folderRefreshError.message;
+    }
+  }
+  const folderButton = document.getElementById("feRefreshBtn");
+  if (folderButton) {
+    const searching = contentView === "search" && Boolean(activeFilterQuery);
+    folderButton.disabled = Boolean(folderRefreshTask || treeRefreshTask) || !info || searching;
+    folderButton.title = searching ? "Open a folder to refresh its contents" : "Refresh current folder";
+  }
+  const treeButton = document.getElementById("feTreeRefreshBtn");
+  if (treeButton) {
+    treeButton.disabled = Boolean(treeRefreshTask) || !info;
+    treeButton.title = info ? `Rescan ${info.root.name} and all subfolders` : "Rescan current library path and all subfolders";
+  }
+  for (const button of document.querySelectorAll("[data-rescan-root-id]")) {
+    button.disabled = Boolean(treeRefreshTask);
+  }
+}
+
+function rebuildTreeTotals() {
+  if (!allTreesData) return;
+  allTreesData.total_books = 0;
+  allTreesData.flat_list = [];
+  for (const root of allTreesData.trees || []) {
+    allTreesData.total_books += Number(root.total_books) || 0;
+    for (const book of root.flat_list || []) {
+      allTreesData.flat_list.push({ ...book, path_id: String(root.id), root_name: root.name });
+    }
+  }
+}
+
+function cancelScheduledFolderRefresh() {
+  clearTimeout(folderRefreshTimer);
+  folderRefreshTimer = null;
+  pendingFolderRefresh = null;
+}
+
+function scheduleFolderRefresh() {
+  cancelScheduledFolderRefresh();
+  if (!isFilesUIOpen() || (contentView === "search" && activeFilterQuery)) return;
+  folderRefreshTimer = setTimeout(() => {
+    folderRefreshTimer = null;
+    requestFolderRefresh();
+  }, 250);
+}
+
+function requestFolderRefresh(force = false) {
+  clearTimeout(folderRefreshTimer);
+  folderRefreshTimer = null;
+  if (!isFilesUIOpen()) return;
+  const info = findNodeAcrossTrees(currentPath);
+  if (!info || !info.root?.id) return;
+  const request = { id: String(info.root.id), rootPath: info.root.path, path: currentPath,
+    cacheSession: info.root.cache_session, force };
+  const lastRefresh = Math.max(folderRefreshTimes.get(folderRefreshKey(request)) ?? -Infinity,
+    treeRefreshTimes.get(treeRefreshKey(request)) ?? -Infinity);
+  if (!force && performance.now() - lastRefresh < FOLDER_REFRESH_COOLDOWN_MS) return;
+  if (treeRefreshTask) {
+    pendingFolderRefresh = request;
+    updateFolderRefreshUI();
+    return;
+  }
+  if (folderRefreshTask) {
+    if (folderRefreshTask.id !== request.id || folderRefreshTask.path !== request.path ||
+        folderRefreshTask.rootPath !== request.rootPath || folderRefreshTask.cacheSession !== request.cacheSession) {
+      pendingFolderRefresh = request;
+      updateFolderRefreshUI();
+    }
+    return;
+  }
+  request.promise = runFolderRefresh(request);
+}
+
+function applyTreeRefresh(res, request) {
+  if (!res?.data?.tree) throw new Error("Refresh returned no tree");
+  const root = allTreesData?.trees?.find(item => String(item.id) === request.id && item.path === request.rootPath);
+  const sameSession = root?.cache_session === res.data.cache_session;
+  if (!root || !(sameSession ? Number(res.data.revision || 0) >= Number(root.revision || 0)
+      : root.cache_session === request.cacheSession)) return null;
+  Object.assign(root, {
+    tree: res.data.tree, flat_list: res.data.flat_list || [], total_books: res.data.total_books || 0,
+    revision: res.data.revision, cache_session: res.data.cache_session,
+  });
+  allTreesData.last_scanned_at = Math.max(Number(allTreesData.last_scanned_at || 0), Number(res.last_scanned_at || 0));
+  rebuildTreeTotals();
+  if (!findNodeAcrossTrees(currentPath)) {
+    currentPath = root.path;
+    historyStack = [currentPath];
+    historyIndex = 0;
+  }
+  return root;
+}
+
+function resumePendingFolderRefresh() {
+  const next = pendingFolderRefresh;
+  pendingFolderRefresh = null;
+  updateFolderRefreshUI();
+  if (next && isFilesUIOpen() && currentPath === next.path &&
+      (next.force || contentView !== "search" || !activeFilterQuery)) {
+    requestFolderRefresh(next.force);
+  }
+}
+
+async function runFolderRefresh(request) {
+  folderRefreshTask = request;
+  folderRefreshError = null;
+  updateFolderRefreshUI();
   try {
-    showToast("Rescanning all registered paths...", "info");
-    const res = await fetchJSON("/api/explorer/rescan-all", { method: "POST" });
-    if (res && res.data) {
-      allTreesData = res.data;
-      await syncLibraryCache();
-      renderAll();
-      showToast(`Refreshed all paths (${allTreesData.total_books || 0} total books)`, "success");
+    const res = await fetchJSON("/api/explorer/refresh-folder", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: request.id, path: request.path }),
+    });
+    const root = applyTreeRefresh(res, request);
+    if (root) {
+      folderRefreshTimes.set(folderRefreshKey({ ...request, cacheSession: root.cache_session }), performance.now());
+      // Keep the view chosen while this request was running, including search.
+      if (isFilesUIOpen()) renderAll();
+      if (request.force && isFilesUIOpen()) showToast("Folder refreshed", "success", 1200);
     }
   } catch (err) {
-    console.error("[files_UI] Rescan all failed:", err);
-    showToast("Rescan all failed: " + err.message, "error");
+    folderRefreshError = { path: request.path, message: err.message };
+    console.warn("[files_UI] Folder refresh failed:", err);
+    if (request.force && isFilesUIOpen()) showToast("Folder refresh failed: " + err.message, "error");
+  } finally {
+    folderRefreshTask = null;
+    resumePendingFolderRefresh();
   }
 }
 
@@ -950,10 +1142,26 @@ async function handleOpenInOS(targetPath) {
  * Loads all registered trees from the backend.
  */
 export async function reloadTree(notify = false) {
+  const revision = ++treeLoadRevision;
+  const startingSessions = new Map((allTreesData?.trees || []).map(root =>
+    [JSON.stringify([String(root.id), root.path]), root.cache_session]));
   try {
     const res = await fetchJSON(`/api/explorer/trees?t=${Date.now()}`);
+    if (revision !== treeLoadRevision) return;
     if (res && res.data) {
+      // A delayed cache read must not replace a folder refresh that already finished.
+      for (let index = 0; index < (res.data.trees || []).length; index++) {
+        const root = res.data.trees[index];
+        const newer = allTreesData?.trees?.find(item => String(item.id) === String(root.id) && item.path === root.path);
+        if (newer && (newer.cache_session === root.cache_session
+            ? Number(newer.revision || 0) > Number(root.revision || 0)
+            : newer.cache_session !== startingSessions.get(JSON.stringify([String(root.id), root.path])))) {
+          res.data.trees[index] = newer;
+        }
+      }
+      res.data.last_scanned_at = Math.max(Number(res.data.last_scanned_at || 0), Number(allTreesData?.last_scanned_at || 0));
       allTreesData = res.data;
+      rebuildTreeTotals();
 
       // Initialize expanded state for roots based on master collapsed property
       if (Array.isArray(allTreesData.paths)) {
@@ -999,6 +1207,7 @@ export function isFilesUIOpen() {
  * Displays the explorer modal.
  */
 export async function openFilesUI() {
+  const revision = ++explorerOpenRevision;
   if (typeof window !== "undefined" && typeof window.closeHistoryUI === "function") {
     window.closeHistoryUI();
   } else {
@@ -1010,12 +1219,15 @@ export async function openFilesUI() {
   const modal = document.getElementById("filesExplorerModal");
   if (modal) modal.classList.remove("hidden");
   await Promise.all([syncColWidthsFromStorage(), reloadTree()]);
+  if (revision === explorerOpenRevision && isFilesUIOpen()) scheduleFolderRefresh();
 }
 
 /**
  * Closes the explorer modal.
  */
 export function closeFilesUI() {
+  ++explorerOpenRevision;
+  cancelScheduledFolderRefresh();
   const modal = document.getElementById("filesExplorerModal");
   if (modal) modal.classList.add("hidden");
 }
@@ -1088,6 +1300,7 @@ function navigateTo(path, recordHistory = true) {
     historyIndex = historyStack.length - 1;
   }
   currentPath = path;
+  contentView = "directory";
 
   // Auto-expand path ancestors in tree
   const info = findNodeAcrossTrees(path);
@@ -1104,13 +1317,16 @@ function navigateTo(path, recordHistory = true) {
   }
 
   renderAll();
+  scheduleFolderRefresh();
 }
 
 function goBack() {
   if (historyIndex > 0) {
     historyIndex--;
     currentPath = historyStack[historyIndex];
+    contentView = "directory";
     renderAll();
+    scheduleFolderRefresh();
   }
 }
 
@@ -1118,7 +1334,9 @@ function goForward() {
   if (historyIndex < historyStack.length - 1) {
     historyIndex++;
     currentPath = historyStack[historyIndex];
+    contentView = "directory";
     renderAll();
+    scheduleFolderRefresh();
   }
 }
 
@@ -1324,17 +1542,19 @@ function createRootTreeSectionElement(rootTree) {
     rootRow.appendChild(badge);
   }
 
-  // Hover Action Buttons on Root Item (Rescan, Remove)
+  // Hover Action Buttons on Root Item (Refresh, Remove)
   const actions = document.createElement("div");
   actions.className = "hidden group-hover:flex items-center gap-0.5 shrink-0 ml-1";
 
   const rescanBtn = document.createElement("button");
-  rescanBtn.className = "p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-blue-400 transition-colors";
-  rescanBtn.title = "Rescan this folder";
+  rescanBtn.className = "p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-blue-400 transition-colors disabled:opacity-30";
+  rescanBtn.title = "Rescan this library path and all subfolders";
+  rescanBtn.setAttribute("aria-label", `Rescan ${rootTree.name || "library path"} and all subfolders`);
+  rescanBtn.dataset.rescanRootId = rootId;
   rescanBtn.innerHTML = `<i data-lucide="rotate-cw" class="w-3 h-3"></i>`;
   rescanBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    handleRescanRoot(rootId, rootTree.path);
+    handleRefreshRoot(rootId);
   });
   actions.appendChild(rescanBtn);
 
@@ -1483,13 +1703,14 @@ function renderActiveDirectory() {
   const bannerStats = document.getElementById("feBannerStats");
   const bannerIcon = document.getElementById("feBannerIcon");
   if (!container) return;
+  updateFolderRefreshUI();
 
   if (typeof renderIcons === "function") {
     queueMicrotask(() => renderIcons());
   }
 
-  // Check if search query is active
-  if (activeFilterQuery) {
+  // Preserve the query without letting it override a later folder selection.
+  if (contentView === "search" && activeFilterQuery) {
     renderSearchResults(activeFilterQuery);
     return;
   }

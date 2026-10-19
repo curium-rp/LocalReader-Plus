@@ -115,8 +115,8 @@ class WindowStateManager:
             self._flush_to_disk()
 
     def _resolve_config_path(self) -> Path:
-        from app.config import userdata_dir
-
+        # Own the reader's data even when this source is imported by another app.
+        userdata_dir = Path(__file__).resolve().parent / "userdata"
         userdata_dir.mkdir(parents=True, exist_ok=True)
         return userdata_dir / "window_state.json"
 

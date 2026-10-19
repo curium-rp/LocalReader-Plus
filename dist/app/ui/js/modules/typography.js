@@ -13,6 +13,7 @@ export const DEFAULT_RENDER = {
   paragraph_spacing: 1.1,
   text_align: "justify",
   text_indent: true,
+  text_indent_size: 1.1,
   hyphenation: true,
   indent_mode: "follow",
   h1_align: "center",
@@ -415,6 +416,7 @@ export function applyReaderTypography({ skipLayout = false } = {}) {
   document.body.classList.toggle("tight-lines", Number(renderState.line_height) < 1.45);
   root.style.setProperty("--reader-paragraph-spacing", `${renderState.paragraph_spacing}em`);
   root.style.setProperty("--reader-text-align", renderState.text_align);
+  root.style.setProperty("--reader-text-indent", `${renderState.text_indent_size}em`);
   root.style.setProperty("--reader-h1-align", renderState.h1_align);
   root.style.setProperty("--reader-h2-align", renderState.h2_align);
   root.style.setProperty("--reader-h3-align", renderState.h3_align);
@@ -599,11 +601,11 @@ function syncControlUi() {
     btn.classList.toggle("active", btn.dataset.align === renderState.text_align);
   });
 
-  const indentToggle = document.getElementById("textIndentToggle");
-  if (indentToggle) {
-    indentToggle.classList.toggle("on", !!renderState.text_indent);
-    indentToggle.setAttribute("aria-checked", renderState.text_indent ? "true" : "false");
-  }
+  const indentSlider = document.getElementById("textindentSlider");
+  const indentVal = document.getElementById("textIndentVal");
+  const indent = renderState.text_indent ? renderState.text_indent_size : 0;
+  if (indentSlider) indentSlider.value = String(indent);
+  if (indentVal) indentVal.textContent = `${indent}em`;
 
   const indentModeBtn = document.getElementById("indentModeBtn");
   if (indentModeBtn) {
@@ -944,14 +946,15 @@ function wireControls() {
     };
   });
 
-  const indentToggle = document.getElementById("textIndentToggle");
-  if (indentToggle) {
-    indentToggle.onclick = (e) => {
-      e.stopPropagation();
-      renderState.text_indent = !renderState.text_indent;
+  const indentSlider = document.getElementById("textindentSlider");
+  if (indentSlider) {
+    indentSlider.oninput = (e) => {
+      renderState.text_indent_size = Number(e.target.value);
+      renderState.text_indent = renderState.text_indent_size > 0;
       applyReaderTypography();
-      persistRender(true);
+      persistRender();
     };
+    indentSlider.onchange = () => persistRender(true);
   }
 
   const indentModeBtn = document.getElementById("indentModeBtn");
@@ -1042,7 +1045,11 @@ function mergeRender(data) {
   next.line_height = Number(next.line_height) || DEFAULT_RENDER.line_height;
   next.paragraph_spacing = Number(next.paragraph_spacing);
   if (!Number.isFinite(next.paragraph_spacing)) next.paragraph_spacing = DEFAULT_RENDER.paragraph_spacing;
-  next.text_indent = next.text_indent !== false;
+  const indentSize = Number(next.text_indent_size ?? DEFAULT_RENDER.text_indent_size);
+  next.text_indent_size = Number.isFinite(indentSize)
+    ? Math.round(Math.max(0, Math.min(4, indentSize)) * 10) / 10
+    : DEFAULT_RENDER.text_indent_size;
+  next.text_indent = next.text_indent !== false && next.text_indent_size > 0;
   next.hyphenation = next.hyphenation !== false;
   next.indent_mode = next.indent_mode === "all" ? "all" : "follow";
   next.two_page_landscape = next.two_page_landscape === true;

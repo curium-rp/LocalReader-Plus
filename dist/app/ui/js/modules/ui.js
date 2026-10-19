@@ -308,8 +308,9 @@ export function renderIgnoreList() {
     state.ignoreList.forEach((item, i) => {
         const div = document.createElement('div');
         div.className = 'flex items-center gap-2 bg-zinc-900/80 p-2 rounded-lg border border-zinc-800';
-        div.innerHTML = `<input type="text" value="${item}" class="flex-1 bg-black text-[10px] p-1.5 border border-zinc-800 rounded outline-none text-zinc-300" data-action="update-ignore" data-index="${i}">
+        div.innerHTML = `<input type="text" class="flex-1 bg-black text-[10px] p-1.5 border border-zinc-800 rounded outline-none text-zinc-300" data-action="update-ignore" data-index="${i}">
                          <button data-action="delete-ignore" data-index="${i}" class="text-zinc-600 hover:text-red-500 p-1"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>`;
+        div.querySelector('input').value = item;
         fragment.appendChild(div);
     });
     ignoreListUI.innerHTML = '';

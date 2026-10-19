@@ -10,6 +10,7 @@ import requests
 # =============================================================================
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODELS_READ_ONLY = False
 
 
 @dataclass
@@ -175,6 +176,8 @@ def get_catalog_summary(active_bundle_id: Optional[str] = None) -> List[dict]:
 
 
 def delete_bundle_files(bundle_id: str) -> Tuple[bool, str]:
+    if MODELS_READ_ONLY:
+        raise PermissionError("Shared models are managed by FalcoType, not LocalReader.")
     bundle = get_bundle(bundle_id)
     if not bundle:
         return False, f"Unknown model bundle: {bundle_id}"
@@ -304,6 +307,8 @@ def _download_file(
     label: str,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
+    if MODELS_READ_ONLY:
+        raise PermissionError("Shared models are managed by FalcoType, not LocalReader.")
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = dest_path.with_suffix(dest_path.suffix + ".download")
 
@@ -355,6 +360,8 @@ def download_model_bundle(
     Download a model bundle including both its ONNX weights and voice pack.
     Skips voices.bin when a shared pack is already present (v1.0 / INT8).
     """
+    if MODELS_READ_ONLY:
+        raise PermissionError("Shared models are managed by FalcoType, not LocalReader.")
     if bundle_id == "gpu":
         bundle_id = "kokoro-v1.0"
     elif bundle_id == "cpu":

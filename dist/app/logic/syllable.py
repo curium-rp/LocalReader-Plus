@@ -107,4 +107,68 @@ def estimate_phonemes(text: str) -> int:
     except Exception:
         # Silent extreme fallback if espeak crashes on corrupted characters
         return int(len(text) * 1.25)
-        
+
+
+def graceful_chunk_for_tts(text, soft_limit=490, hard_limit=510):
+    ph_cache = {}
+    def get_ph(t):
+        t_strip = t.strip()
+        if not t_strip: return 0
+        if t_strip not in ph_cache:
+            ph_cache[t_strip] = estimate_phonemes(t_strip)
+        return ph_cache[t_strip]
+
+    paragraphs = text.strip().split('\n')
+    final_chunks = []
+
+    split_patterns = [
+        r'(?<=[.!?。！？])\s*',                                
+        r'(?<=[,，、])\s*',                                 
+        r'(?<=[;:；：\(\)\-–—])\s*',                    
+        r'\s+(?=\b(?:and|but|or|because|however|therefore|although|which|that|if|when|where|who)\b)', 
+        r'\s+'                                        
+    ]
+    
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+            
+        if get_ph(para) <= soft_limit:
+            final_chunks.append({"text": para, "is_cut": False})
+            continue
+            
+        pieces_to_process = [para]
+        for pattern in split_patterns:
+            new_pieces = []
+            for piece in pieces_to_process:
+                if get_ph(piece) <= hard_limit:
+                    new_pieces.append(piece) 
+                else:
+                    sub_pieces = re.split(pattern, piece, flags=re.IGNORECASE)
+                    new_pieces.extend([sp.strip() for sp in sub_pieces if sp.strip()])
+            pieces_to_process = new_pieces
+            if all(get_ph(p) <= hard_limit for p in pieces_to_process):
+                break
+                
+        current_chunk = ""
+        current_ph_count = 0
+        for piece in pieces_to_process:
+            piece_ph = get_ph(piece)
+            if current_ph_count + piece_ph + 1 <= soft_limit:
+                current_chunk = f"{current_chunk} {piece}".strip()
+                current_ph_count += piece_ph
+            else:
+                if current_chunk:
+                    is_cut = False
+                    if not re.search(r'[.,!?;:。，！？：；、\-\—"\'”\)]$', current_chunk):
+                        current_chunk += ","
+                        is_cut = True
+                    final_chunks.append({"text": current_chunk, "is_cut": is_cut})
+                current_chunk = piece
+                current_ph_count = piece_ph
+                
+        if current_chunk:
+            final_chunks.append({"text": current_chunk, "is_cut": False})
+            
+    return final_chunks

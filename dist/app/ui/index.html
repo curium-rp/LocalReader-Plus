@@ -1725,27 +1725,31 @@
           </div>
         </div>
 
-        <div class="typo-switch-row">
-          <span class="typo-label">
-            <span data-i18n="sidebar.text_indent">Text Indent</span>
-          </span>
-          <div class="typo-switch-actions">
-            <button
-              type="button"
-              id="indentModeBtn"
-              class="typo-pp-btn active"
-              title="Indent following paragraphs only (p + p)"
-              data-i18n-title="sidebar.indent_follow"
-            >p+p</button>
-            <button
-              type="button"
-              id="textIndentToggle"
-              class="typo-switch on"
-              role="switch"
-              aria-checked="true"
-              title="Text indent"
-            ></button>
+        <div class="typo-row">
+          <div class="typo-switch-row">
+            <label class="typo-label" for="textindentSlider">
+              <span data-i18n="sidebar.text_indent">Text Indent</span>
+            </label>
+            <div class="typo-switch-actions">
+              <span class="text-blue-400 font-mono text-xs" id="textIndentVal">1.1em</span>
+              <button
+                type="button"
+                id="indentModeBtn"
+                class="typo-pp-btn active"
+                title="Indent following paragraphs only (p + p)"
+                data-i18n-title="sidebar.indent_follow"
+              >p+p</button>
+            </div>
           </div>
+          <input
+            type="range"
+            id="textindentSlider"
+            min="0"
+            max="4"
+            step="0.1"
+            value="1.1"
+            class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
+          />
         </div>
 
         <div class="typo-switch-row">

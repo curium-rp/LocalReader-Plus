@@ -6,53 +6,37 @@ from ..config import base_dir, settings_file, get_app_anchored_path
 from ..models import ModelDownloadRequest, ModelSelectRequest, ModelDeleteRequest
 from typing import Optional, Dict, Any
 import json
-import sys
 import os
 import gc
-from pathlib import Path
+from ..runtime import runtime
 
-# Add app logic to path for imports
-base_dir_parent = Path(__file__).parent.parent
-if str(base_dir_parent) not in sys.path:
-    sys.path.append(str(base_dir_parent))
+from ..logic import downloader
+from ..logic.downloader import (
+    MODEL_CATALOG, get_bundle, resolve_bundle_paths, get_default_installed_bundle_id,
+    get_catalog_summary, delete_bundle_files, download_kokoro_model,
+    download_model_bundle, check_model_exists, get_available_models, classify_network_error,
+)
 
-try:
-    from logic.downloader import (
-        MODEL_CATALOG,
-        get_bundle,
-        resolve_bundle_paths,
-        get_default_installed_bundle_id,
-        get_catalog_summary,
-        delete_bundle_files,
-        download_kokoro_model,
-        download_model_bundle,
-        check_model_exists,
-        get_available_models,
-        classify_network_error,
-    )
-except ImportError:
-    sys.path.append(str(base_dir_parent / "logic"))
-    from downloader import (
-        MODEL_CATALOG,
-        get_bundle,
-        resolve_bundle_paths,
-        get_default_installed_bundle_id,
-        get_catalog_summary,
-        delete_bundle_files,
-        download_kokoro_model,
-        download_model_bundle,
-        check_model_exists,
-        get_available_models,
-        classify_network_error,
-    )
+if runtime.submodule:
+    downloader.MODELS_DIR = runtime.models_dir
+    downloader.MODELS_READ_ONLY = True
 
 router = APIRouter()
+
+
+def require_model_management():
+    if runtime.submodule:
+        raise HTTPException(status_code=403, detail="Shared models are managed by FalcoType, not LocalReader.")
 
 
 def load_engine_logic(requested_model_id=None, requested_mode=None):
     global kokoro
     system_status["is_loading"] = True
     ort_gpu = has_onnxruntime_gpu()
+
+    # A managed reader always loads FalcoType's root kokoro.onnx and voices.bin.
+    if runtime.submodule:
+        requested_model_id = "kokoro-v1.0"
 
     # 1. Determine model bundle to load
     if requested_model_id is None:
@@ -86,14 +70,18 @@ def load_engine_logic(requested_model_id=None, requested_mode=None):
         requested_model_id = get_default_installed_bundle_id()
 
     bundle = get_bundle(requested_model_id) if requested_model_id else None
-    if not bundle or not bundle.is_installed():
+    if (not bundle or not bundle.is_installed()) and not runtime.submodule:
         fallback_id = get_default_installed_bundle_id()
         if fallback_id:
             bundle = get_bundle(fallback_id)
             requested_model_id = fallback_id
 
     if not bundle or not bundle.is_installed():
-        system_status["last_error"] = "No TTS voice models found. Please download a model."
+        system_status["last_error"] = (
+            f"FalcoType's kokoro.onnx or voices.bin is missing or incomplete in {runtime.models_dir}. "
+            "Manage models in FalcoType."
+            if runtime.submodule else "No TTS voice models found. Please download a model."
+        )
         system_status["is_loading"] = False
         return
 
@@ -114,7 +102,10 @@ def load_engine_logic(requested_model_id=None, requested_mode=None):
     voices_path = bundle.get_voices_path()
 
     if not voices_path.exists():
-        system_status["last_error"] = f"Voice pack missing for {bundle.name}. Please re-download."
+        system_status["last_error"] = (
+            "FalcoType's voices.bin is missing. Manage models in FalcoType."
+            if runtime.submodule else f"Voice pack missing for {bundle.name}. Please re-download."
+        )
         system_status["is_loading"] = False
         return
 
@@ -262,6 +253,8 @@ async def get_status():
         current_engine_mode = "gpu"
         selected_model = "kokoro-v1.0"
 
+    if runtime.submodule:
+        selected_model = "kokoro-v1.0"
     available_models = get_available_models()
     import app.state as state_module
 
@@ -274,6 +267,9 @@ async def get_status():
         active_mode = current_engine_mode
 
     return {
+        "submodule_mode": runtime.submodule,
+        "downloads_allowed": not runtime.submodule,
+        "models_read_only": runtime.submodule,
         "model_loaded": state_module.kokoro is not None,
         "is_loading": system_status["is_loading"],
         "is_downloading": system_status["is_downloading"],
@@ -311,6 +307,9 @@ async def list_models():
 
     catalog = get_catalog_summary(active_id)
     return {
+        "submodule_mode": runtime.submodule,
+        "downloads_allowed": not runtime.submodule,
+        "models_read_only": runtime.submodule,
         "active_model": active_id,
         "is_loading": system_status["is_loading"],
         "is_downloading": system_status["is_downloading"],
@@ -325,6 +324,7 @@ async def list_models():
 
 @router.post("/api/system/models/download")
 async def download_model_endpoint(request: ModelDownloadRequest, background_tasks: BackgroundTasks):
+    require_model_management()
     model_id = request.model_id or request.model_type or "kokoro-v1.0"
     if model_id == "gpu":
         model_id = "kokoro-v1.0"
@@ -378,6 +378,8 @@ async def download_model_endpoint(request: ModelDownloadRequest, background_task
 @router.post("/api/system/models/select")
 async def select_model_endpoint(request: ModelSelectRequest, background_tasks: BackgroundTasks):
     model_id = request.model_id
+    if runtime.submodule and model_id not in ("gpu", "kokoro-v1.0"):
+        raise HTTPException(status_code=403, detail="The managed reader uses FalcoType's kokoro.onnx.")
     if model_id == "gpu":
         model_id = "kokoro-v1.0"
     if model_id == "kokoro-v1.0-int8":
@@ -425,6 +427,7 @@ async def select_model_endpoint(request: ModelSelectRequest, background_tasks: B
 
 @router.post("/api/system/models/delete")
 async def delete_model_endpoint(request: ModelDeleteRequest):
+    require_model_management()
     model_id = request.model_id
     bundle = get_bundle(model_id)
     if not bundle:
@@ -455,6 +458,7 @@ async def delete_model_endpoint(request: ModelDeleteRequest):
 # --- Legacy Backward Compatibility Endpoints ---
 @router.post("/api/system/setup")
 async def run_setup(background_tasks: BackgroundTasks, model_type: Optional[str] = None):
+    require_model_management()
     if system_status["is_downloading"]:
         return {"status": "already_running"}
 
@@ -498,6 +502,8 @@ async def run_setup(background_tasks: BackgroundTasks, model_type: Optional[str]
 
 @router.post("/api/system/switch-engine")
 async def switch_engine(background_tasks: BackgroundTasks, target_mode: str):
+    if runtime.submodule and target_mode not in ("gpu", "kokoro-v1.0"):
+        raise HTTPException(status_code=403, detail="The managed reader uses FalcoType's kokoro.onnx.")
     if target_mode not in ["gpu", "cpu", "kokoro-v1.0", "kokoro-v1.0-int8", "kokoro-v1.1"]:
         raise HTTPException(status_code=400, detail="Invalid engine mode or model ID")
 
@@ -541,6 +547,7 @@ async def download_specific_model(
     model_type: Optional[str] = None,
     payload: Optional[ModelDownloadRequest] = None,
 ):
+    require_model_management()
     target = model_type
     if not target and payload:
         target = payload.model_id or payload.model_type

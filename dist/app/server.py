@@ -31,6 +31,7 @@ from .models import AppSettings
 
 from .routers import settings, library, tts, system, export, timer, theme, render, view, redirect, blending
 from . import files_api
+from .falco_api import falcotype
 
 # --- Lifespan Manager ---
 @asynccontextmanager
@@ -156,6 +157,7 @@ app.include_router(render.router)
 app.include_router(view.router)
 app.include_router(blending.router)
 app.include_router(files_api.router)
+app.include_router(falcotype.router)
 
 # --- Static Files ---
 ui_dir = base_dir / "ui"

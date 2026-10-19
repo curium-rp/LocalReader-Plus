@@ -6,6 +6,9 @@ import uuid
 import asyncio
 import subprocess
 import platform
+import threading
+import copy
+from functools import wraps
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 try:
@@ -24,6 +27,7 @@ except ImportError:
 
 from .config import userdata_dir, master_tree_file, tree_dir, columepx_file
 from .utils import safe_save_json
+from .logic.shell_paths import open_path_in_os
 from .logic.memories import (
     call_peeker_manifest,
     intercept_manifest,
@@ -31,6 +35,115 @@ from .logic.memories import (
     peek_catalog_item,
     load_book_info,
 )
+
+_tree_cache_lock = threading.RLock()
+_tree_cache_session = uuid.uuid4().hex
+_tree_ram_cache = {}
+_tree_revisions = {}
+_full_tree_serials = {}
+_folder_refresh_serials = {}
+_scan_serial = 0
+
+
+def _next_scan_serial():
+    global _scan_serial
+    _scan_serial += 1
+    return _scan_serial
+
+
+def _tree_data_only(data):
+    """Saved trees contain inventory only; scan times live in the master registry."""
+    clean = copy.deepcopy(data)
+    last_scan = 0
+    for key in ("scanned_at", "updated_at"):
+        try:
+            last_scan = max(last_scan, float(clean.pop(key, 0) or 0))
+        except (TypeError, ValueError):
+            pass
+    clean.pop("revision", None)
+    clean.pop("cache_session", None)
+    def clear_folder(node):
+        nonlocal last_scan
+        if not isinstance(node, dict):
+            return
+        try:
+            last_scan = max(last_scan, float(node.pop("scanned_at", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        for child in node.get("subfolders", []):
+            clear_folder(child)
+    clear_folder(clean.get("tree"))
+    return clean, last_scan
+
+
+def _cache_signature(file):
+    try:
+        stat = file.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except FileNotFoundError:
+        return None
+
+
+def _cached_tree(path_id, root_path):
+    """Return a copy of the live RAM tree, reloading if its saved snapshot changed."""
+    path_id = str(path_id)
+    file = get_tree_file_for_id(path_id)
+    with _tree_cache_lock:
+        signature = _cache_signature(file)
+        cached = _tree_ram_cache.get(path_id)
+        if not cached or cached["signature"] != signature or cached["root_path"] != str(root_path):
+            data = {"root_path": str(root_path), "root_name": Path(root_path).name,
+                    "total_books": 0, "tree": _empty_folder(Path(root_path)), "flat_list": []}
+            if signature is not None:
+                try:
+                    with file.open("r", encoding="utf-8") as handle:
+                        saved = json.load(handle)
+                    if isinstance(saved, dict) and Path(saved.get("root_path", "")) == Path(root_path):
+                        data, legacy_time = _tree_data_only(saved)
+                        if data != saved:
+                            # One-time migration of scan logs previously embedded in trees.
+                            master = load_master_tree()
+                            if legacy_time > master["last_scanned_at"]:
+                                master["last_scanned_at"] = legacy_time
+                                save_master_tree(master)
+                            safe_save_json(file, data, indent=2)
+                            signature = _cache_signature(file)
+                except (OSError, ValueError, TypeError) as error:
+                    print(f"[FilesAPI] Error reading {file.name}: {error}")
+            _tree_revisions[path_id] = _next_scan_serial()
+            _full_tree_serials[path_id] = _tree_revisions[path_id]
+            cached = {"root_path": str(root_path), "signature": signature, "data": data}
+            _tree_ram_cache[path_id] = cached
+        result = copy.deepcopy(cached["data"])
+        result["revision"] = _tree_revisions[path_id]
+        result["cache_session"] = _tree_cache_session
+        return result
+
+
+def _with_tree_cache_lock(function):
+    @wraps(function)
+    def write(*args, **kwargs):
+        with _tree_cache_lock:
+            return function(*args, **kwargs)
+    return write
+
+
+def _empty_folder(path: Path) -> Dict[str, Any]:
+    return {
+        "name": path.name, "path": str(path), "is_dir": True,
+        "type": "File folder", "subfolders": [], "files": [],
+        "book_count": 0, "size_bytes": 0, "size_formatted": "",
+    }
+
+
+def _find_folder(node: Dict[str, Any], path: Path):
+    if Path(node.get("path", "")) == path:
+        return node
+    for child in node.get("subfolders", []):
+        found = _find_folder(child, path)
+        if found is not None:
+            return found
+    return None
 
 
 def format_file_size(size_in_bytes: int) -> str:
@@ -166,7 +279,7 @@ IGNORED_DIR_NAMES = {
 }
 
 
-def scan_folder_tree(root_path: Path) -> Dict[str, Any]:
+def scan_folder_tree(root_path: Path, *, strict: bool = False) -> Dict[str, Any]:
     """
     Recursively scans the folder hierarchy for .epub files (mimicking tree /f).
     The root folder is the top of the tree.
@@ -194,12 +307,17 @@ def scan_folder_tree(root_path: Path) -> Dict[str, Any]:
         try:
             entries = sorted(list(current_dir.iterdir()), key=lambda e: (not e.is_dir(), e.name.lower()))
         except (PermissionError, OSError) as err:
+            if strict:
+                raise
             print(f"[Manager] Access denied skipping: {current_dir} ({err})")
             return node
 
         for entry in entries:
             # Skip hidden and system folders
             if entry.name.startswith(".") or entry.name.lower() in IGNORED_DIR_NAMES:
+                continue
+
+            if strict and (entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction())):
                 continue
 
             if entry.is_dir():
@@ -213,7 +331,9 @@ def scan_folder_tree(root_path: Path) -> Dict[str, Any]:
                         stat = entry.stat()
                         size_bytes = stat.st_size
                         mtime = stat.st_mtime
-                    except Exception:
+                    except OSError:
+                        if strict:
+                            raise
                         size_bytes = 0
                         mtime = 0.0
 
@@ -255,7 +375,6 @@ def scan_folder_tree(root_path: Path) -> Dict[str, Any]:
     tree_data = {
         "root_path": str(root_path),
         "root_name": root_path.name or str(root_path),
-        "scanned_at": time.time(),
         "total_books": len(flat_list),
         "tree": tree_node,
         "flat_list": flat_list,
@@ -271,6 +390,9 @@ def load_master_tree() -> Dict[str, Any]:
             with open(master_tree_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict) and "paths" in data:
+                    data.setdefault("last_full_scan_at", 0)
+                    data.setdefault("last_scanned_at", max(
+                        [data["last_full_scan_at"]] + [p.get("scanned_at", 0) or 0 for p in data["paths"]]))
                     for p in data["paths"]:
                         if "collapsed" not in p:
                             p["collapsed"] = False
@@ -278,7 +400,7 @@ def load_master_tree() -> Dict[str, Any]:
         except Exception as e:
             print(f"[FilesAPI] Error reading master_tree.json: {e}")
 
-    return {"active_id": None, "paths": []}
+    return {"active_id": None, "paths": [], "last_full_scan_at": 0, "last_scanned_at": 0}
 
 
 def save_master_tree(data: Dict[str, Any]) -> None:
@@ -293,6 +415,7 @@ def get_tree_file_for_id(path_id: str) -> Path:
 
 
 
+@_with_tree_cache_lock
 def load_tree_log(path_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Load tree structure for a given path_id, or the currently active path in master_tree.
@@ -301,25 +424,16 @@ def load_tree_log(path_id: Optional[str] = None) -> Dict[str, Any]:
     target_id = path_id or master.get("active_id")
 
     if target_id:
-        p_file = get_tree_file_for_id(target_id)
-        if p_file.exists():
-            try:
-                with open(p_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        data["id"] = str(target_id)
-                        for p in master.get("paths", []):
-                            if str(p.get("id")) == str(target_id):
-                                data["collapsed"] = p.get("collapsed", False)
-                                break
-                    return data
-            except Exception as e:
-                print(f"[FilesAPI] Error reading {p_file.name}: {e}")
+        entry = next((p for p in master.get("paths", []) if str(p.get("id")) == str(target_id)), None)
+        if entry is not None:
+            data = _cached_tree(target_id, entry.get("path", ""))
+            data["id"] = str(target_id)
+            data["collapsed"] = entry.get("collapsed", False)
+            return data
 
     return {
         "root_path": "",
         "root_name": "",
-        "scanned_at": 0,
         "total_books": 0,
         "tree": None,
         "flat_list": [],
@@ -347,6 +461,7 @@ def stamp_tree_library(node: Any, path_id: str, root_name: str) -> None:
         book.setdefault("type", "EPUB")
 
 
+@_with_tree_cache_lock
 def load_all_trees() -> Dict[str, Any]:
     """
     Loads all registered paths from master_tree.json and their respective tree structures.
@@ -360,34 +475,13 @@ def load_all_trees() -> Dict[str, Any]:
 
     for p in paths:
         pid = str(p.get("id"))
-        p_file = get_tree_file_for_id(pid)
-        tree_node = None
-        p_flat_list: List[Dict[str, Any]] = []
-        scanned_at = p.get("scanned_at") or 0
+        tdata = _cached_tree(pid, p.get("path", ""))
+        tree_node = tdata.get("tree")
+        p_flat_list = tdata.get("flat_list", [])
 
-        if p_file.exists():
-            try:
-                with open(p_file, "r", encoding="utf-8") as f:
-                    tdata = json.load(f)
-                    if isinstance(tdata, dict):
-                        tree_node = tdata.get("tree")
-                        p_flat_list = tdata.get("flat_list", [])
-                        scanned_at = tdata.get("scanned_at") or scanned_at
-            except Exception as e:
-                print(f"[FilesAPI] Error reading {p_file.name}: {e}")
-        else:
-            p_path_str = p.get("path")
-            if p_path_str:
-                try:
-                    p_path_obj = Path(p_path_str)
-                    if p_path_obj.exists() and p_path_obj.is_dir():
-                        tdata = scan_folder_tree(p_path_obj)
-                        save_tree_log(tdata, pid)
-                        tree_node = tdata.get("tree")
-                        p_flat_list = tdata.get("flat_list", [])
-                        scanned_at = tdata.get("scanned_at") or time.time()
-                except Exception as e:
-                    print(f"[FilesAPI] Auto-scan failed for {p_path_str}: {e}")
+        # Opening the explorer reads caches only; browsing refreshes one folder.
+        if tree_node is None:
+            tree_node = _empty_folder(Path(p.get("path", "")))
 
         root_name = p.get("name") or Path(p.get("path", "")).name
         stamp_tree_library(tree_node, pid, root_name)
@@ -401,7 +495,7 @@ def load_all_trees() -> Dict[str, Any]:
             b_copy.setdefault("type", "EPUB")
             flat_list_all.append(b_copy)
 
-        p_books = p.get("total_books") if p.get("total_books") is not None else len(p_flat_list)
+        p_books = len(p_flat_list)
         total_books += p_books
 
         trees.append({
@@ -410,13 +504,16 @@ def load_all_trees() -> Dict[str, Any]:
             "path": p.get("path", ""),
             "total_books": p_books,
             "collapsed": p.get("collapsed", False),
-            "scanned_at": scanned_at,
+            "revision": tdata["revision"],
+            "cache_session": tdata["cache_session"],
             "tree": tree_node,
             "flat_list": p_flat_list,
         })
 
     return {
         "active_id": master.get("active_id"),
+        "last_full_scan_at": master.get("last_full_scan_at", 0),
+        "last_scanned_at": load_master_tree()["last_scanned_at"],
         "paths": paths,
         "trees": trees,
         "total_books": total_books,
@@ -424,11 +521,124 @@ def load_all_trees() -> Dict[str, Any]:
     }
 
 
+def refresh_folder(folder_path: str, path_id: str) -> Dict[str, Any]:
+    """Refresh immediate entries of one cached folder without walking descendants."""
+    master = load_master_tree()
+    entry = next((p for p in master.get("paths", []) if str(p.get("id")) == str(path_id)), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Library path is no longer registered")
+    root = Path(entry["path"]).resolve()
+    folder = Path(folder_path).resolve()
+    if not folder.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="Folder is outside this library path")
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Folder no longer exists")
+
+    with _tree_cache_lock:
+        # Load the baseline before issuing a ticket, so a newly loaded snapshot
+        # does not invalidate its own first folder refresh.
+        _cached_tree(path_id, entry["path"])
+        scan_serial = _next_scan_serial()
+    folders, files = [], []
+    try:
+        with os.scandir(folder) as entries:
+            for item in entries:
+                if item.name.startswith(".") or item.name.lower() in IGNORED_DIR_NAMES:
+                    continue
+                path = Path(item.path)
+                # Background refresh must not follow links into other directories.
+                if item.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+                    continue
+                if item.is_dir(follow_symlinks=False):
+                    folders.append(path)
+                elif path.suffix.lower() == ".epub" and item.is_file(follow_symlinks=False):
+                    stat = item.stat(follow_symlinks=False)
+                    files.append({
+                        "name": path.name, "title": path.stem, "path": str(path),
+                        "is_dir": False, "type": "EPUB", "ext": ".epub",
+                        "size_bytes": stat.st_size, "size_formatted": format_file_size(stat.st_size),
+                        "mtime": stat.st_mtime,
+                    })
+    except OSError as error:
+        raise HTTPException(status_code=400, detail=f"Could not refresh folder: {error}") from error
+
+    with _tree_cache_lock:
+        # A path can be edited/removed while its directory is being read.
+        latest = load_master_tree()
+        current = next((p for p in latest.get("paths", []) if str(p.get("id")) == str(path_id)), None)
+        if current is None or Path(current["path"]).resolve() != root:
+            raise HTTPException(status_code=409, detail="Library path changed during refresh")
+        data = load_tree_log(str(path_id))
+        tree = data.get("tree")
+        if not isinstance(tree, dict) or Path(data.get("root_path", "")) != root:
+            tree = _empty_folder(root)
+            data = {"id": str(path_id), "root_path": str(root), "root_name": root.name,
+                    "tree": tree}
+        node = _find_folder(tree, folder)
+        if node is None:
+            raise HTTPException(status_code=409, detail="Folder is no longer in the cached tree")
+        folder_key = (str(path_id), str(root), str(folder))
+        if max(_full_tree_serials.get(str(path_id), 0), _folder_refresh_serials.get(folder_key, 0)) > scan_serial:
+            return data
+        old_folders = {Path(child["path"]): child for child in node.get("subfolders", [])}
+        node["subfolders"] = [old_folders.get(path, _empty_folder(path))
+                              for path in sorted(folders, key=lambda path: path.name.lower())]
+        node["files"] = sorted(files, key=lambda item: item["name"].lower())
+
+        # Rebuild counts/search from RAM; no descendant folders are read from disk.
+        flat_list = []
+        def rebuild(cached):
+            count = len(cached.get("files", []))
+            for book in cached.get("files", []):
+                flat_list.append({**book, "rel_path": str(Path(book["path"]).relative_to(root))})
+            for child in cached.get("subfolders", []):
+                count += rebuild(child)
+            cached["book_count"] = count
+            return count
+        data["total_books"] = rebuild(tree)
+        data["flat_list"] = flat_list
+        data, _ = _tree_data_only(data)
+        latest["last_scanned_at"] = time.time()
+        save_master_tree(latest)
+        _tree_ram_cache[str(path_id)]["data"] = data
+        _tree_revisions[str(path_id)] = _next_scan_serial()
+        _folder_refresh_serials[folder_key] = scan_serial
+        return load_tree_log(str(path_id))
+
+
+def rescan_path(path_id: str) -> Dict[str, Any]:
+    """Rescan one registered tree, preserving the registry and other libraries."""
+    path_id = str(path_id)
+    with _tree_cache_lock:
+        master = load_master_tree()
+        entry = next((p for p in master.get("paths", []) if str(p.get("id")) == path_id), None)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Library path is no longer registered")
+        root = Path(entry["path"]).resolve()
+        _cached_tree(path_id, entry["path"])
+        scan_serial = _next_scan_serial()
+    try:
+        data = scan_folder_tree(root, strict=True)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=f"Could not rescan library path: {error}") from error
+
+    with _tree_cache_lock:
+        latest = load_master_tree()
+        current = next((p for p in latest.get("paths", []) if str(p.get("id")) == path_id), None)
+        if current is None or Path(current["path"]).resolve() != root:
+            raise HTTPException(status_code=409, detail="Library path changed during rescan")
+        if _full_tree_serials.get(path_id, 0) > scan_serial:
+            return load_tree_log(path_id)
+        save_tree_log(data, path_id, activate=False)
+        return load_tree_log(path_id)
+
+
 def rescan_all_paths() -> Dict[str, Any]:
     """
     Rescans all registered paths and updates individual tree logs and master_tree.json.
     """
     master = load_master_tree()
+    complete = bool(master.get("paths"))
     for p in master.get("paths", []):
         p_path_str = p.get("path")
         if p_path_str:
@@ -438,44 +648,32 @@ def rescan_all_paths() -> Dict[str, Any]:
                     tree_data = scan_folder_tree(p_path)
                     save_tree_log(tree_data, p.get("id"))
                 except Exception as e:
+                    complete = False
                     print(f"[FilesAPI] Error rescanning path {p_path_str}: {e}")
+            else:
+                complete = False
+        else:
+            complete = False
+    if complete:
+        with _tree_cache_lock:
+            latest = load_master_tree()
+            scanned_paths = {(str(p["id"]), p.get("path")) for p in master["paths"]}
+            current_paths = {(str(p["id"]), p.get("path")) for p in latest.get("paths", [])}
+            if scanned_paths == current_paths:
+                latest["last_full_scan_at"] = time.time()
+                latest["last_scanned_at"] = latest["last_full_scan_at"]
+                save_master_tree(latest)
     return load_all_trees()
 
 
-def open_path_in_os(target_path: str) -> bool:
-    """Opens a file or folder in the OS native file explorer."""
-    path_obj = Path(target_path).resolve()
-    if not path_obj.exists():
-        if path_obj.parent.exists():
-            path_obj = path_obj.parent
-        else:
-            return False
-
-    sys_name = platform.system().lower()
-    try:
-        if sys_name == "windows":
-            if path_obj.is_file():
-                subprocess.Popen(f'explorer /select,"{path_obj}"', shell=True)
-            else:
-                os.startfile(str(path_obj))
-            return True
-        elif sys_name == "darwin":
-            subprocess.Popen(["open", "-R" if path_obj.is_file() else "", str(path_obj)])
-            return True
-        else:
-            subprocess.Popen(["xdg-open", str(path_obj if path_obj.is_dir() else path_obj.parent)])
-            return True
-    except Exception as e:
-        print(f"[FilesAPI] Failed to open path in OS: {e}")
-        return False
-
-
-def save_tree_log(tree_data: Dict[str, Any], path_id: Optional[str] = None) -> str:
+@_with_tree_cache_lock
+def save_tree_log(tree_data: Dict[str, Any], path_id: Optional[str] = None, *, activate: bool = True) -> str:
     """
     Save tree structure to userdata/tree_<id>.json and register in master_tree.json.
     Returns the path_id.
     """
     master = load_master_tree()
+    scanned_at = time.time()
     target_path = str(tree_data.get("root_path", "")).strip()
 
     matched_entry = None
@@ -500,7 +698,7 @@ def save_tree_log(tree_data: Dict[str, Any], path_id: Optional[str] = None) -> s
         assigned_id = str(matched_entry["id"])
         matched_entry["path"] = target_path
         matched_entry["name"] = tree_data.get("root_name") or Path(target_path).name
-        matched_entry["scanned_at"] = tree_data.get("scanned_at") or time.time()
+        matched_entry["scanned_at"] = scanned_at
         matched_entry["total_books"] = tree_data.get("total_books") or 0
         matched_entry["file"] = f"tree_{assigned_id}.json"
     else:
@@ -512,22 +710,28 @@ def save_tree_log(tree_data: Dict[str, Any], path_id: Optional[str] = None) -> s
             "file": f"tree_{assigned_id}.json",
             "path": target_path,
             "name": tree_data.get("root_name") or Path(target_path).name,
-            "scanned_at": tree_data.get("scanned_at") or time.time(),
+            "scanned_at": scanned_at,
             "total_books": tree_data.get("total_books") or 0,
             "collapsed": False,
         }
         master["paths"].append(new_entry)
 
-    master["active_id"] = assigned_id
-    save_master_tree(master)
-
+    if activate:
+        master["active_id"] = assigned_id
+    master["last_scanned_at"] = scanned_at
     target_file = get_tree_file_for_id(assigned_id)
     tree_data["id"] = assigned_id
-    safe_save_json(target_file, tree_data, indent=2)
+    clean, _ = _tree_data_only(tree_data)
+    safe_save_json(target_file, clean, indent=2)
+    save_master_tree(master)
+    _tree_ram_cache.pop(assigned_id, None)
+    _tree_revisions[assigned_id] = _next_scan_serial()
+    _full_tree_serials[assigned_id] = _tree_revisions[assigned_id]
 
     return assigned_id
 
 
+@_with_tree_cache_lock
 def delete_tree_path(path_id: str) -> Dict[str, Any]:
     """
     Deletes path entry from master_tree.json and removes tree_<id>.json.
@@ -535,6 +739,12 @@ def delete_tree_path(path_id: str) -> Dict[str, Any]:
     """
     master = load_master_tree()
     target_id = str(path_id)
+    _tree_ram_cache.pop(target_id, None)
+    _tree_revisions.pop(target_id, None)
+    _full_tree_serials.pop(target_id, None)
+    for key in list(_folder_refresh_serials):
+        if key[0] == target_id:
+            del _folder_refresh_serials[key]
 
     target_file = get_tree_file_for_id(target_id)
     if target_file.exists():
@@ -562,6 +772,7 @@ def delete_tree_path(path_id: str) -> Dict[str, Any]:
 
 
 
+@_with_tree_cache_lock
 def switch_active_path(path_id: str) -> Dict[str, Any]:
     """Switches active path in master_tree.json and returns its tree data."""
     master = load_master_tree()
@@ -577,6 +788,7 @@ def switch_active_path(path_id: str) -> Dict[str, Any]:
     return {"status": "ok", "active_id": target_id, "data": tree_data}
 
 
+@_with_tree_cache_lock
 def save_paths_order(ordered_paths: List[Dict[str, Any]], active_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Saves the user-arranged or A-Z sorted list of paths into master_tree.json.
@@ -707,16 +919,17 @@ if router is not None:
     @router.post("/paths/collapse")
     async def api_collapse_path(payload: CollapsePayload):
         """Update and persist collapsed status for a master path."""
-        master = load_master_tree()
-        target_id = str(payload.id)
-        matched = False
-        for p in master.get("paths", []):
-            if str(p.get("id")) == target_id:
-                p["collapsed"] = bool(payload.collapsed)
-                matched = True
-                break
-        if matched:
-            save_master_tree(master)
+        with _tree_cache_lock:
+            master = load_master_tree()
+            target_id = str(payload.id)
+            matched = False
+            for p in master.get("paths", []):
+                if str(p.get("id")) == target_id:
+                    p["collapsed"] = bool(payload.collapsed)
+                    matched = True
+                    break
+            if matched:
+                save_master_tree(master)
         return {"status": "ok", "id": target_id, "collapsed": bool(payload.collapsed), "master": master}
 
     @router.post("/switch-path")
@@ -747,6 +960,20 @@ if router is not None:
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to scan directory: {str(e)}")
+
+    @router.post("/refresh-folder")
+    async def api_refresh_folder(payload: PathPayload):
+        if not payload.id:
+            raise HTTPException(status_code=400, detail="Library path ID is required")
+        data = await asyncio.to_thread(refresh_folder, payload.path, payload.id)
+        return {"status": "ok", "id": str(payload.id), "data": data,
+                "last_scanned_at": load_master_tree()["last_scanned_at"]}
+
+    @router.post("/path/{path_id}/rescan")
+    async def api_rescan_path(path_id: str):
+        data = await asyncio.to_thread(rescan_path, path_id)
+        return {"status": "ok", "id": str(path_id), "data": data,
+                "last_scanned_at": load_master_tree()["last_scanned_at"]}
 
     @router.get("/trees")
     async def api_get_all_trees():
