@@ -20,6 +20,9 @@ temp_*
 *.swp
 *.swo
 *~
+.env*
+**/.env*
+!**/.env.example
 # OS junk
 .DS_Store
 Thumbs.db
