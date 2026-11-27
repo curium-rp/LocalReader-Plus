@@ -13,8 +13,8 @@
  *   closeSidebarMiniPopups
  */
 import { state } from "./modules/state.js";
-import { togglePlayback, startPlayback, pauseSyncPlayback } from "./modules/tts.js";
-import { isSyncActive } from "./falco_api/falcotype-sync-state.js";
+import { togglePlayback, requestPlayback, pauseSyncPlayback } from "./modules/tts.js";
+import { isSyncActive, syncState } from "./falco_api/falcotype-sync-state.js";
 import { isHorizontalMode, flipSpread } from "./modules/horizontal.js";
 import { closeAllDrawers } from "./modules/ui.js";
 import { closeModelManagerModal } from "./modules/downloader.js";
@@ -201,13 +201,13 @@ export function initShortcuts({ closeSearchMode, handleSearchPopupKeys, closeSid
 // Bind hardware media keys directly to the OS Media Session
 if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('play', () => {
-    if (isSyncActive()) startPlayback();
+    if (syncState.managed) requestPlayback();
     else togglePlayback();
   });
   
   navigator.mediaSession.setActionHandler('pause', () => {
     if (isSyncActive()) void pauseSyncPlayback();
-    else togglePlayback();
+    else if (!syncState.managed) togglePlayback();
   });
   
   navigator.mediaSession.setActionHandler('previoustrack', () => {

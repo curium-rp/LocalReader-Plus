@@ -1,10 +1,12 @@
 import { state, normalizeBcp47, langFromHtmlMarkup, guessLangFromText } from "./state.js";
-import { fetchJSON, fetchBlob } from "./api.js";
-import { showToast, renderIcons, stripHTML, highlightSearchTerm, showFootnoteModal, setMonitorPreview, syncBackToReadingButton } from "./ui.js";
+import { fetchJSON } from "./api.js";
+import { showToast, renderIcons, highlightSearchTerm, showFootnoteModal, setMonitorPreview, syncBackToReadingButton } from "./ui.js";
 import { applyReaderTypography, getRenderState } from "./typography.js";
 import { isHorizontalMode, layoutSpreads, revealInSpread, updateHorizontalSpreadFocus, wantsSpreadTwoPage, isStandaloneIllustrationPage, getActiveSpreadPages } from "./horizontal.js";
 import { indexDocument, updateProgressDisplay, getProgressMetrics, setRamIndexReady, isRamIndexReady } from "./progress.js";
-import { isSyncActive } from "../falco_api/falcotype-sync-state.js";
+import { isSyncActive, syncState, retireSyncSelection } from "../falco_api/falcotype-sync-state.js";
+import { stopPlayback } from "./tts.js";
+import { hideSidebarForBook } from "./sidebar.js";
 
 // Tags that survive EPUB/PDF restore; stripped when extracting spoken/preview text.
 export const validTags = /<\/?(?:n|s|p|div|h[1-6]|span|font|a|b|i|u|em|strong|ins|del|strike|sub|sup|mark|small|big|abbr|cite|dfn|q|code|pre|ruby|rt|rp|figure|figcaption|blockquote|img|image|svg|picture|hr|br|li|ul|ol|table|caption|tr|td|th|tbody|thead|tfoot|section|article|aside|nav|main|header|footer|address|dd|dt|summary)\b[^>]*>/gi;
@@ -71,7 +73,7 @@ function findAnchorElement(root, anchorId, peeked) {
 
 function extractFootnoteHtml(targetEl) {
     if (!targetEl) return null;
-    const container = targetEl.closest('aside, li, p[epub\\:type="footnote"], div[epub\\:type="footnote"], .epub-footnote')
+    const container = targetEl.closest('aside, li, p[epub\\:type~="footnote"], div[epub\\:type~="footnote"], .epub-footnote')
         || targetEl.closest('p')
         || targetEl.parentElement;
     return container ? container.innerHTML : targetEl.innerHTML;
@@ -107,33 +109,71 @@ function footnoteBasename(path) {
     return parts[parts.length - 1] || "";
 }
 
-function unwrapFootnoteRecord(raw, fallbackId = "") {
-    if (!raw) return null;
-    if (typeof raw === "string") {
-        return { html: raw, page_index: -1, file: "", anchor_id: fallbackId };
+// info.json stores notes as ids + page indexes only ({page, ids, refs: [[page, id]]}).
+// Aliases are rebuilt here: "doc#id", unique "basename#id", unique bare "id".
+function buildFootnoteIndex(footnotes, spine) {
+    const index = new Map();
+    const notes = footnotes?.notes || [];
+    const pages = spine || [];
+    const baseCount = new Map();
+    for (const doc of pages) {
+        const base = footnoteBasename(doc);
+        baseCount.set(base, (baseCount.get(base) || 0) + 1);
     }
-    if (typeof raw === "object") {
-        return raw;
+    const bare = new Map();
+    for (const note of notes) {
+        const aliases = [...(note.ids || []).map((id) => [note.page, id]), ...(note.refs || [])];
+        for (const [page, frag] of aliases) {
+            const doc = pages[page] || "";
+            if (doc) {
+                index.set(`${doc}#${frag}`, note);
+                const base = footnoteBasename(doc);
+                if (baseCount.get(base) === 1) index.set(`${base}#${frag}`, note);
+            }
+            if (!bare.has(frag)) bare.set(frag, new Set());
+            bare.get(frag).add(note);
+        }
     }
-    return null;
+    for (const [frag, owners] of bare) {
+        if (owners.size === 1 && !index.has(frag)) index.set(frag, [...owners][0]);
+    }
+    return index;
 }
 
-function lookupFootnoteMap(cleanId, targetId, chBase) {
-    if (!state.footnoteMap) return null;
-    const base = footnoteBasename(chBase);
+function setFootnotes(footnotes, spine) {
+    state.footnoteIndex = buildFootnoteIndex(footnotes, spine);
+}
+
+function footnoteHtmlFromPage(pageIdx, anchorId, peeked) {
+    const pageHtml = state.currentPages?.[pageIdx];
+    if (!pageHtml || !anchorId) return null;
+    const doc = new DOMParser().parseFromString(pageHtml, "text/html");
+    return extractFootnoteHtml(findAnchorElement(doc, anchorId, peeked));
+}
+
+function footnoteLinkTarget(href) {
+    const current = state.metadata?.spine?.[state.viewPageIndex] || "";
+    try {
+        const parsed = new URL(href || "#", `https://epub.invalid/${current}`);
+        if (parsed.origin !== "https://epub.invalid") return null;
+        return { file: decodeURIComponent(parsed.pathname.slice(1)), anchor: decodeURIComponent(parsed.hash.slice(1)) };
+    } catch (_) { return null; }
+}
+
+function lookupFootnote(cleanId, targetId, chBase) {
+    if (!state.footnoteIndex?.size) return null;
+    const target = footnoteLinkTarget(targetId);
+    const current = state.metadata?.spine?.[state.viewPageIndex] || "";
     const keys = [
-        targetId,
-        base && cleanId ? `${base}#${cleanId}` : "",
+        target?.file && target.anchor ? `${target.file}#${target.anchor}` : "",
+        current && cleanId ? `${current}#${cleanId}` : "",
         chBase && cleanId ? `${chBase}#${cleanId}` : "",
-        cleanId,
+        target?.file && target.anchor ? `${footnoteBasename(target.file)}#${target.anchor}` : "",
+        targetId, cleanId,
     ].filter(Boolean);
     for (const key of keys) {
-        if (state.footnoteMap[key]) return unwrapFootnoteRecord(state.footnoteMap[key], cleanId);
-    }
-    const lower = (value) => String(value || "").toLowerCase();
-    const wanted = new Set(keys.map(lower));
-    for (const [key, value] of Object.entries(state.footnoteMap)) {
-        if (wanted.has(lower(key))) return unwrapFootnoteRecord(value, cleanId);
+        const note = state.footnoteIndex.get(key);
+        if (note) return note;
     }
     return null;
 }
@@ -188,13 +228,19 @@ async function ensureViewPagesReady(pageIdx) {
     return Boolean(state.currentPages?.[pageIdx]);
 }
 
+function flashFootnoteTarget(target) {
+    const classes = ["bg-blue-600/40", "rounded", "px-1", "transition-colors", "duration-500"];
+    const added = classes.filter(name => !target.classList.contains(name));
+    target.classList.add(...added);
+    setTimeout(() => target.classList.remove(...added), 1500);
+}
+
 function highlightFootnoteTarget(cleanId, peeked) {
-    const targetEl = findAnchorElement(document, cleanId, peeked);
+    const targetEl = findAnchorElement(document.getElementById("textContent"), cleanId, peeked);
     if (!targetEl) return;
     const scrollTarget = targetEl.closest(".sentence") || targetEl;
     scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" });
-    scrollTarget.classList.add("bg-blue-600/40", "rounded", "px-1", "transition-colors", "duration-500");
-    setTimeout(() => scrollTarget.classList.remove("bg-blue-600/40", "px-1"), 1500);
+    flashFootnoteTarget(scrollTarget);
 }
 
 async function openFootnote(targetId) {
@@ -209,32 +255,28 @@ async function openFootnote(targetId) {
     let foundPageIdx = -1;
     let jumpAnchor = cleanId;
 
-    if (peeked) {
-        const rec = lookupFootnoteMap(cleanId, targetId, chBase);
-        if (rec) {
-            footnoteHTML = rec.html || null;
-            if (Number.isInteger(rec.page_index)) foundPageIdx = rec.page_index;
-            jumpAnchor = rec.anchor_id || cleanId;
-        }
-        if (!footnoteHTML) {
-            const ramHit = findFootnoteInRamPages(cleanId, true);
-            footnoteHTML = ramHit.html;
-            foundPageIdx = ramHit.pageIdx;
-        }
-        if (!footnoteHTML && state.currentDoc?.id) {
-            try {
-                const fnRes = await fetchJSON(`/api/books/${state.currentDoc.id}/footnote?file=${encodeURIComponent(targetFile)}&anchor=${encodeURIComponent(cleanId)}`);
-                if (fnRes && fnRes.html) footnoteHTML = fnRes.html;
-            } catch (err) {}
-        }
-    } else {
-        const rec = lookupFootnoteMap(cleanId, targetId, chBase);
-        if (rec?.html) footnoteHTML = rec.html;
-        if (!footnoteHTML) {
-            const jsonHit = findFootnoteInRamPages(cleanId, false);
-            footnoteHTML = jsonHit.html;
-            foundPageIdx = jsonHit.pageIdx;
-        }
+    // The map holds ids only: read the definition from its (peeked) page.
+    const note = lookupFootnote(cleanId, targetId, chBase);
+    if (note && note.page >= 0) {
+        if (peeked) await ensurePeekedPage(note.page);
+        jumpAnchor = note.ids?.[0] || cleanId;
+        footnoteHTML = footnoteHtmlFromPage(note.page, jumpAnchor, peeked);
+        if (footnoteHTML) foundPageIdx = note.page;
+    }
+    if (!footnoteHTML) {
+        const ramHit = findFootnoteInRamPages(cleanId, peeked);
+        footnoteHTML = ramHit.html;
+        foundPageIdx = ramHit.pageIdx;
+        jumpAnchor = cleanId;
+    }
+    if (!footnoteHTML && peeked && state.currentDoc?.id) {
+        try {
+            const fnRes = await fetchJSON(`/api/books/${state.currentDoc.id}/footnote?file=${encodeURIComponent(targetFile)}&anchor=${encodeURIComponent(cleanId)}`);
+            if (fnRes && fnRes.html) {
+                footnoteHTML = fnRes.html;
+                if (note) foundPageIdx = note.page;
+            }
+        } catch (err) {}
     }
 
     if (footnoteHTML) {
@@ -466,7 +508,7 @@ export async function loadLibrary() {
   }
 }
 
-export async function processJsonData(pagesText, fileName, explicitDocId = null, imageMap = null, tocMap = null, language = null, bookType = null) {
+export async function processJsonData(pagesText, fileName, explicitDocId = null, imageMap = null, tocMap = null, language = null, bookType = null, request = beginBookOpen()) {
     try {
         const docId = explicitDocId || crypto.randomUUID();
         const bookLang = normalizeBcp47(language);
@@ -487,14 +529,14 @@ export async function processJsonData(pagesText, fileName, explicitDocId = null,
 
         await fetch("/api/library/content", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(contentPayload) });
 
-        selectDocument(newDoc);
+        selectDocument(newDoc, request);
         showToast("Book added to library");
     } catch (err) {
         showToast("Failed to process document: " + err.message);
     }
 }
 
-export async function processPdfBlob(blob, fileName) {
+export async function processPdfBlob(blob, fileName, request = beginBookOpen()) {
     showToast("Processing PDF with native backend engine...");
     
     // Generate the unique ID upfront so we can send it to the backend route
@@ -525,7 +567,8 @@ export async function processPdfBlob(blob, fileName) {
             data.image_map, 
             data.toc_map,
             data.language,
-            data.bookType || "pdf"
+            data.bookType || "pdf",
+            request
         );
 
     } catch (err) { 
@@ -535,7 +578,8 @@ export async function processPdfBlob(blob, fileName) {
 }
 
 export async function flushReadingProgress() {
-    if (!state.currentDoc) return;
+    // Until a book's own place is in (or if it never opened), the indexes are the last book's.
+    if (!state.currentDoc || state.placeDoc !== state.currentDoc) return;
     try {
         const metrics = getProgressMetrics();
         const payload = {
@@ -558,9 +602,27 @@ export async function flushReadingProgress() {
     }
 }
 
-export async function selectDocument(item) {
+// Each open owns the Reader's book state until a newer one replaces it.
+let openBookSeq = 0;
+// The user's open actions, in their order. One can take a while to reach selectDocument (a
+// shelf add, a PDF), and by then a later one may have opened. A later one that never
+// opened takes nothing from it.
+let openRequests = 0, openedRequest = 0;
+export const beginBookOpen = () => ++openRequests;
+
+// False when a later action has already opened a book.
+export async function selectDocument(item, request = beginBookOpen()) {
+    if (request < openedRequest) return false;
+    openedRequest = request;
+    const open = ++openBookSeq;
+    const superseded = () => open !== openBookSeq;
+    // Before loading, so the last book's place is still saved as its own.
+    if (state.isPlaying || state.currentAudioSource || isSyncActive()) stopPlayback();
+    retireSyncSelection();
+    syncState.book = "loading";
     if (state.currentDoc && state.currentDoc.id !== item.id) {
         await flushReadingProgress();
+        if (superseded()) return;
     }
 
     if (!window._hasSyncedSettingsOnOpen) {
@@ -575,6 +637,7 @@ export async function selectDocument(item) {
             }
         } catch (err) {}
         window._hasSyncedSettingsOnOpen = true;
+        if (superseded()) return;
     }
 
     markPeekEpub(item);
@@ -641,19 +704,24 @@ export async function selectDocument(item) {
         textContent.classList.remove("hidden");
     }
 
+    // Set once the content is in: from then on finishOpeningBook alone says ready or failed.
+    let finishing = false;
     try {
         const isNewBook = hasBookPath(item);
         let data = null;
         let peekWaitingOnRam = false;
+        let fullBook = null;
+        setFootnotes(null, null);
 
         if (isNewBook) {
             // --- NEW CODE PIPELINE (Tier 1 peek, then background fill) ---
             try {
                 const meta = await fetchJSON(`/api/books/${item.id}/meta`);
+                if (superseded()) return;
                 if (meta) {
                     state.metadata = meta;
                     state.tocMap = meta.toc_map || [];
-                    state.footnoteMap = meta.footnote_map || {};
+                    setFootnotes(meta.footnotes, meta.spine);
                     markPeekEpub(item);
                     if (meta.source_path && !item.source_path) item.source_path = meta.source_path;
                     if (meta.path && !item.path) item.path = meta.path;
@@ -673,6 +741,7 @@ export async function selectDocument(item) {
 
             try {
                 const chapter = await fetchJSON(`/api/books/${item.id}/chapter/${startIndex}`);
+                if (superseded()) return;
                 const total = chapter.total_chapters || spineLen || 1;
                 const pages = new Array(total).fill("");
                 const idx = (typeof chapter.chapter_index === "number") ? chapter.chapter_index : startIndex;
@@ -682,35 +751,40 @@ export async function selectDocument(item) {
                 data = {
                     pages,
                     toc_map: state.tocMap || [],
-                    footnote_map: state.footnoteMap || {},
                     bookType: "epub",
                     language: state.metadata?.language,
                     smart_start_page: 0,
                     is_peek: true,
                 };
-                fillPeekedBookInBackground(item.id, item);
+                fullBook = fetchJSON(`/api/library/content/${item.id}`).catch((err) => {
+                    console.warn("[Library] Background content fill failed:", err);
+                    return null;
+                });
                 peekWaitingOnRam = true;
             } catch (err) {
                 if (isMissingBookError(err)) throw err;
                 console.warn("[Library] Chapter peek failed, falling back to full content:", err);
                 data = await fetchJSON(`/api/library/content/${item.id}`);
+                if (superseded()) return;
                 state.currentPages = data.pages;
                 state.smartStartPage = data.smart_start_page || 0;
                 if (!state.tocMap || state.tocMap.length === 0) {
                     state.tocMap = data.toc_map || [];
                 }
-                if (!state.footnoteMap || Object.keys(state.footnoteMap).length === 0) {
-                    state.footnoteMap = data.footnote_map || {};
+                if (data.metadata) {
+                    state.metadata = data.metadata;
+                    setFootnotes(data.metadata.footnotes, data.metadata.spine);
                 }
             }
         } else {
             // --- LEGACY CODE PIPELINE (Disk-based unzipped book, no source path) ---
             state.metadata = null;
             data = await fetchJSON(`/api/library/content/${item.id}`);
+            if (superseded()) return;
             state.currentPages = data.pages;
             state.smartStartPage = data.smart_start_page || 0;
             state.tocMap = data.toc_map || [];
-            state.footnoteMap = data.footnote_map || {};
+            setFootnotes(null, null);
         }
 
         resolveBookLanguage(data, item);
@@ -747,7 +821,10 @@ export async function selectDocument(item) {
             }
         }
 
-        state.readingSentences = await getSentencesForPage(state.readingPageIndex);
+        const openingSentences = await getSentencesForPage(state.readingPageIndex);
+        if (superseded()) return;
+        state.readingSentences = openingSentences;
+        state.placeDoc = item;
 
         const docTitle = document.getElementById("docTitle");
         const pageNav = document.getElementById("pageNav");
@@ -787,18 +864,21 @@ export async function selectDocument(item) {
             } catch (e) {}
         }
 
-        await renderPage(); 
+        if (superseded()) return;
+        // Not after renderPage: layout can wait for a frame that a minimized window never paints.
+        finishing = true;
+        void finishOpeningBook(open, item, fullBook);
+        await renderPage();
+        if (superseded()) return;
         renderTOC(); 
         await loadLibrary();
         document.dispatchEvent(new CustomEvent("lr-library-change"));
 
-        const autoCollapse = getRenderState().sidebar_auto_collapse !== "show";
-        const sidebar = document.querySelector(".sidebar");
-        const collapseBtn = document.getElementById("sidebarCollapseBtn");
-        if (autoCollapse && sidebar && collapseBtn && !sidebar.classList.contains("collapsed")) {
-            collapseBtn.click();
-        } 
+        if (getRenderState().sidebar_auto_collapse !== "show") hideSidebarForBook();
     } catch (e) {
+        if (superseded()) return;
+        // A failure in showing the book (the library list, say) doesn't unload it.
+        if (!finishing) syncState.book = "failed";
         console.error("Select document error:", e);
         if (isMissingBookError(e)) {
             showToast("Book missing from path", "warning");
@@ -811,58 +891,81 @@ export async function selectDocument(item) {
     }
 }
 
-function fillPeekedBookInBackground(openedId, item) {
-    fetchJSON(`/api/library/content/${openedId}`).then((full) => {
-        if (!full?.pages?.length) {
+// The saved unit among a page's elements: by its id, else by its index.
+function savedUnitIndex(elements) {
+    const { lastSentenceId: id, lastSentenceIndex: index } = state.currentDoc;
+    if (id) {
+        const found = elements.findIndex(el => (
+            el.getAttribute('id') === id ||
+            el.dataset?.sentenceId === id ||
+            el.getAttribute('data-block-id') === id ||
+            el.closest('p[id^="s_"]')?.getAttribute('id') === id
+        ));
+        if (found !== -1) return found;
+    }
+    if (typeof index !== 'number') return null;
+    return index >= 0 && index < elements.length ? index : 0;
+}
+
+// The one point where an opened book becomes ready. The full book's passes rewrite the
+// peeked chapter's markup (classes, scene breaks), so its sentence list and saved place
+// are taken again from the new pages before anything is published.
+async function finishOpeningBook(open, item, fullBook) {
+    try {
+        const full = fullBook && await fullBook;
+        if (open !== openBookSeq) return;
+        const repaint = full?.pages?.length ? commitFullBook(full, item) : false;
+        if (fullBook && !full?.pages?.length) {
             setRamIndexReady(true);
             indexDocument(state.currentPages || []);
-            return;
         }
-        if (!state.currentDoc || state.currentDoc.id !== openedId) return;
-
-        const oldPages = state.currentPages || [];
-        const viewIdx = state.viewPageIndex;
-        const readingIdx = state.readingPageIndex;
-        const sentenceIdx = state.currentSentenceIndex;
-        const oldLen = oldPages.length;
-
-        let spreadIdxs = [viewIdx];
-        try {
-            if (isHorizontalMode() && wantsSpreadTwoPage()) {
-                spreadIdxs = getActiveSpreadPages(viewIdx);
-            }
-        } catch (e) {}
-        const hadHole = spreadIdxs.some((i) => !oldPages[i]) || !oldPages[viewIdx];
-
-        const oldViewHtml = oldPages[viewIdx];
-        state.currentPages = full.pages;
-        if (Array.isArray(full.toc_map)) state.tocMap = full.toc_map;
-        if (full.footnote_map && typeof full.footnote_map === "object") {
-            state.footnoteMap = full.footnote_map;
+        const sentences = await getSentencesForPage(state.readingPageIndex);
+        if (open !== openBookSeq) return;
+        state.readingSentences = sentences;
+        if (!state.isPlaying && state.readingPageIndex === (item.currentPage || 0)) {
+            const page = getReaderPageContent();
+            const saved = page && savedUnitIndex(page.elements);
+            if (Number.isInteger(saved)) state.currentSentenceIndex = saved;
         }
-        if (full.bookType && item && !item.bookType) item.bookType = full.bookType;
-        resolveBookLanguage(full, item);
-        setRamIndexReady(true);
-        indexDocument(state.currentPages);
-        const newLen = (state.currentPages || []).length;
-        const clampIdx = (idx) => {
-            if (!newLen) return 0;
-            if (!Number.isInteger(idx) || idx < 0) return 0;
-            return Math.min(idx, newLen - 1);
-        };
-        state.viewPageIndex = clampIdx(viewIdx);
-        state.readingPageIndex = clampIdx(readingIdx);
-        state.currentSentenceIndex = sentenceIdx;
-        renderTOC();
-        const newViewHtml = (state.currentPages || [])[state.viewPageIndex];
-        if (hadHole || oldLen !== newLen || oldViewHtml !== newViewHtml) {
-            renderPage();
+        syncState.book = "ready";
+        if (repaint) void renderPage();
+    } catch (err) {
+        if (open !== openBookSeq) return;
+        syncState.book = "failed";
+        console.error("[Library] Could not finish opening the book:", err);
+    }
+}
+
+// Replaces the peeked pages with the full book. True when a page on screen changed.
+function commitFullBook(full, item) {
+    const oldPages = state.currentPages || [];
+    const viewIdx = state.viewPageIndex;
+
+    let spreadIdxs = [viewIdx];
+    try {
+        if (isHorizontalMode() && wantsSpreadTwoPage()) {
+            spreadIdxs = getActiveSpreadPages(viewIdx);
         }
-    }).catch((err) => {
-        console.warn("[Library] Background content fill failed:", err);
-        setRamIndexReady(true);
-        indexDocument(state.currentPages || []);
-    });
+    } catch (e) {}
+
+    state.currentPages = full.pages;
+    if (Array.isArray(full.toc_map)) state.tocMap = full.toc_map;
+    if (full.metadata) {
+        // Empty-page compaction can shift the spine; page indexes follow it.
+        state.metadata = full.metadata;
+        setFootnotes(full.metadata.footnotes, full.metadata.spine);
+    }
+    if (full.bookType && !item.bookType) item.bookType = full.bookType;
+    resolveBookLanguage(full, item);
+    setRamIndexReady(true);
+    indexDocument(state.currentPages);
+    const last = full.pages.length - 1;
+    const clampIdx = (idx) => (Number.isInteger(idx) && idx >= 0 ? Math.min(idx, last) : 0);
+    state.viewPageIndex = clampIdx(viewIdx);
+    state.readingPageIndex = clampIdx(state.readingPageIndex);
+    renderTOC();
+    return oldPages.length !== full.pages.length ||
+        spreadIdxs.some((idx) => !oldPages[idx] || oldPages[idx] !== full.pages[idx]);
 }
 
 function resolveBookLanguage(data, item) {
@@ -911,9 +1014,10 @@ function preferTocCameraElement(el) {
     if (/^H[1-6]$/i.test(el.tagName)) return el;
     const parentHeading = el.closest("h1, h2, h3, h4, h5, h6");
     if (parentHeading) return parentHeading;
-    if (el.matches("n, s, img.epub-image")) return el;
+    if (el.matches("s, img.epub-image")) return el;
     const nestedHeading = el.querySelector("h1, h2, h3, h4, h5, h6");
     if (nestedHeading) return nestedHeading;
+    if (el.matches("n")) return el;
     const nestedBlock = el.querySelector("n[data-block-id], n");
     if (nestedBlock) return nestedBlock;
     return el;
@@ -1238,11 +1342,14 @@ function injectParagraphSentences(root) {
     const blocks = Array.from(root.querySelectorAll('[id^="s_"]:not(h1, h2, h3, h4, h5, h6), [data-sentence-id]:not(h1, h2, h3, h4, h5, h6)'));
 
     blocks.forEach(paragraph => {
-        if (paragraph.matches("s, img")) return;
+        // An <n> is already one sentence; splitting it again would nest it.
+        if (paragraph.matches("s, img, n")) return;
         if (paragraph.id && !paragraph.dataset.sentenceId) {
             paragraph.dataset.sentenceId = paragraph.id;
         }
         if (paragraph.querySelector('n')) return;
+        // A wrapper (chapter <section id="s_...">) yields to the units inside it.
+        if (paragraph.querySelector('[id^="s_"], [data-sentence-id]')) return;
         if (paragraph.querySelector('img, svg, picture, figure, s')) return;
 
         try {
@@ -1316,9 +1423,13 @@ function collectReaderElements(root) {
             // Filter out nested reader elements:
             // An element inside another reader element should only be kept if it is an <n> or <s>
             // inside a block that was split into sentences.
-            const parentReader = element.parentElement
-                ? element.parentElement.closest('s, n, h1, h2, h3, h4, h5, h6, [id^="s_"], [data-sentence-id]')
-                : null;
+            const nesting = 's, n, h1, h2, h3, h4, h5, h6, [id^="s_"], [data-sentence-id]';
+            let parentReader = element.parentElement ? element.parentElement.closest(nesting) : null;
+            // A wrapper that yielded to its units (above) is not a nesting parent.
+            while (parentReader && !parentReader.matches('s, h1, h2, h3, h4, h5, h6') &&
+                parentReader.querySelector('[id^="s_"]:not(img), [data-sentence-id]:not(img)')) {
+                parentReader = parentReader.parentElement ? parentReader.parentElement.closest(nesting) : null;
+            }
             if (parentReader) {
                 if ((tag === 'n' || tag === 's') && parentReader.querySelector(tag)) {
                     return !element.parentElement.closest('s, n, h1, h2, h3, h4, h5, h6');
@@ -1366,7 +1477,7 @@ function readerElementToTtsValue(element) {
         img.remove();
     });
 
-    clone.querySelectorAll('a[epub\\:type="noteref"], a[href*="#R_"], .epub-noteref').forEach(ref => {
+    clone.querySelectorAll('a[epub\\:type~="noteref"], a[href*="#R_"], .epub-noteref').forEach(ref => {
         const parentText = ref.parentElement ? ref.parentElement.textContent.trim() : "";
         const refText = ref.textContent.trim();
         const nextText = ref.nextSibling && ref.nextSibling.nodeType === 3
@@ -1467,12 +1578,32 @@ export async function getReaderSpeechPage(pageIndex, { requireLoaded = false } =
 }
 
 export function readerUnitKind(element) {
-    if (/^H[1-6]$/.test(element.tagName)) return "heading";
     if (element.tagName.toLowerCase() === "s") return "scene";
     const clone = element.cloneNode(true);
     clone.querySelectorAll("rt, rp").forEach(node => node.remove());
+    // A picture-only heading (<h1><img></h1>) is an image unit: Img delay, no
+    // speech. Its TTS value is already the picture (readerElementToTtsValue).
     if (!clone.textContent.trim() && (clone.matches("img") || clone.querySelector("img, svg, picture"))) return "image";
+    if (/^H[1-6]$/.test(element.tagName)) return "heading";
     return "text";
+}
+
+// Small pictures inside running text (drop caps, symbols, icons) stay part of the text;
+// Book typing already leaves them out. Same rule as FalcoType's book-renderer.js.
+function isInlinePicture(picture, unit) {
+    const alt = (picture.getAttribute("alt") || "").trim();
+    const size = Math.max(Number(picture.getAttribute("width")) || 0, Number(picture.getAttribute("height")) || 0);
+    if (alt.length === 1 || (size > 0 && size < 100) || /drop|inline|initial|glyph|icon/i.test(picture.getAttribute("class") || "")) return true;
+    const before = document.createRange();
+    before.setStart(unit, 0); before.setEndBefore(picture);
+    return !!before.toString().trim();
+}
+
+// A text unit opened by a full-size picture: the EPUB's image + caption block.
+export function isReaderFigure(element) {
+    if (readerUnitKind(element) !== "text") return false;
+    const picture = element.querySelector("img, svg, picture");
+    return !!picture && !isInlinePicture(picture, element);
 }
 
 // Match Book's removal of invisible formatting and reader pause markers. This
@@ -1504,27 +1635,13 @@ export function getCurrentReaderElement() {
 }
 
 export function getSyncPageContent() {
+    if (syncState.book !== "ready") return null;
     const page = getReaderPageContent();
     if (!page || page.elements.length !== state.readingSentences?.length || !getCurrentReaderElement()) return null;
     if (!page.payload) page.payload = { book_id: String(page.bookId), page_index: page.pageIndex, page_revision: page.revision,
-        html: page.root.innerHTML, units: page.elements.map((element, index) => ({ index, kind: readerUnitKind(element) })),
+        html: page.root.innerHTML, units: page.elements.map((element, index) => ({ index, kind: readerUnitKind(element), figure: isReaderFigure(element) })),
         chapters: readerChapterScopes(page.elements, page.pageIndex) };
     return page.payload;
-}
-
-export function getCurrentSentenceContent() {
-    const pageIndex = state.readingPageIndex;
-    const index = state.currentSentenceIndex;
-    const sentence = state.readingSentences?.[index];
-    const markup = state.currentPages?.[pageIndex];
-    if (!state.currentDoc?.id || !Number.isInteger(index) || index < 0 || typeof sentence !== "string" || !markup) return null;
-    const page = getReaderPageContent();
-    const element = page?.elements[index];
-    if (!element) return page?.elements.length ? null : sentence;
-    // During a page change the reading sentence array may still belong to the old page.
-    if (readerElementToTtsValue(element) !== sentence) return null;
-    if (element.tagName.toLowerCase() === "n") return `<p>${element.innerHTML}</p>`;
-    return element.outerHTML;
 }
 
 export async function getSentencesForPage(pageIndex, { requireLoaded = false } = {}) {
@@ -1573,13 +1690,137 @@ export async function getSentencesForPage(pageIndex, { requireLoaded = false } =
 
 
 
-export async function renderPage() {
+// Vertical focus camera: 20%/20% focus zone for auto-scroll, user-scroll focus loss/regain.
+export const FOCUS_TOP = 0.20;
+export const FOCUS_BOTTOM = 0.20;
+
+const USER_INTENT_MS = 700;
+// Keys that natively scroll the reader. PageUp/PageDown turn pages and Space plays
+// (shortcuts.js); counting them made a page turn's own scroll look like the user's.
+const NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End"]);
+
+let userIntentUntil = 0;
+let checkQueued = false;
+
+export function getReaderScroller() {
+  return document.querySelector(".content-area");
+}
+
+function focusZone(scroller) {
+  const rect = scroller.getBoundingClientRect();
+  return {
+    rect,
+    top: rect.top + rect.height * FOCUS_TOP,
+    bottom: rect.bottom - rect.height * FOCUS_BOTTOM,
+  };
+}
+
+// Loose test used for user scrolls: any part of the block still in the zone.
+export function isInFocusZone(el, scroller = getReaderScroller()) {
+  if (!el || !scroller) return false;
+  const r = el.getBoundingClientRect();
+  const z = focusZone(scroller);
+  return r.bottom > z.top && r.top < z.bottom;
+}
+
+// Strict test used for auto-scroll: block fully inside the zone, or (for
+// blocks taller than the zone) its top is at/above the zone top and it still
+// covers the zone.
+function sitsInFocusZone(r, z) {
+  const zoneH = z.bottom - z.top;
+  if (r.height <= zoneH) return r.top >= z.top && r.bottom <= z.bottom;
+  return r.top >= z.rect.top && r.top <= z.top + 1 && r.bottom >= z.bottom;
+}
+
+export function keepInFocus(el, { behavior = "smooth", force = false } = {}) {
+  const scroller = getReaderScroller();
+  if (!el || !scroller) return false;
+  const r = el.getBoundingClientRect();
+  if (r.height === 0 && r.width === 0) return false; // not laid out yet
+  const z = focusZone(scroller);
+  if (!force && sitsInFocusZone(r, z)) return false;
+
+  const zoneOffset = z.top - z.rect.top;
+  const elTop = r.top - z.rect.top + scroller.scrollTop;
+  const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  const target = Math.min(maxScroll, Math.max(0, elTop - zoneOffset));
+  if (Math.abs(target - scroller.scrollTop) < 2) return false;
+  scroller.scrollTo({ top: target, behavior });
+  return true;
+}
+
+function activeSentenceEl() {
+  return document.querySelector("#textContent .active-sentence");
+}
+
+function checkUserFocus() {
+  checkQueued = false;
+  if (window.isJumpingCamera || isHorizontalMode()) return;
+  if (state.viewPageIndex !== state.readingPageIndex) return;
+
+  const active = activeSentenceEl();
+  if (!active) return;
+  const inZone = isInFocusZone(active);
+
+  // Regain needs no "lost by scroll" flag: a wheel flip off the page (sentence near
+  // the page edge) drops focus with no scroll at all, and must still regain on return.
+  if (state.autoScrollEnabled && !inZone) {
+    state.autoScrollEnabled = false;
+    syncBackToReadingButton();
+  } else if (!state.autoScrollEnabled && inZone) {
+    state.autoScrollEnabled = true;
+    syncBackToReadingButton();
+  }
+}
+
+// The user moved the view without a scroll event we count (wheel page flip):
+// check focus once the new page has its scroll position.
+export function checkFocusAfterUserMove() {
+  if (checkQueued) return;
+  checkQueued = true;
+  requestAnimationFrame(checkUserFocus);
+}
+
+function markUserIntent() {
+  userIntentUntil = performance.now() + USER_INTENT_MS;
+}
+
+export function initFocusTracking() {
+  const scroller = getReaderScroller();
+  if (!scroller) return;
+
+  scroller.addEventListener("wheel", markUserIntent, { passive: true });
+  scroller.addEventListener("touchmove", markUserIntent, { passive: true });
+  // Scrollbar drag: mousedown lands on the scroller itself, right of its content box.
+  scroller.addEventListener("mousedown", (e) => {
+    if (e.target === scroller && e.offsetX >= scroller.clientWidth) markUserIntent();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (!NAV_KEYS.has(e.key)) return;
+    const t = e.target;
+    if (e.altKey || e.ctrlKey || e.metaKey) return; // Alt+Home etc. are app shortcuts
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    markUserIntent();
+  });
+
+  scroller.addEventListener("scroll", () => {
+    if (performance.now() > userIntentUntil || checkQueued) return;
+    checkQueued = true;
+    requestAnimationFrame(checkUserFocus);
+  }, { passive: true });
+}
+
+// waitForLayout false resolves once the page's content is in, before it is laid out.
+export async function renderPage({ waitForLayout = true } = {}) {
     const textContent = document.getElementById("textContent");
     const scrollContainer = document.querySelector(".content-area");
     const currentSentencePreview = document.getElementById("currentSentencePreview");
     const backToReadingBtn = document.getElementById("backToReadingBtn");
     const seq = ++_renderPageSeq;
     const pageIdx = state.viewPageIndex;
+    // A page swap moves the view itself (scrollTop reset, camera snap, images growing);
+    // none of that is the user scrolling away from the reading sentence.
+    userIntentUntil = 0;
 
     if (!state.currentPages) {
         if (textContent) textContent.innerHTML = '<div class="text-zinc-500 p-4">Error: Page not found</div>';
@@ -1629,6 +1870,8 @@ export async function renderPage() {
         }
 
         textContent.innerHTML = contentMarkup;
+        // Saved markup can carry old highlight classes; only current units get them back.
+        textContent.querySelectorAll(".sentence, .active-sentence").forEach(el => el.classList.remove("sentence", "active-sentence"));
         injectParagraphSentences(textContent);
         const readerElements = collectReaderElements(textContent);
 
@@ -1636,24 +1879,8 @@ export async function renderPage() {
             state.sentenceElements = readerElements;
             
             if (isReadingCurrentPage && state.currentDoc && isOnSavedPage) {
-                let positionFound = false;
-                if (state.currentDoc.lastSentenceId) {
-                    const structuralIdIndex = state.sentenceElements.findIndex(el => (
-                        el.getAttribute('id') === state.currentDoc.lastSentenceId ||
-                        el.dataset?.sentenceId === state.currentDoc.lastSentenceId ||
-                        el.getAttribute('data-block-id') === state.currentDoc.lastSentenceId ||
-                        el.closest('p[id^="s_"]')?.getAttribute('id') === state.currentDoc.lastSentenceId
-                    ));
-                    if (structuralIdIndex !== -1) {
-                        state.currentSentenceIndex = structuralIdIndex;
-                        positionFound = true;
-                    }
-                }
-                if (!positionFound && typeof state.currentDoc.lastSentenceIndex === 'number') {
-                    if (state.currentDoc.lastSentenceIndex >= 0 && state.currentDoc.lastSentenceIndex < state.sentenceElements.length) {
-                        state.currentSentenceIndex = state.currentDoc.lastSentenceIndex;
-                    } else state.currentSentenceIndex = 0; 
-                }
+                const saved = savedUnitIndex(state.sentenceElements);
+                if (saved !== null) state.currentSentenceIndex = saved;
             }
 
             clearActiveSentenceHighlights();
@@ -1669,7 +1896,7 @@ export async function renderPage() {
                         e.target.classList.contains('epub-image') &&
                         !e.target.closest('s');
                     const triggerJump = () => {
-                        if (isSyncActive()) {
+                        if (syncState.managed || isSyncActive()) {
                             const pageIndex = Number(tag.closest("[data-page-index]")?.dataset.pageIndex ?? state.viewPageIndex);
                             const pageElements = state.sentenceElements.filter(element =>
                                 Number(element.closest("[data-page-index]")?.dataset.pageIndex ?? state.viewPageIndex) === pageIndex);
@@ -1715,7 +1942,7 @@ export async function renderPage() {
                     e.stopPropagation();
                     const isImg = e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'img' && e.target.classList.contains('epub-image') && !e.target.closest('s');
                     const triggerJump = () => {
-                        if (isSyncActive()) {
+                        if (syncState.managed || isSyncActive()) {
                             window.dispatchEvent(new CustomEvent("jump-to-sentence", {
                                 detail: { page_index: state.viewPageIndex, sentence_index: i },
                             }));
@@ -1746,14 +1973,17 @@ export async function renderPage() {
 
     if (isHorizontalMode()) {
         const shouldResetSpread = !isReadingCurrentPage || !state.autoScrollEnabled;
-        await layoutSpreads({ reset: shouldResetSpread });
-        const activeEl = document.querySelector("#textContent .active-sentence");
-        if (activeEl && isReadingCurrentPage && state.autoScrollEnabled) {
-            revealInSpread(activeEl);
-        }
-        if (typeof updateActiveTOC === "function") updateActiveTOC();
-        updateProgressDisplay();
-        updateHorizontalSpreadFocus();
+        const laidOut = layoutSpreads({ reset: shouldResetSpread }).then(() => {
+            if (seq !== _renderPageSeq) return;
+            const activeEl = document.querySelector("#textContent .active-sentence");
+            if (activeEl && isReadingCurrentPage && state.autoScrollEnabled) {
+                revealInSpread(activeEl);
+            }
+            if (typeof updateActiveTOC === "function") updateActiveTOC();
+            updateProgressDisplay();
+            updateHorizontalSpreadFocus();
+        });
+        if (waitForLayout) await laidOut;
     } else if (scrollContainer) {
         // 🌟 FIX: THE BULLETPROOF MATHEMATICAL FOCUS CAMERA
         if (!isReadingCurrentPage) {
@@ -1761,22 +1991,19 @@ export async function renderPage() {
         } 
         else if (state.autoScrollEnabled) {
             requestAnimationFrame(() => {
-                const alignCam = () => {
+                // Snap to the focus zone top on render; the image re-check only moves if layout pushed it out.
+                const alignCam = (force) => {
                     if (!state.autoScrollEnabled) return false;
                     const activeEl = document.querySelector('#textContent .active-sentence');
                     if (activeEl) {
-                        const elRect = activeEl.getBoundingClientRect();
-                        const containerRect = scrollContainer.getBoundingClientRect();
-                        const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
-                        const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
-                        scrollContainer.scrollTop = Math.max(0, centerPosition);
+                        keepInFocus(activeEl, { behavior: "auto", force });
                         return activeEl.tagName && (activeEl.tagName.toLowerCase() === 'img' || activeEl.querySelector('img, svg')) && activeEl.tagName.toLowerCase() !== 's';
                     }
                     return false;
                 };
-                
+
                 setTimeout(() => {
-                    const isImg = alignCam();
+                    const isImg = alignCam(true);
                     updateProgressDisplay();
                     if (isImg) {
                         // Strike 2: Only re-lock if it's an image transitioning size
@@ -1894,13 +2121,7 @@ export async function renderPage() {
             const camScroll = document.querySelector(".content-area");
             if (camScroll && state.autoScrollEnabled && state.viewPageIndex === state.readingPageIndex) {
                 const activeEl = document.querySelector('#textContent .active-sentence');
-                if (activeEl) {
-                    const elRect = activeEl.getBoundingClientRect();
-                    const containerRect = camScroll.getBoundingClientRect();
-                    const relativeTop = elRect.top - containerRect.top + camScroll.scrollTop;
-                    const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
-                    camScroll.scrollTop = Math.max(0, centerPosition);
-                }
+                if (activeEl) keepInFocus(activeEl, { behavior: "auto" });
             }
             updateProgressDisplay();
             if (typeof updateActiveTOC === "function") updateActiveTOC();
@@ -1993,14 +2214,16 @@ export async function renderPage() {
    if (state.currentSearchQuery && typeof highlightSearchTerm === "function") highlightSearchTerm(state.currentSearchQuery, state.searchMatchCase, state.searchWholeWord);
     
     const footnoteElements = textContent.querySelectorAll(
-        'a[epub\\:type="noteref"], a[epub\\:type="footnote"], a[epub\\:type="backlink"], a[href*="#R_"], a[id*="R_"], .epub-noteref, .epub-footnote, p[epub\\:type="footnote"], div[epub\\:type="footnote"], aside[epub\\:type="footnote"], li[epub\\:type="footnote"], sup a[href*="#"], a.reference, .reference a'
+        'a[epub\\:type~="noteref"], a[role~="doc-noteref"], a[epub\\:type~="backlink"], a[role~="doc-backlink"], [epub\\:type~="footnote"], [epub\\:type~="endnote"], [role~="doc-footnote"], [role~="doc-endnote"], a.epub-noteref, a.epub-backlink, .epub-footnote'
     );
 
     footnoteElements.forEach(ref => {
         const href = ref.getAttribute('href') || '';
         const id = ref.getAttribute('id') || '';
         const epubType = (ref.getAttribute('epub:type') || '').toLowerCase();
-        const isDefinition = epubType === 'footnote' || epubType === 'backlink' || id.startsWith('R_') || ref.classList.contains('epub-footnote');
+        const types = new Set(epubType.split(/\s+/).filter(Boolean));
+        const roles = new Set((ref.getAttribute('role') || '').split(/\s+/).filter(Boolean));
+        const isDefinition = !types.has('noteref') && !roles.has('doc-noteref') && (types.has('footnote') || types.has('endnote') || types.has('backlink') || roles.has('doc-footnote') || roles.has('doc-endnote') || roles.has('doc-backlink') || ref.classList.contains('epub-footnote'));
 
         if (!isDefinition) {
             // --- 1. CALLOUT / IN-TEXT NOTE (POPUP TRIGGER) ---
@@ -2056,9 +2279,13 @@ export async function renderPage() {
                 let foundSelector = "";
 
                 if (peeked) {
-                    const rec = lookupFootnoteMap(cleanId, href, "") || lookupFootnoteMap(cleanHref, href, "");
-                    const calloutPage = Number.isInteger(rec?.callout_page_index) ? rec.callout_page_index : -1;
-                    const calloutId = rec?.callout_id || cleanHref;
+                    const note = lookupFootnote(cleanId, href, "") || lookupFootnote(cleanHref, href, "");
+                    const destination = footnoteLinkTarget(href);
+                    const spine = state.metadata?.spine || [];
+                    const refs = note?.refs || [];
+                    const explicit = refs.find(([page, id]) => id === destination?.anchor && spine[page] === destination?.file);
+                    const [calloutPage, calloutRef] = explicit || refs[0] || [-1, ""];
+                    const calloutId = calloutRef || cleanHref;
                     if (calloutPage >= 0) {
                         await ensurePeekedPage(calloutPage);
                         targetPageIdx = calloutPage;
@@ -2113,12 +2340,11 @@ export async function renderPage() {
                     await renderPage();
 
                     setTimeout(() => {
-                        const targetEl = document.querySelector(foundSelector);
+                        const targetEl = document.getElementById("textContent")?.querySelector(foundSelector);
                         if (targetEl) {
                             const scrollTarget = targetEl.closest('.sentence') || targetEl;
                             scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            scrollTarget.classList.add('bg-blue-600/40', 'rounded', 'px-1', 'transition-colors', 'duration-500');
-                            setTimeout(() => scrollTarget.classList.remove('bg-blue-600/40', 'px-1'), 1500);
+                            flashFootnoteTarget(scrollTarget);
                         }
                     }, 100);
                 } else {

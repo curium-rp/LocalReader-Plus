@@ -23,7 +23,6 @@ Exposes:
    - DELETE /api/library/{doc_id}
 """
 
-import os
 import json
 import time
 import mimetypes
@@ -48,6 +47,7 @@ from ..logic.memories import (
     synthesize_full_content,
     memory_manager,
     meta_maps_need_rebuild,
+    public_book_meta,
     resolve_image_map_entry,
     load_book_info,
     get_peek_source_path,
@@ -99,14 +99,17 @@ def get_book_source_path(doc_id: str) -> Optional[str]:
     External EPUB path for peek books, or None for legacy unzip/PDF.
     Peek path lives in userdata/library/<id>/info.json (catalog rows are id+name only).
     """
-    peek_path = get_peek_source_path(doc_id)
-    if peek_path:
-        return peek_path
-    return None
+    session = memory_manager.get_session(doc_id)
+    meta = (session or {}).get("meta") or {}
+    return meta.get("source_path") or meta.get("path") or get_peek_source_path(doc_id)
 
 
 def get_or_create_meta(doc_id: str) -> Optional[Dict[str, Any]]:
-    """Load userdata/library/<id>/info.json, or build it from the EPUB on first open."""
+    """Session meta from RAM; else load info.json, or build it from the EPUB on first open."""
+    session = memory_manager.get_session(doc_id)
+    if session and session.get("meta") and not source_epub_was_replaced(session["meta"]):
+        return session["meta"]
+
     book_path = get_book_source_path(doc_id)
     meta = load_book_info(doc_id)
 
@@ -150,7 +153,7 @@ def get_book_metadata(doc_id: str):
     meta = get_or_create_meta(doc_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Book metadata not found")
-    return meta
+    return public_book_meta(meta)
 
 
 @router.get("/api/books/{doc_id}/chapter/{index}")

@@ -10,7 +10,9 @@ function applyModelPolicy(status) {
     const wasLocked = modelManagementLocked;
     modelManagementLocked = embeddedReader || status.submodule_mode === true ||
         status.models_read_only === true || status.downloads_allowed === false;
-    for (const id of ['modelManagerBtn', 'openModelManagerFromDrawerBtn', 'setupBtn', 'engineMode']) {
+    // The drawer's Manage button always opens the manager: a locked catalogue
+    // is shown read-only there, and language packages are managed from it.
+    for (const id of ['modelManagerBtn', 'setupBtn', 'engineMode']) {
         const control = document.getElementById(id);
         if (control) control.disabled = modelManagementLocked;
     }
@@ -18,11 +20,6 @@ function applyModelPolicy(status) {
     if (managerButton) {
         managerButton.hidden = modelManagementLocked;
         managerButton.style.display = modelManagementLocked ? 'none' : '';
-    }
-    const drawerButton = document.getElementById('openModelManagerFromDrawerBtn');
-    if (drawerButton) {
-        drawerButton.hidden = modelManagementLocked;
-        drawerButton.style.display = modelManagementLocked ? 'none' : '';
     }
     if (modelManagementLocked) {
         for (const id of ['engineStatusPopup', 'kokoroDownloadPopup']) {
@@ -238,7 +235,6 @@ function stopModelManagerPoll() {
 }
 
 export async function openModelManagerModal() {
-    if (modelManagementLocked) return;
     const modal = document.getElementById('modelManagerModal');
     if (!modal) return;
     modal.classList.remove('hidden');

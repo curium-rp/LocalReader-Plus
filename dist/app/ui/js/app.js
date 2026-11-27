@@ -7,7 +7,6 @@ import {
   switchTab,
   renderRules,
   renderIgnoreList,
-  highlightSearchTerm,
   updateTranslations,
   toggleSettingsDrawer,
   closeAllDrawers,
@@ -16,12 +15,12 @@ import {
 import {
   updateEngineStatusUI,
   openModelManagerModal,
-  closeModelManagerModal,
-  initDownloader,
 } from "./modules/downloader.js";
+import "./modules/language-packs.js";
 import {
   loadLibrary,
   selectDocument,
+  beginBookOpen,
   renderPage,
   processPdfBlob,
   getSentencesForPage,
@@ -31,9 +30,7 @@ import {
   loadVoices,
   togglePlayback,
   stopPlayback,
-  playNext,
   jumpToSentence,
-  initAudioContext,
   saveProgress,
 } from "./modules/tts.js";
 import {
@@ -49,25 +46,26 @@ import { initThemeSystem } from "./modules/themes.js";
 import { initTopBar } from "./modules/topbar.js";
 import { initProgress, jumpToDisplayedPage, updateProgressDisplay } from "./modules/progress.js";
 import { initResizeBorders } from "./modules/resize.js";
-import { initTypography, getRenderState, closeTypoMenu, applyReaderTypography } from "./modules/typography.js";
-import { initLayoutHooks, requestGeometrySync } from "./modules/reader-layout.js";
-import { mountFilesUI, openFilesUI } from "./modules/files_UI.js";
+import { initTypography, getRenderState, applyReaderTypography } from "./modules/typography.js";
+import { initLayoutHooks } from "./modules/reader-layout.js";
+import { mountFilesUI } from "./modules/files_UI.js";
 import { mountHistoryUI } from "./modules/history.js";
 import {
   isHorizontalMode,
   revealInSpread,
   setHorizontalPageTurn,
-  layoutSpreads,
-  getSpreadIndex,
   getNextSpreadPageIndex,
   getPrevSpreadPageIndex,
 } from "./modules/horizontal.js";
 import { initShortcuts } from "./shortcuts.js";
+import { initFocusTracking, keepInFocus, checkFocusAfterUserMove } from "./modules/library.js";
 import { initSearch, closeSearchMode, handleSearchPopupKeys } from "./search.js";
 import { initVoiceBlending } from "./modules/blending.js";
 import { initFalcoTypeBridge } from "./falco_api/falcotype-bridge.js";
-import { isSyncActive } from "./falco_api/falcotype-sync-state.js";
-import { selectSyncPosition, advanceSync, selectPreviousSync } from "./falco_api/falcotype-sync.js";
+import { initSidebar, closeSidebarMiniPopups, toggleSidebarMiniPopup } from "./modules/sidebar.js";
+import { showUpdateNotice } from "./modules/update-notice.js";
+import { isSyncActive, syncState } from "./falco_api/falcotype-sync-state.js";
+import { selectSyncPosition, advanceSync, selectPreviousSync, selectNextPosition } from "./falco_api/falcotype-sync.js";
 
 window.state = state;
 
@@ -210,6 +208,7 @@ async function init() {
 
   initTimer();
   initToast();
+  void showUpdateNotice();
   await initWakeLock();
   
   let imgViewer = document.getElementById("imageViewerModal");
@@ -246,12 +245,8 @@ document.addEventListener("DOMContentLoaded", () => {
               if (typeof updateActiveTOC === "function") updateActiveTOC();
               return;
             }
-            const elRect = activeEl.getBoundingClientRect();
-            const containerRect = scrollContainer.getBoundingClientRect();
-            const relativeTop = elRect.top - containerRect.top + scrollContainer.scrollTop;
-            const centerPosition = relativeTop - (containerRect.height / 2) + (elRect.height / 2);
-            scrollContainer.scrollTop = Math.max(0, centerPosition);
-            
+            // Layout just shifted under the reader: correct instantly, and only if needed.
+            keepInFocus(activeEl, { behavior: "auto" });
             if (typeof updateActiveTOC === 'function') updateActiveTOC();
           });
         }
@@ -274,11 +269,6 @@ document.addEventListener("dblclick", (e) => {
 
 let mouseHideTimeout = null;
 window.isJumpingCamera = false;
-
-function isManualPlaybarHidden() {
-  const controls = document.getElementById("controls");
-  return state.playerHideMode === "manual" && controls && controls.classList.contains("minimized");
-}
 
 function isSettingsDrawerOpen() {
   return !!document.querySelector(".voice-settings-drawer.open");
@@ -436,7 +426,7 @@ if (hiddenModeBtn) hiddenModeBtn.onclick = performSafeJump;
 
 // --- NAVIGATION & KEYBOARD LOGIC ---
 document.getElementById("skipBack").onclick = async () => {
-  if (isSyncActive()) {
+  if (syncState.managed || isSyncActive()) {
     try { await selectPreviousSync(); } catch (error) { showToast(error.message); }
     return;
   }
@@ -462,8 +452,8 @@ document.getElementById("skipBack").onclick = async () => {
 };
 
 document.getElementById("skipForward").onclick = async () => {
-  if (isSyncActive()) {
-    try { await advanceSync(); } catch (error) { showToast(error.message); }
+  if (syncState.managed || isSyncActive()) {
+    try { await (isSyncActive() ? advanceSync() : selectNextPosition()); } catch (error) { showToast(error.message); }
     return;
   }
   if (state.currentSentenceIndex < state.readingSentences.length - 1) {
@@ -543,6 +533,7 @@ document.getElementById("pageInput").onchange = async (e) => {
 };
 
 // --- THE SMART SCROLL TRACKER ---
+initFocusTracking();
 let isAutoFlipping = false;
 let tocScrollTimer = null;
 const appScroller = document.querySelector(".content-area");
@@ -587,12 +578,7 @@ if (appScroller) {
       if (isHorizontalMode()) return;
       if (isAutoFlipping) return;
       const metrics = readerScrollMetrics();
-
-      // When the user breaks auto-scroll, spawn the correct button
-      if (state.autoScrollEnabled) {
-        state.autoScrollEnabled = false;
-        syncBackToReadingButton();
-      }
+      // Focus loss/regain on scroll is decided by the focus camera in library.js, not per wheel tick.
 
       // Short page with unloaded mixed images: wait for layout, don't skip HTML pages.
       if (!metrics.canScroll && pageImagesStillExpanding()) return;
@@ -602,6 +588,7 @@ if (appScroller) {
         state.viewPageIndex++;
         await renderPage();
         readerScrollMetrics().scroller.scrollTop = 0;
+        checkFocusAfterUserMove();
         setTimeout(() => { isAutoFlipping = false; }, 700);
       } else if (e.deltaY < 0 && metrics.top && state.viewPageIndex > 0) {
         isAutoFlipping = true;
@@ -609,6 +596,7 @@ if (appScroller) {
         await renderPage();
         const after = readerScrollMetrics();
         after.scroller.scrollTop = after.scroller.scrollHeight;
+        checkFocusAfterUserMove();
         setTimeout(() => { isAutoFlipping = false; }, 700);
       }
     },
@@ -616,7 +604,9 @@ if (appScroller) {
   );
 }
 // --- NATIVE OLE DROP HANDLERS (native_shell.dll) ---
-window.__lrOnNativeEpubDrop = async function(book) {
+// A native open takes its place in line before its shelf add, and passes it back here.
+window.__lrBeginBookOpen = () => beginBookOpen();
+window.__lrOnNativeEpubDrop = async function(book, request = beginBookOpen()) {
   try {
     const dropOverlay = document.getElementById("dropOverlay");
     if (dropOverlay) dropOverlay.classList.add("hidden");
@@ -627,7 +617,7 @@ window.__lrOnNativeEpubDrop = async function(book) {
     showToast("Opening " + (book.title || book.fileName || "book") + "...", "info", 1200);
     await loadLibrary();
     document.dispatchEvent(new CustomEvent("lr-library-change"));
-    await selectDocument(book);
+    if (await selectDocument(book, request) === false) return;
     showToast("Book opened", "success", 1200);
   } catch (err) {
     console.error("[NATIVE DROP] Failed to open EPUB:", err);
@@ -636,6 +626,7 @@ window.__lrOnNativeEpubDrop = async function(book) {
 };
 
 window.__lrOnNativePdfDrop = async function(filePath) {
+  const request = beginBookOpen();
   try {
     const dropOverlay = document.getElementById("dropOverlay");
     if (dropOverlay) dropOverlay.classList.add("hidden");
@@ -648,7 +639,7 @@ window.__lrOnNativePdfDrop = async function(filePath) {
     const res = await fetch(`/api/explorer/read-file?path=${encodeURIComponent(filePath)}`);
     if (!res.ok) throw new Error("Could not read dropped PDF from disk");
     const blob = await res.blob();
-    processPdfBlob(blob, fileName);
+    processPdfBlob(blob, fileName, request);
   } catch (err) {
     console.error("[NATIVE DROP] Failed to process PDF:", err);
     showToast("Failed to process PDF: " + err.message, "error");
@@ -987,52 +978,7 @@ document.getElementById("closeBehaviorDrawerBtn").onclick = () => toggleSettings
 
 document.getElementById("drawerOverlay").onclick = () => closeAllDrawers();
 
-const sidebar = document.querySelector(".sidebar");
-
-const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
-if (sidebarCollapseBtn && sidebar) {
-  let pendingSpreadIndex = null;
-  let sidebarAnimTimer = null;
-  const updateSidebarVar = (collapsed) => {
-    document.documentElement.style.setProperty(
-      "--sidebar-width",
-      collapsed ? "0px" : sidebar.style.width || "320px",
-    );
-  };
-  const finishSidebarAnim = () => {
-    if (!sidebar.classList.contains("animating")) return;
-    clearTimeout(sidebarAnimTimer);
-    sidebar.classList.remove("animating");
-    applyReaderTypography();
-    const k = pendingSpreadIndex;
-    pendingSpreadIndex = null;
-    void layoutSpreads({ spreadIndex: k });
-  };
-  const beginSidebarWidthAnim = () => {
-    pendingSpreadIndex = getSpreadIndex();
-    sidebar.classList.add("animating");
-    clearTimeout(sidebarAnimTimer);
-    sidebarAnimTimer = setTimeout(finishSidebarAnim, 350);
-  };
-  sidebar.addEventListener("transitionend", (e) => {
-    if (e.target !== sidebar) return;
-    if (e.propertyName !== "width") return;
-    applyReaderTypography();
-    requestGeometrySync();
-    finishSidebarAnim();
-  });
-  sidebarCollapseBtn.onclick = () => {
-    const collapsing = !sidebar.classList.contains("collapsed");
-    closeSidebarMiniPopups();
-    beginSidebarWidthAnim();
-    sidebar.classList.toggle("collapsed", collapsing);
-    updateSidebarVar(collapsing);
-    syncEmptyStateCompact();
-    applyReaderTypography();
-    requestGeometrySync();
-    if (collapsing) closeTypoMenu();
-  };
-}
+initSidebar({ onToggle: () => syncEmptyStateCompact() });
 
 export function syncEmptyStateCompact() {
   const w = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -1097,12 +1043,6 @@ document.body.addEventListener("drop", async (e) => {
   processPdfBlob(file, file.name);
 });
 
-function closeSidebarMiniPopups() {
-  document.getElementById("languagePopup")?.classList.add("hidden");
-  document.getElementById("engineStatusPopup")?.classList.add("hidden");
-  document.getElementById("kokoroDownloadPopup")?.classList.add("hidden");
-}
-
 function syncLanguageChip(lang) {
   const langToggle = document.getElementById("languageToggle");
   if (langToggle) langToggle.textContent = (lang || "en").toUpperCase();
@@ -1127,13 +1067,6 @@ async function applyUiLanguage(next) {
   saveSettings();
   loadVoices();
   showToast(`Language set to ${next.toUpperCase()}`);
-}
-
-function toggleSidebarMiniPopup(popup) {
-  if (!popup) return;
-  const willOpen = popup.classList.contains("hidden");
-  closeSidebarMiniPopups();
-  if (willOpen) popup.classList.remove("hidden");
 }
 
 const languageToggle = document.getElementById("languageToggle");
@@ -1281,10 +1214,11 @@ document.getElementById("libraryPanel").addEventListener("click", async (e) => {
 });
 
 window.selectDocById = async (id) => {
+  const request = beginBookOpen();
   if (state.isPlaying) stopPlayback();
   const items = await fetchJSON(`/api/library`);
   const item = items.find((i) => i.id === id);
-  if (item) selectDocument(item);
+  if (item) selectDocument(item, request);
 };
 
 ["Comma", "Period", "Spam", "Question", "Exclamation", "Colon", "Semicolon"].forEach(
@@ -1415,7 +1349,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 function safeJumpToSentence(index) {
-    if (isSyncActive()) {
+    if (syncState.managed || isSyncActive()) {
         selectSyncPosition(state.readingPageIndex, index).catch(error => showToast(error.message));
         return;
     }
@@ -1441,7 +1375,7 @@ window.addEventListener("jump-to-sentence", (e) => {
     }
     // 3. Engage the lock and perform the jump
     isJumpingLock = true;
-    if (isSyncActive() && typeof e.detail === "object") {
+    if (typeof e.detail === "object") {
         selectSyncPosition(e.detail.page_index, e.detail.sentence_index).catch(error => showToast(error.message));
     } else safeJumpToSentence(e.detail);
     
@@ -1461,6 +1395,7 @@ let _wasSysDownloading = false;
 let _lastSysReportedError = null;
 
 async function startStatusPolling() {
+  let voices = null;
   const poll = async () => {
     try {
       const status = await fetchJSON(`/api/system/status?t=${Date.now()}`);
@@ -1504,14 +1439,27 @@ async function startStatusPolling() {
         updateEngineStatusUI(status, true);
         if (status.model_loaded) {
           state.audioBufferCache.clear();
-          loadVoices();
+          voices = loadVoices();
           if (typeof window.refreshBlendingVoices === 'function') {
             window.refreshBlendingVoices();
           }
         }
       }
+      if (syncState.managed) {
+        if (!status.model_loaded) {
+          voices = null;
+          syncState.engine = status.is_loading ? "loading" : "failed";
+          syncState.engineError = status.is_loading ? "" : status.last_error || "Kokoro could not load.";
+        } else if (syncState.engine !== "ready") {
+          // The voice is part of each speech request, so speech waits for the list too.
+          if (await (voices || loadVoices())) {
+            syncState.engine = "ready";
+            syncState.engineError = "";
+          } else voices = null;
+        }
+      }
     } catch (e) {}
-    setTimeout(poll, 2000);
+    setTimeout(poll, syncState.managed && syncState.engine !== "ready" ? 500 : 2000);
   };
   poll();
 }
@@ -1599,7 +1547,8 @@ function updateSentenceBrightness() {
 
 // --- Reading Progress Session Buffer Flush on Unload/Exit ---
 function flushProgressOnExit() {
-  if (!state.currentDoc) return;
+  if (!state.currentDoc || state.placeDoc !== state.currentDoc) return;
+  if (syncState.managed && syncState.book !== "ready") return;
   const currentEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
   let sentenceIdString = null;
   if (currentEl) {

@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import platform
 import threading
@@ -144,6 +143,9 @@ class BasePlatformDriver:
                 from app.files_api import add_book_to_shelf
                 lower = path_str.lower()
                 if lower.endswith(".epub"):
+                    # Its place in line among the user's opens is now, not after the shelf add.
+                    order = window.evaluate_js("window.__lrBeginBookOpen ? window.__lrBeginBookOpen() : null")
+                    order_arg = f", {int(order)}" if type(order) in (int, float) else ""
                     res = add_book_to_shelf(path_str)
                     book_id = res.get("book", {}).get("id") if isinstance(res, dict) else None
                     print(f"[NATIVE DROP] Shelf binding result: status={res.get('status')}, book_id={book_id}")
@@ -153,7 +155,7 @@ class BasePlatformDriver:
                         (function() {{
                             try {{
                                 if (typeof window.__lrOnNativeEpubDrop === 'function') {{
-                                    window.__lrOnNativeEpubDrop({book_json});
+                                    window.__lrOnNativeEpubDrop({book_json}{order_arg});
                                     return true;
                                 }}
                                 window.__lrPendingNativeDrops = window.__lrPendingNativeDrops || [];
@@ -248,7 +250,13 @@ class WindowsDriver(BasePlatformDriver):
 
     def configure_engine(self) -> None:
         # Suppress verbose Chromium diagnostics and errors to stderr
-        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--log-level=3 --disable-logging"
+        # Keep timers live while the window is behind FalcoType or minimized: the
+        # FalcoType bridge polls every 250 ms and counts media waits in JS, and
+        # Chromium otherwise throttles hidden pages to ~1/s, then ~1/min.
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+            "--log-level=3 --disable-logging --disable-background-timer-throttling "
+            "--disable-renderer-backgrounding --disable-backgrounding-occluded-windows "
+            "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling")
 
         # Suppress ObjectDisposedException when evaluate_js runs during window teardown
         try:
@@ -374,6 +382,19 @@ class WindowsDriver(BasePlatformDriver):
         self._apply_win32_chrome(form)
         self.setup_drag_drop(window)
         self.setup_snap_overlay(window)
+        self.setup_focus_return(form)
+
+    def setup_focus_return(self, form) -> None:
+        """pywebview focuses WebView2 only when first shown, so give keys back on each return to the window."""
+        def on_activated(*_):
+            try:
+                form.browser.webview.Focus()
+            except Exception:
+                pass
+        try:
+            form.Activated += on_activated
+        except Exception as e:
+            print(f"[WINDOW] Focus return setup failed: {e}")
 
     def setup_drag_drop(self, window) -> None:
         """Windows native OLE IDropTarget hook using native_shell.dll."""

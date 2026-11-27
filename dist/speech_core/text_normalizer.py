@@ -94,9 +94,11 @@ IPA_MAP = {
     'u': 'oo', 'uː': 'oo', 'ju': 'yoo', 'ɑ': 'ah', 'ɑː': 'ah', 'ɔː': 'aw', 'ɜ': 'er', 'ɜː': 'er'
 }
 
+# Order matters: specific forms before the general ones that would swallow them (uhh before uh, mm-hmm before hmm)
 INTERJECTION_MAP = {
+    r'm+-?h+m+': 'mhm',r'(?:u+h{2,}|u{2,}h+)': 'uhm',
     r'h+m+': 'hum', r'm{2,}': 'uhm', r'u+h+': 'um', r'rgh+': 'urgh', r'grr+': 'gurr',      
-    r'ugh+': 'uhg', r'tch': 'tisk', r'ngh+': 'ung', r'n+g+h+': 'ung', r'(?:u+h{2,}|u{2,}h+)': 'uhm',         
+    r'ugh+': 'uhg', r'tch': 'tisk', r'ngh+': 'ung', r'n+g+h+': 'ung',
     r'oof+': 'oof', r'urk': 'erk', r'hmph': 'humph', r'n{2,}h?': 'uhn',        
     r'm+h+': 'um', r'm+[\-]?p+h+': 'umph', r'pff+t?': 'pufft', 
     r'tsk(?:\-tsk)?': 'tisk, tisk', r'kyaa+': 'kya', r'hiii+e?': 'heee',   
@@ -107,9 +109,12 @@ INTERJECTION_MAP = {
 
 EXACT_REPLACEMENTS = {
     r"\bR18\b": "Rated 18",
-    r"\bi-i\b": "I I",
+    r"\bC'mere\b": "kuh-MEER",
+    r"\bth(?:\.{2,}|…)\s*thank\b": "thih-thank",
+    # Longest first, or "i-i" eats the start of "i-i-i"
+    r"\bi-i-i-i\b": "I I I I",
     r"\bi-i-i\b": "I I I",
-    r"\bi-i-i-i\b": "I I I I"
+    r"\bi-i\b": "I I"
 }
 
 STUTTER_EXCEPTIONS = {
@@ -197,11 +202,122 @@ def get_ipa_sound(word: str) -> str:
         
     return ""
 
+QUOTE_OPEN = r'["\'“‘]'
+QUOTE_CLOSE = r'["\'”’]'
+ROMAN_NUMERAL = re.compile(r'^(?=[MDCLXVI])M*(C[MD]|D?C{0,3})(X[CL]|L?X{0,3})(I[XV]|V?I{0,3})$')
+
+def tighten_quote_spacing(text: str) -> str:
+    """Drop padding inside quotes/brackets ('" Hello "' -> '"Hello"') without gluing a quote to the next word.
+    A quote opens only at start/after space or a bracket, and closes only before space/punctuation/end."""
+    text = re.sub(r'([\(\[\{])\s+', r'\1', text)
+    text = re.sub(r'\s+([\)\]\}])', r'\1', text)
+    # Closing first, or the closing quote of '" Hello " she' is mistaken for an opening one
+    text = re.sub(r'(?<=[\w.,!?…])\s+(' + QUOTE_CLOSE + r')(?=[\s.,!?;:…\)\]\}]|$)', r'\1', text)
+    text = re.sub(r'(^|[\s\(\[\{])(' + QUOTE_OPEN + r')\s+(?=\w)', r'\1\2', text)
+    return text
+
+DECADE_WORDS = {
+    '0': 'hundreds', '1': 'tens', '2': 'twenties', '3': 'thirties', '4': 'forties',
+    '5': 'fifties', '6': 'sixties', '7': 'seventies', '8': 'eighties', '9': 'nineties'
+}
+
+def say_year(year: str, plural: str = "") -> str:
+    """English year form left for the number engine: 1990 -> '19 90', 1900 -> '19 hundred',
+    1905 -> '19 oh 5', 1990s -> '19 nineties'. 2000-2009 stay whole ('two thousand and five')."""
+    head, tail = year[:2], year[2:]
+    if plural and tail.endswith('0'):
+        return f"{head} {DECADE_WORDS[tail[0]]}" if tail != '00' or head != '20' else f"{year}{plural}"
+    if head == '20' and tail[0] == '0':
+        return f"{year}{plural}"
+    if tail == '00':
+        return f"{head} hundred{plural}"
+    if tail[0] == '0':
+        return f"{head} oh {tail[1]}{plural}"
+    return f"{head} {tail}{plural}"
+
+ROMAN_VALUES = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+# Valid numerals that are really words/abbreviations when written in caps
+ROMAN_SKIP = {'MIX', 'CLI', 'CIV'}
+ROMAN_TOKEN = re.compile(r'(?<![A-Za-z0-9])([MDCLXVImdclxvi]{2,})(?![A-Za-z0-9])')
+ROMAN_SINGLE = re.compile(r'\b(Chapter|Part|Book|Volume|Vol\.|Act|Scene|Episode|Arc|Season|Phase|Stage)\s+([IVX])(?![A-Za-z0-9\'’\-])')
+ROMAN_OPENERS = '([{"\'“‘'
+ROMAN_CLOSERS = '.,!?;:…)]}"\'”’'
+
+def roman_to_int(word: str) -> int:
+    total = 0
+    for i, ch in enumerate(word):
+        val = ROMAN_VALUES[ch]
+        total += -val if i + 1 < len(word) and ROMAN_VALUES[word[i + 1]] > val else val
+    return total
+
+def read_roman_numerals(text: str) -> str:
+    """espeak reads I/V/X tokens as 'roman twelve' even when glued (XX-kun) or lowercase (xii).
+    Standalone uppercase numerals -> number words; any other I/V/X token is spelled letter by letter."""
+    def standalone(s: str, start: int, end: int) -> bool:
+        if start > 0 and not (s[start - 1].isspace() or s[start - 1] in ROMAN_OPENERS):
+            return False
+        after = s[end:end + 2]
+        if not after or after[0].isspace():
+            return True
+        # Trailing sentence punctuation/closing quote is fine; "XX's" or "XX.5" is glue
+        return after[0] in ROMAN_CLOSERS and (len(after) < 2 or not after[1].isalnum())
+
+    def replace(match):
+        word = match.group(1)
+        upper = word.upper()
+        if not ROMAN_NUMERAL.match(upper):
+            return word
+        only_ivx = not re.search(r'[LCDM]', upper)
+        if word.isupper() and standalone(match.string, match.start(1), match.end(1)):
+            # Two-letter L/C/D/M forms (CD, DC, MD, XL, CV) are abbreviations; espeak spells them fine
+            if only_ivx or (len(word) >= 3 and word not in ROMAN_SKIP):
+                return num2words(roman_to_int(upper))
+            return word
+        # Glued or lowercase: block espeak's roman reading by spelling the letters (X-X-kun)
+        return '-'.join(upper) if only_ivx else word
+
+    text = ROMAN_SINGLE.sub(lambda m: f"{m.group(1)} {num2words(ROMAN_VALUES[m.group(2)])}", text)
+    return ROMAN_TOKEN.sub(replace, text)
+
+def collapse_letter_runs(match):
+    word = match.group(0)
+    # Keep Roman numerals (Chapter III, Henry VIII) and www; elongations collapse (Ahhhh -> Ahh)
+    if ROMAN_NUMERAL.match(word) or word.lower() == 'www':
+        return word
+    return re.sub(r"([A-Za-z])\1{2,}", r"\1\1", word)
+
+ONSET_VOWEL_IPA = {
+    'eɪ': 'ay', 'aɪ': 'eye', 'aʊ': 'ow', 'ɔɪ': 'oy', 'oʊ': 'oh', 'əʊ': 'oh',
+    'æ': 'ah', 'ɑ': 'ah', 'a': 'ah', 'ə': 'uh', 'ʌ': 'uh', 'ɐ': 'uh', 'ᵻ': 'ih',
+    'ɛ': 'eh', 'e': 'eh', 'ɪ': 'ih', 'i': 'ee', 'u': 'oo', 'ʊ': 'oo',
+    'ɔ': 'aw', 'ɒ': 'aw', 'o': 'oh', 'ɜ': 'er', 'ɚ': 'er'
+}
+ONSET_VOWEL_TEXT = {'a': 'ah', 'e': 'eh', 'i': 'ih', 'o': 'oh', 'u': 'uh'}
+ONSET_CONSONANT_SPELL = {'q': 'kw', 'x': 'z'}
+
+def onset_vowel_sound(letter: str, word: str, clean_ipa: str = "") -> str:
+    """Single consonant + the word's own first vowel (p-pajama -> 'puh', n-nukimizu -> 'noo').
+    Returns "" for consonant clusters (pl-, st-) so the cluster map keeps handling them."""
+    if letter in 'aeiou' or len(word) < 2 or word[1] not in 'aeiou':
+        return ""
+    vowel = ""
+    for i, ch in enumerate(clean_ipa):
+        if ch in ONSET_VOWEL_IPA:
+            vowel = ONSET_VOWEL_IPA.get(clean_ipa[i:i + 2]) or ONSET_VOWEL_IPA[ch]
+            break
+    if not vowel:
+        vowel = ONSET_VOWEL_TEXT[word[1]]
+    return ONSET_CONSONANT_SPELL.get(letter, letter) + vowel
+
 def process_jp_stutter(match):
-    prefix = match.group(1)
+    prefixes = [p for p in match.group(1).split('-') if p]
     name = match.group(2)
     honorific = match.group(3)
-    
+
+    # Only a real stutter when every prefix letter is the name's first letter (T-T-Tanaka, not A-Tanaka)
+    if not all(p.lower() == name[0].lower() for p in prefixes):
+        return match.group(0)
+
     vowels = "aeiouAEIOU"
     vowel_index = -1
     
@@ -229,13 +345,10 @@ def process_jp_stutter(match):
         }
         
         phonetic_prefix = jp_phonetic_fixes.get(raw_prefix, raw_prefix)
-        
-        if prefix.isupper():
-            phonetic_prefix = phonetic_prefix[0].upper() + phonetic_prefix[1:]
-        else:
-            phonetic_prefix = phonetic_prefix.lower()
-            
-        return f"{phonetic_prefix} {name}-{honorific}"
+
+        sounds = [phonetic_prefix[0].upper() + phonetic_prefix[1:] if p.isupper() else phonetic_prefix.lower()
+                  for p in prefixes]
+        return f"{' '.join(sounds)} {name}-{honorific}"
         
     return match.group(0)
 
@@ -248,7 +361,8 @@ def fix_broken_words(text: str) -> str:
     if not text:
         return text
 
-    text = re.sub(r'([a-zA-Z])\s*([\'’])\s*([a-zA-Z])', r'\1\2\3', text)
+    # Rejoin split contractions ("don ' t", "it' s") only; a general letter-quote-letter join glued dialogue ("said 'yes'")
+    text = re.sub(r"([a-zA-Z])\s*(['’])\s*(s|t|re|ve|ll|d|m)\b", r'\1\2\3', text, flags=re.IGNORECASE)
     text = re.sub(r'([sS])\s+([\'’])(?=\s|$)', r'\1\2', text)
 
     ligatures = {
@@ -270,16 +384,17 @@ def fix_broken_words(text: str) -> str:
     for pat, rep in common: 
         text = re.sub(pat, rep, text, flags=re.IGNORECASE)
 
-    old = ""
-    while old != text:
-        old = text
-        text = re.sub(r'(?:^|(?<=\s))([a-zA-Z])\s+([a-zA-Z])(?=\s|$)', r'\1\2', text)
+    # Rejoin spaced-out letters ("H e l l o") only for runs of 3+; pairs like "I a" / "a b" are real words
+    text = re.sub(r'(?<![^\s"\'\(\[])(?:[a-zA-Z]\s+){2,}[a-zA-Z](?![a-zA-Z0-9])',
+                  lambda m: re.sub(r'\s+', '', m.group(0)), text)
 
     for pattern, replacement in EXACT_REPLACEMENTS.items():
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
-    jp_pattern = r"\b([A-Za-z])-([A-Za-z]+)-(san|chan|kun|sama|dono|senpai|sensei|dano)\b"
+    jp_pattern = r"\b((?:[A-Za-z]-)+)([A-Za-z]+)-(san|chan|kun|sama|dono|senpai|sensei|dano)\b"
     text = re.sub(jp_pattern, process_jp_stutter, text, flags=re.IGNORECASE)
+
+    stutter_re = re.compile(r'(?<![a-zA-Z])([\'"“‘\[\(\{]*)((?:[a-zA-Z]{1,3}[-—–]+)+)([a-zA-Z]+(?:\'[a-zA-Z]+)?)')
 
     def resolve_stutter(match):
         pre_punct = match.group(1)
@@ -289,8 +404,17 @@ def fix_broken_words(text: str) -> str:
         
         prefixes = [p for p in re.split(r'[-—–]+', raw_prefixes) if p]
         
-        # 1. Prefix match validation
-        if not all(rem_low.startswith(p.lower()) for p in prefixes):
+        # 1. Prefix match validation; if a leading word ate the run ("Wha--N-N-Nukumizu"), retry after it.
+        # An em dash ("--") before single-hyphen stutters is a word break too ("so--s-s-sorry").
+        seps = re.findall(r'[-—–]+', raw_prefixes)
+        dash_break = len(seps) > 1 and len(seps[0]) > 1 and all(len(s) == 1 for s in seps[1:])
+        if dash_break or not all(rem_low.startswith(p.lower()) for p in prefixes):
+            head = re.match(r'[a-zA-Z]{1,3}[-—–]+', raw_prefixes).group(0)
+            tail = raw_prefixes[len(head):] + remainder_of_word
+            if len(prefixes) > 1:
+                fixed_tail = stutter_re.sub(resolve_stutter, tail)
+                if fixed_tail != tail:
+                    return f"{pre_punct}{head}{'' if fixed_tail.startswith(' ') else ' '}{fixed_tail.lstrip(' ')}"
             return match.group(0)
             
         # 2. Exception shield for single-prefix compound nouns
@@ -315,6 +439,7 @@ def fix_broken_words(text: str) -> str:
             is_silent = True
             
         first_phoneme = ""
+        clean_ipa = ""
         if _has_phonemizer:
             try:
                 ipa = phonemize(rem_low, language='en-us', backend='espeak', with_stress=False, preserve_punctuation=False).strip()
@@ -345,9 +470,13 @@ def fix_broken_words(text: str) -> str:
             if not smart_sound and 'text' in ctx:
                 smart_sound = ctx['text'](rem_low)
             
+            onset_sound = onset_vowel_sound(lookup, rem_low, clean_ipa) if len(lookup) == 1 else ""
+
             mapped_sound = None
             if smart_sound:
                 mapped_sound = smart_sound
+            elif onset_sound:
+                mapped_sound = onset_sound
             elif len(lookup) == 1 and cluster in STUTTER_MAP and cluster[0] == lookup:
                 mapped_sound = STUTTER_MAP[cluster]
             elif lookup in STUTTER_MAP:
@@ -363,16 +492,17 @@ def fix_broken_words(text: str) -> str:
                 result.append(mapped_sound)
                 
         result.append(remainder_of_word)
-        return f"{pre_punct}{' '.join(result)}"
+        # Detach a leading dash/em dash ("--n-n-nukimizu") so it stays a pause, not part of the word
+        lead = " " if not pre_punct and match.start() > 0 and match.string[match.start() - 1] == '-' else ""
+        return f"{lead}{pre_punct}{' '.join(result)}"
 
-    text = re.sub(r'(?<![a-zA-Z])([\'"“‘\[\(\{]*)((?:[a-zA-Z]{1,3}[-—–]+)+)([a-zA-Z]+(?:\'[a-zA-Z]+)?)', resolve_stutter, text)
-    text = re.sub(r"([A-Za-z])\1{2,}", r"\1\1", text)
+    text = stutter_re.sub(resolve_stutter, text)
+    text = re.sub(r"[A-Za-z]+", collapse_letter_runs, text)
 
     for pattern, phonetic_replacement in INTERJECTION_MAP.items():
         text = re.sub(r'\b' + pattern + r'\b', phonetic_replacement, text, flags=re.IGNORECASE)
 
-    text = re.sub(r'([\"\(\[\{\u201c])\s+', r'\1', text) 
-    text = re.sub(r'\s+([\"\)\}\]\u201d])', r'\1', text) 
+    text = tighten_quote_spacing(text)
     
     return re.sub(r'\s+', ' ', text).strip()
 
@@ -407,8 +537,7 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
     if not text:
         return text
 
-    text = re.sub(r'([\"\'\(\[\{\u201c\u2018])\s+', r'\1', text)
-    text = re.sub(r'\s+([\"\'\)\}\]\u201d\u2019])', r'\1', text)
+    text = tighten_quote_spacing(text)
 
     # Hyphenated capital forces Kokoro G2P to pronounce letter name /eI/ without pause
     text = re.sub(r'\b[Aa](\d+)\b', r'A-\1', text)
@@ -437,6 +566,19 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
                 break
         local_jp = is_jp or bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', left_c + right_c))
         parts = raw_match.split('-')
+        # Ranges (pages 12-15, 1990-1995, 1990-95) read "A to B"; phone-shaped digits keep digit-by-digit
+        if len(parts) == 2 and not any(p.startswith('0') for p in parts):
+            a, b = parts
+            is_year = lambda y: re.fullmatch(r'1[5-9]\d{2}|20\d{2}', y) is not None
+            year_full = len(a) == len(b) == 4 and is_year(a) and is_year(b) and int(a) < int(b)
+            year_short = len(a) == 4 and len(b) == 2 and is_year(a) and int(b) > int(a[2:])
+            plain_up = len(a) == len(b) < 4 and int(a) < int(b)
+            if local_jp and (year_full or year_short or plain_up):
+                return f"{a}\u304B\u3089{b}"
+            if year_full or year_short:
+                return f"{say_year(a)} to {say_year(b) if len(b) == 4 else b}"
+            if plain_up:
+                return f"{a} to {b}"
         if local_jp:
             kana_parts = ["".join(JP_DIGIT_MAP.get(d, d) for d in p) for p in parts]
             return "、".join(kana_parts)
@@ -458,9 +600,14 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
                 break
         if is_jp or bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', left_c)):
             return f"{dollars}ドル"
-        if cents and int(cents) > 0:
-            return f"{dollars} dollars and {cents} cents"
-        return f"{dollars} dollars"
+        # $1 -> dollar, $1.5 -> 50 cents, $0.99 -> just cents
+        cents = (cents or "").ljust(2, '0')[:2]
+        whole = int(dollars.replace(',', '') or 0)
+        dollar_part = f"{dollars} {'dollar' if whole == 1 else 'dollars'}"
+        if int(cents) > 0:
+            cent_part = f"{int(cents)} {'cent' if int(cents) == 1 else 'cents'}"
+            return cent_part if whole == 0 else f"{dollar_part} and {cent_part}"
+        return dollar_part
 
     text = re.sub(r'\$([0-9,]+)(?:\.(\d+))?', split_currency, text)
 
@@ -488,9 +635,10 @@ def fix_special_formats(text: str, lang: str = "en") -> str:
             prefix2 = match.group(2) or ""
             year = match.group(3)
             plural = match.group(4) or ""
-            return f"{prefix1} {prefix2}{year[:2]} {year[2:]}{plural}"
+            return f"{prefix1} {prefix2}{say_year(year, plural)}"
             
         text = year_pattern.sub(split_year, text)
+        text = read_roman_numerals(text)
 
     return text
 
@@ -697,8 +845,3 @@ def apply_custom_pronunciations(text: str, rules: List[Dict[str, Any]], ignore_l
     text = protect_japanese_mixed_latin(text, lang)
 
     return re.sub(r'\s+', ' ', text).strip()
-
-
-def inject_pauses(text: str, pause_settings: Dict[str, int]) -> str:
-    """Placeholder for future TTS engines that support SSML."""
-    return text

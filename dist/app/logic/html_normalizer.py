@@ -1,5 +1,4 @@
 import html
-import posixpath
 import re
 import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -185,16 +184,6 @@ def _find_parent(node: Optional[Node], tags: Iterable[str]) -> Optional[Node]:
     return None
 
 
-# True if any ancestor carries a given attribute value
-def _has_parent_attr(node: Node, key: str, value: str) -> bool:
-    parent = node.parent
-    while parent is not None:
-        if _get_attr(parent, key).lower() == value.lower():
-            return True
-        parent = parent.parent
-    return False
-
-
 # Find first node in tree matching attribute key=value
 def _find_by_attr(tree: HTMLParser, key: str, value: str) -> Optional[Node]:
     for node in tree.css(f"[{key}]"):
@@ -226,152 +215,37 @@ def _has_formatting_hint(node: Node) -> bool:
     )
 
 
-def parse_prefix_num_suffix(s: str) -> tuple[str, str, str]:
-    """Split any identifier into (prefix, number, suffix) with zero keywords."""
-    m = re.match(r"^([a-zA-Z_\-]*?)(\d+)([a-zA-Z_\-]*)$", s)
-    if m:
-        return m.group(1).lower(), m.group(2), m.group(3).lower()
-    return s.lower(), "", ""
-
-
-def footnote_number_from_id(block_id: str) -> str:
-    """Pull the visible note index out of ids like cite_note-3, sdfootnote1sym, TN1."""
-    if not block_id:
-        return ""
-    _, num, _ = parse_prefix_num_suffix(block_id)
-    return num
-
-
-def standardize_footnotes(tree: HTMLParser) -> None:
-    """Pure-logic footnote standardizer with zero hardcoded keywords or pattern lists.
-
-    Applies the three universal footnote graph topologies:
-      - Topology 1 (Direct Target): Callout points directly to an element id or name.
-      - Topology 2 (Mutual 2-Cycle Graph): Callout A -> B, and definition contains backlink B -> A.
-      - Topology 3 (Suffix Symmetry): Callout and definition anchors share (prefix, number)
-        with differing suffixes (e.g. sym vs anc) when exporter stripped id attributes.
-    """
-    callouts = []
-    for a in list(tree.css("a")):
-        href = _get_attr(a, "href")
-        if not href or "#" not in href:
-            continue
-
-        if href.startswith(("http://", "https://", "mailto:")):
-            continue
-
-        # Skip anchors inside existing footnote definition blocks
-        in_footnote = (
-            _has_parent_attr(a, "epub:type", "footnote")
-            or _has_parent_attr(a, "epub:type", "endnote")
-            or _has_parent_attr(a, "role", "doc-footnote")
-            or _has_parent_attr(a, "role", "doc-endnote")
-            or _find_parent(a, ("aside", "dd")) is not None
-        )
-        if in_footnote:
-            continue
-
-        sup = _find_parent(a, ("sup",)) or a.css_first("sup")
-        epub_type = _get_attr(a, "epub:type").lower()
-        role = _get_attr(a, "role").lower()
-        classes = set(_class_list(a))
-
-        is_callout = (
-            sup is not None
-            or epub_type == "noteref"
-            or role == "doc-noteref"
-            or bool(classes & {"noteref", "footnote-ref", "epub-noteref"})
-        )
-
-        if is_callout:
-            frag = href.split("#")[-1].strip()
-            cid = _get_attr(a, "id") or _get_attr(a, "name") or (_get_attr(sup, "id") if sup else "")
-            callouts.append((a, sup, frag, cid))
-
-    for a, sup, tfrag, cid in callouts:
-        matched_block = None
-        matched_backlink = None
-
-        # Topology 1: Direct target in same tree
-        if tfrag:
-            direct_el = tree.css_first(f'[id="{tfrag}"], [name="{tfrag}"]')
-            if direct_el:
-                matched_block = _find_parent(direct_el, ("li", "p", "aside", "div", "section", "dd")) or direct_el
-                for a_back in matched_block.css("a"):
-                    if "#" in _get_attr(a_back, "href"):
-                        matched_backlink = a_back
-                        break
-
-        # Topology 2: Mutual 2-cycle in same tree
-        if not matched_block and cid:
-            for a_back in tree.css("a"):
-                bhref = _get_attr(a_back, "href")
-                if bhref == f"#{cid}":
-                    matched_block = _find_parent(a_back, ("li", "p", "aside", "div", "section", "dd")) or a_back
-                    matched_backlink = a_back
-                    if not _get_attr(matched_block, "id"):
-                        _set_attr(matched_block, "id", tfrag)
-                    break
-
-        # Topology 3: Suffix symmetry in same tree (broken exporter without ids)
-        if not matched_block and tfrag:
-            c_pref, c_num, c_suf = parse_prefix_num_suffix(tfrag)
-            if c_num:
-                for a_cand in tree.css("a"):
-                    cand_href = _get_attr(a_cand, "href")
-                    if cand_href.startswith("#"):
-                        cand_frag = cand_href[1:].strip()
-                        k_pref, k_num, k_suf = parse_prefix_num_suffix(cand_frag)
-                        if k_pref == c_pref and k_num == c_num and k_suf != c_suf:
-                            matched_block = _find_parent(a_cand, ("li", "p", "aside", "div", "section", "dd")) or a_cand
-                            matched_backlink = a_cand
-                            _set_attr(matched_block, "id", tfrag)
-                            break
-
-        if matched_block:
-            _set_attr(a, "epub:type", "noteref")
-            _set_attr(matched_block, "epub:type", "footnote")
-            if matched_backlink:
-                _set_attr(matched_backlink, "epub:type", "backlink")
+_XML_DECL_RE = re.compile(r"<\?xml.*?\?>", re.I | re.S)
+_DOCTYPE_RE = re.compile(r"<!DOCTYPE.*?>", re.I | re.S)
+# XHTML permits self-closing non-void elements. HTML5 parsers treat raw-text
+# forms such as <title/> as opening tags and consume the remaining chapter.
+_SELF_CLOSED_RAW_RE = re.compile(
+    r"<(head|title|textarea|script|style|xmp|iframe|noembed|noframes|noscript)"
+    r"(\s[^<>]*?)?\s*/>",
+    re.I,
+)
+_KOBO_RES = (
+    re.compile(r'<script[^>]*src="[^"]*kobo\.js"[^>]*>.*?</script>', re.I | re.S),
+    re.compile(r'<style[^>]*id="koboSpanStyle"[^>]*>.*?</style>', re.I | re.S),
+    re.compile(r'\s*class="koboSpan"', re.I),
+    re.compile(r'\s*id="kobo\.[^"]*"', re.I),
+)
 
 
 def pre_parse_clean(html_string: str) -> str:
-    html_string = re.sub(
-        r"<\?xml.*?\?>", "", html_string, flags=re.IGNORECASE | re.DOTALL
-    )
-    html_string = re.sub(
-        r"<!DOCTYPE.*?>", "", html_string, flags=re.IGNORECASE | re.DOTALL
-    )
-    # XHTML permits self-closing non-void elements. HTML5 parsers treat raw-text
-    # forms such as <title/> as opening tags and consume the remaining chapter.
-    html_string = re.sub(
-        r"<(head|title|textarea|script|style|xmp|iframe|noembed|noframes|noscript)"
-        r"(\s[^<>]*?)?\s*/>",
-        lambda match: (
-            f"<{match.group(1)}{match.group(2) or ''}>"
-            f"</{match.group(1)}>"
-        ),
-        html_string,
-        flags=re.IGNORECASE,
-    )
-    html_string = re.sub(
-        r'<script[^>]*src="[^"]*kobo\.js"[^>]*>.*?</script>',
-        "",
-        html_string,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    html_string = re.sub(
-        r'<style[^>]*id="koboSpanStyle"[^>]*>.*?</style>',
-        "",
-        html_string,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    html_string = re.sub(
-        r'\s*class="koboSpan"', "", html_string, flags=re.IGNORECASE
-    )
-    html_string = re.sub(
-        r'\s*id="kobo\.[^"]*"', "", html_string, flags=re.IGNORECASE
-    )
+    """Strip prolog/Kobo noise that lexbor would otherwise keep as content."""
+    if "<?" in html_string:
+        html_string = _XML_DECL_RE.sub("", html_string)
+    if "<!" in html_string:
+        html_string = _DOCTYPE_RE.sub("", html_string)
+    if "/>" in html_string:
+        html_string = _SELF_CLOSED_RAW_RE.sub(
+            lambda match: f"<{match.group(1)}{match.group(2) or ''}></{match.group(1)}>",
+            html_string,
+        )
+    if "kobo" in html_string.lower():
+        for pattern in _KOBO_RES:
+            html_string = pattern.sub("", html_string)
     return html_string
 
 
@@ -468,19 +342,6 @@ def standardize_formatting(tree: HTMLParser) -> None:
             _replace_tag(node, "del")
 
 
-# Public entry point: run the full EPUB normalization pipeline on a tree
-def normalize_epub_html(
-    tree: HTMLParser,
-    known_toc_titles: Optional[Set[str]] = None,
-    current_href: Optional[str] = None,
-    rich_toc_map: Optional[Dict[str, Any]] = None,
-    next_has_header: bool = False,
-) -> None:
-    return _normalize_epub_html(
-        tree, known_toc_titles, current_href, rich_toc_map, next_has_header
-    )
-
-
 # Public wrapper: last-resort heading promotion from fallback patterns
 def apply_super_fallback_headings(tree: HTMLParser) -> None:
     return _apply_super_fallback_headings(tree)
@@ -535,6 +396,8 @@ def exterminate_bad_tags(tree: HTMLParser) -> None:
 
 def nuke_inline_toc(tree: HTMLParser) -> bool:
     """The TOC Sniper: Vaporizes pages that are just native TOC links."""
+    if tree.css_first(".epub-noteref, .epub-footnote, [data-footnote-anchor]") is not None:
+        return False
     links = list(tree.css("a"))
     if links:
         target = tree.body or tree.root
@@ -575,7 +438,7 @@ def fix_span_fragmentation(tree: HTMLParser) -> None:
         if span.parent is None:
             continue
         classes = {value.lower() for value in _class_list(span)}
-        if classes & reserved_classes or _has_formatting_hint(span):
+        if classes & reserved_classes or _get_attr(span, "data-footnote-anchor") or _has_formatting_hint(span):
             continue
         span_id = _get_attr(span, "id")
         if span_id:
@@ -631,7 +494,7 @@ def strip_junk_attributes(tree: HTMLParser) -> None:
                 continue
             if attribute.lower() == "epub:type" and any(
                 value in _get_attr(node, attribute).lower()
-                for value in ("noteref", "footnote", "backlink")
+                for value in ("noteref", "footnote", "endnote", "backlink")
             ):
                 continue
             _del_attr(node, attribute)
@@ -698,16 +561,17 @@ def heavy_paragraph_cleanup(tree: HTMLParser) -> None:
     for anchor in list(tree.css("a")):
         if anchor.parent is None:
             continue
+        if _get_attr(anchor, "data-footnote-anchor"):
+            continue
         classes = {value.lower() for value in _class_list(anchor)}
         epub_type = _get_attr(anchor, "epub:type").lower()
         protected = any(
-            value in epub_type for value in ("noteref", "footnote", "backlink")
+            value in epub_type for value in ("noteref", "footnote", "endnote", "backlink")
         ) or bool(
             classes & {"epub-noteref", "epub-footnote", "epub-backlink"}
         )
         is_sup = _find_parent(anchor, ("sup",)) is not None or anchor.css_first("sup") is not None
-        has_image = anchor.css_first("img, svg, picture") is not None
-        if (protected or is_sup) and not has_image:
+        if protected or is_sup:
             continue
 
         anchor_id = _get_attr(anchor, "id") or _get_attr(anchor, "name")
@@ -972,7 +836,6 @@ def _normalize_epub_html(
     promote_image_headers(tree)
     standardize_formatting(tree)
     fix_span_fragmentation(tree)
-    standardize_footnotes(tree)
 
     def finish() -> None:
         strip_junk_attributes(tree)
@@ -1269,32 +1132,11 @@ def append_text(node: Node, text: str) -> None:
 
 
 # Inject protection before burn
-def force_formatting_markers(tree: HTMLParser, current_href: str = "") -> None:
+def force_formatting_markers(tree: HTMLParser) -> None:
     """
     Force every formatting tag and style into indestructible markers.
     Runs on the live tree as early as possible.
     """
-    def normalize_paired_id(raw_id: str) -> str:
-        if not raw_id:
-            return ""
-        s = raw_id.strip()
-        m = re.match(r"^([a-zA-Z_\-]*?)(\d+)([a-zA-Z_\-]*)$", s)
-        if m:
-            pref, num, suf = m.group(1).lower(), m.group(2), m.group(3).lower()
-            return f"{pref}_{num}"
-        return s.lower()
-
-    def make_det_id(target_file, target_id):
-        if not target_file: target_file = current_href
-        elif target_file != current_href and current_href:
-            base_dir = posixpath.dirname(current_href)
-            target_file = posixpath.normpath(posixpath.join(base_dir, target_file))
-
-        norm_id = normalize_paired_id(target_id)
-        safe_file = re.sub(r'[^a-zA-Z0-9]', '_', target_file)
-        safe_id = re.sub(r'[^a-zA-Z0-9]', '_', norm_id)
-        return f"R_{safe_file}_{safe_id}"
-
     # 🌟 EXTERNAL LINK SHIELD
     for anchor in list(tree.css("a")):
         if anchor.parent is None:
@@ -1306,117 +1148,8 @@ def force_formatting_markers(tree: HTMLParser, current_href: str = "") -> None:
             append_text(anchor, "@@EXT_A_OFF@@")
             safe_unwrap(anchor)
 
-    # 🌟 FOOTNOTE EXTRACTION SHIELD
-    # Automated <sup> footnote matching: No keyword reliance.
-    # Matches <sup> anchor tags, epub:type="noteref", or role="doc-noteref".
-    for anchor in list(tree.css("a")):
-        if anchor.parent is None:
-            continue
-
-        # Skip anchors inside footnote definition blocks
-        p_check = anchor.parent
-        in_def = False
-        while p_check:
-            p_attrs = p_check.attributes or {}
-            if p_check.tag in ("aside", "dd") or (p_attrs.get("epub:type") or "").lower() in ("footnote", "endnote") or (p_attrs.get("role") or "").lower() in ("doc-footnote", "doc-endnote"):
-                in_def = True
-                break
-            p_check = p_check.parent
-        if in_def:
-            continue
-
-        attrs = anchor.attributes or {}
-        epub_type = (attrs.get("epub:type") or "").lower()
-        role = (attrs.get("role") or "").lower()
-        sup_tag = find_parent(anchor, "sup") or anchor.css_first("sup")
-        href = (attrs.get("href") or "").strip()
-
-        is_callout = (
-            epub_type == "noteref"
-            or role == "doc-noteref"
-            or (sup_tag is not None and "#" in href)
-        )
-        if not is_callout or "#" not in href:
-            continue
-
-        parts = href.split("#")
-        if len(parts) > 1 and parts[1].strip():
-            det_id = make_det_id(parts[0], parts[1].strip())
-            tag_type = "SUP" if sup_tag else "A"
-
-            prepend_text(anchor, f"@@F_ON@@ @@F_S|{det_id}|{tag_type}@@ ")
-            append_text(anchor, f" @@F_OFF_{tag_type}@@")
-
-            if sup_tag:
-                safe_unwrap(sup_tag)
-            safe_unwrap(anchor)
-
-    for block in list(tree.css("*")):
-        if block.parent is None:
-            continue
-        attrs = block.attributes or {}
-        epub_type = (attrs.get("epub:type") or "").lower()
-        role = (attrs.get("role") or "").lower()
-        block_id = attrs.get("id", "")
-        classes = (attrs.get("class") or "").lower()
-
-        # Check for backlink inside block
-        backlink = next(
-            (
-                anchor for anchor in block.css("a")
-                if (anchor.attributes or {}).get("epub:type") == "backlink"
-                or (anchor.attributes or {}).get("role") == "doc-backlink"
-                or "↑" in anchor.text()
-                or "↩" in anchor.text()
-                or "^" in anchor.text()
-                or (block_id and "#" in ((anchor.attributes or {}).get("href") or ""))
-            ),
-            None,
-        )
-
-        is_def_block = (
-            epub_type in ("footnote", "endnote")
-            or role in ("doc-footnote", "doc-endnote")
-            or "footnote" in classes
-            or (block.tag in ("li", "p", "aside", "dd") and backlink is not None and (
-                normalize_paired_id(block_id) != block_id or bool(block_id)
-            ))
-        )
-        if not is_def_block:
-            continue
-        if "@@F_ON@@" in block.text():
-            continue
-
-        if not block_id and backlink:
-            backlink_attrs = backlink.attributes or {}
-            block_id = backlink_attrs.get("id") or backlink_attrs.get("name") or ""
-            if not block_id and "#" in (backlink_attrs.get("href") or ""):
-                block_id = backlink_attrs.get("href").split("#")[-1]
-        if not block_id:
-            continue
-
-        det_id = make_det_id(current_href, block_id)
-        note_num = footnote_number_from_id(block_id)
-        backlink_text = backlink.text(strip=True) if backlink else ""
-        remainder = (block.text(strip=True) or "")
-        if backlink_text and remainder.startswith(backlink_text):
-            remainder = remainder[len(backlink_text):].lstrip(" .:]-")
-        needs_label = bool(
-            note_num
-            and not re.search(r"\d+", backlink_text)
-            and not re.match(rf"^[\[\(]?{re.escape(note_num)}\b", remainder)
-        )
-        if backlink:
-            prepend_text(backlink, f"@@F_ON@@ @@F_E|{det_id}@@ ")
-            append_text(backlink, " @@F_OFF_A@@")
-            if needs_label:
-                backlink.insert_after(f"[{note_num}] ")
-            safe_unwrap(backlink)
-        else:
-            inner_nodes = nodes_in_document_order(block, ("p", "span", "div"))
-            inner = inner_nodes[0] if inner_nodes else block
-            label = f"[{note_num}] " if needs_label else ""
-            prepend_text(inner, f"@@F_ON@@ @@F_E|{det_id}@@ @@F_OFF_A@@ {label}")
+    # Footnotes remain real DOM nodes: marker round-trips must not erase
+    # their ids, hrefs or the endpoint roles used by the book-wide graph.
 
     # 🌟 RUBY SHIELD (native <ruby> and CSS furigana hacks)
     _protect_native_ruby(tree)

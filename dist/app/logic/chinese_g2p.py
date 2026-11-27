@@ -14,8 +14,8 @@ class UltimateChineseProcessor:
             import jaconv
         except ImportError as e:
             raise ImportError(
-                "Chinese text processing is unavailable. Install LocalReader's "
-                "optional requirements-cjk.txt (jaconv)."
+                "Chinese text processing is unavailable. Install the Chinese "
+                "language package (jaconv)."
             ) from e
         self._jaconv = jaconv
        #print("[System] Initializing Acoustic Shield for Mandarin...")#

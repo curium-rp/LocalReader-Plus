@@ -1,0 +1,5 @@
+# Optional Chinese/Japanese support; install alongside requirements.txt.
+fugashi
+unidic-lite
+jaconv
+jamdict

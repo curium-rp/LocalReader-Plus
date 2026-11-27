@@ -1,7 +1,7 @@
 import { state } from "../modules/state.js";
 import { getSyncPageContent } from "../modules/library.js";
 import { syncState, trackSyncSelection, syncPlaybackSnapshot } from "./falcotype-sync-state.js";
-import { applySyncCommand, changeSyncSession, applyPracticeStatus, maybeContinuePractice, practiceAdvanceGate, holdPracticeMedia } from "./falcotype-sync.js";
+import { applySyncCommand, changeSyncSession, applyPracticeStatus, maybeContinuePractice, practiceAdvanceGate, syncMediaBlock, followPending } from "./falcotype-sync.js";
 import { stopPlayback } from "../modules/tts.js";
 
 const historyLabel = value => [...String(value || "").replace(/[\uD800-\uDFFF]/gu, "\uFFFD").normalize("NFC")].slice(0, 512).join("");
@@ -29,10 +29,12 @@ export function historyPageMetadata(page) {
         chapters: (page.chapters || []).map(scope => ({ ...scope, ...(byId.get(scope.id) || {}) })) };
 }
 
+const readerState = () => ({ book: syncState.book, engine: syncState.engine, error: syncState.engineError.slice(0, 1024) });
+
 export async function initFalcoTypeBridge() {
-    if (new URLSearchParams(window.location.search).get("embedded") !== "1") return;
+    if (!syncState.managed) return;
     let stopped = false, contextReady = false, pageKey = "", ack = null, applying = null, retiredSession = null;
-    let timer, leaseTimer, controller;
+    let timer, leaseTimer, controller, publishing = false;
     const request = async (path, body) => {
         const requestController = new AbortController();
         controller = requestController;
@@ -73,6 +75,7 @@ export async function initFalcoTypeBridge() {
         return true;
     };
     const publish = async () => {
+        publishing = true;
         try {
             if (!contextReady) {
                 const context = await request("context");
@@ -93,6 +96,7 @@ export async function initFalcoTypeBridge() {
             const sentAt = performance.now();
             const result = await request("current", { current: currentSelection(selectedPage),
                 playback: { ...syncPlaybackSnapshot(), advance_gate: practiceAdvanceGate() },
+                media: syncMediaBlock(), reader: readerState(),
                 session_id: syncState.sessionId, ack, transitioning: syncState.transitioning });
             if (stopped) return;
             const transitMs = performance.now() - sentAt;
@@ -106,12 +110,13 @@ export async function initFalcoTypeBridge() {
                 applySyncCommand(command).then(() => {
                     if (applying === job && syncState.sessionId === job.session) ack = { id: command.id, status: "applied", error: "" };
                 }).catch(error => {
-                    if (applying === job && syncState.sessionId === job.session) ack = { id: command.id, status: "rejected", error: error.message.slice(0, 1024) };
+                    // A moved selection or a stopped handoff is a race with FalcoType, not a failure.
+                    const status = ["StaleSelection", "AbortError"].includes(error.name) ? "stale" : "rejected";
+                    if (applying === job && syncState.sessionId === job.session) ack = { id: command.id, status, error: error.message.slice(0, 1024) };
                 }).finally(() => { if (applying === job) applying = null; });
             }
             if (!applying) void maybeContinuePractice();
         } catch (error) {
-            holdPracticeMedia();
             const temporary = error.name === "AbortError" || error instanceof TypeError || error.status >= 500;
             if (!contextReady) {
                 // Startup can race server readiness. Retry transient failures without a reload.
@@ -125,15 +130,29 @@ export async function initFalcoTypeBridge() {
                 pageKey = "";
                 try {
                     const sentAt = performance.now();
-                    const result = await request("current", { current: null,
+                    const result = await request("current", { current: null, reader: readerState(),
                         playback: { ...syncPlaybackSnapshot(), state: "error", error: error.message.slice(0, 1024) },
                         session_id: syncState.sessionId });
                     if (!stopped) updateLease(result.sync, performance.now() - sentAt);
                 } catch { /* The independent lease timer stops audio if the connection stays down. */ }
             }
         } finally {
-            if (!stopped) timer = setTimeout(publish, contextReady ? 250 : 1000);
+            publishing = false;
+            // FalcoType says a unit is ending, or it is done with only the move left: speech for
+            // the next one should not wait. Speech ending wakes this loop by itself (below).
+            const practice = syncState.practiceStatus;
+            // A followed position not opened yet: say so as soon as it is. One this page
+            // can't open (an old epoch, another book) waits at the normal pace.
+            const handoff = practice?.follow ? followPending() :
+                practice?.run_state === "running" && (practice.near_end ||
+                    practice.typing_complete && (!syncState.audioEnabled || syncState.audioEnded));
+            if (!stopped) timer = setTimeout(publish, !contextReady ? 1000 : handoff ? 80 : 250);
         }
+    };
+    syncState.onAudioEnded = () => {
+        if (stopped || publishing) return;
+        clearTimeout(timer);
+        publish();
     };
     window.addEventListener("pagehide", () => {
         stopped = true;

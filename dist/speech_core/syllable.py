@@ -1,7 +1,7 @@
 import re
 import threading
 
-# All callers import app.logic.syllable so eSpeak shares one lock.
+# All callers import speech_core.syllable so eSpeak shares one lock.
 # Audio inference stays outside this lock.
 phonemizer_lock = threading.RLock()
 

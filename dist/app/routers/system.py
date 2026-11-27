@@ -1,20 +1,18 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
-from ..state import kokoro, system_status, PatchedKokoro
-from ..utils import safe_save_json, has_onnxruntime_gpu
-from ..config import base_dir, settings_file, get_app_anchored_path
+from ..state import system_status
+from .. import state
+from ..utils import safe_save_json
+from ..config import settings_file
 from ..models import ModelDownloadRequest, ModelSelectRequest, ModelDeleteRequest
-from typing import Optional, Dict, Any
+from typing import Optional
 import json
-import os
-import gc
 from ..runtime import runtime
 
-from ..logic import downloader
+from ..logic import downloader, language_packs
+from ..logic.update_notice import pending_notice
 from ..logic.downloader import (
-    MODEL_CATALOG, get_bundle, resolve_bundle_paths, get_default_installed_bundle_id,
-    get_catalog_summary, delete_bundle_files, download_kokoro_model,
-    download_model_bundle, check_model_exists, get_available_models, classify_network_error,
+    get_bundle, get_default_installed_bundle_id, get_catalog_summary, delete_bundle_files,
+    download_model_bundle, get_available_models, classify_network_error,
 )
 
 if runtime.submodule:
@@ -30,51 +28,44 @@ def require_model_management():
 
 
 def load_engine_logic(requested_model_id=None, requested_mode=None):
-    global kokoro
+    """Pick the model and hardware from the Reader's settings, then load it."""
     system_status["is_loading"] = True
-    ort_gpu = has_onnxruntime_gpu()
+    try:
+        _load_engine(requested_model_id, requested_mode)
+    finally:
+        system_status["is_loading"] = False
 
+
+def _read_settings():
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _load_engine(requested_model_id, requested_mode):
+    settings = _read_settings()
     # A managed reader always loads FalcoType's root kokoro.onnx and voices.bin.
     if runtime.submodule:
         requested_model_id = "kokoro-v1.0"
+    elif requested_model_id is None and settings is not None:
+        requested_model_id = settings.get("selected_model") or (
+            "kokoro-v1.0-int8" if settings.get("engine_mode") == "cpu" else "kokoro-v1.0")
 
-    # 1. Determine model bundle to load
-    if requested_model_id is None:
-        try:
-            with open(settings_file, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-            requested_model_id = settings.get("selected_model")
-            if not requested_model_id:
-                # Check legacy engine_mode mapping
-                legacy_mode = settings.get("engine_mode")
-                if legacy_mode == "cpu":
-                    requested_model_id = "kokoro-v1.0-int8"
-                else:
-                    requested_model_id = "kokoro-v1.0"
-        except Exception:
-            requested_model_id = None
-
-    if requested_model_id == "gpu":
-        requested_model_id = "kokoro-v1.0"
-    elif requested_model_id == "cpu":
-        requested_model_id = "kokoro-v1.0-int8"
-
+    requested_model_id = {"gpu": "kokoro-v1.0", "cpu": "kokoro-v1.0-int8"}.get(requested_model_id, requested_model_id)
     if requested_model_id == "kokoro-v1.0-int8":
         int8_bundle = get_bundle("kokoro-v1.0-int8")
         if not int8_bundle or not int8_bundle.is_installed():
             print("[ENGINE] kokoro.int8.onnx not found. Falling back to Kokoro v1.0 (FP32) on CPU.")
-            requested_model_id = "kokoro-v1.0"
-            requested_mode = "cpu"
-
-    if not requested_model_id:
-        requested_model_id = get_default_installed_bundle_id()
+            requested_model_id, requested_mode = "kokoro-v1.0", "cpu"
+    requested_model_id = requested_model_id or get_default_installed_bundle_id()
 
     bundle = get_bundle(requested_model_id) if requested_model_id else None
     if (not bundle or not bundle.is_installed()) and not runtime.submodule:
         fallback_id = get_default_installed_bundle_id()
         if fallback_id:
             bundle = get_bundle(fallback_id)
-            requested_model_id = fallback_id
 
     if not bundle or not bundle.is_installed():
         system_status["last_error"] = (
@@ -82,163 +73,47 @@ def load_engine_logic(requested_model_id=None, requested_mode=None):
             "Manage models in FalcoType."
             if runtime.submodule else "No TTS voice models found. Please download a model."
         )
-        system_status["is_loading"] = False
         return
 
-    # 2. Determine hardware execution mode (GPU vs CPU)
-    if requested_mode is None:
-        try:
-            with open(settings_file, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-            requested_mode = settings.get("engine_mode", "gpu")
-        except Exception:
-            requested_mode = "gpu"
-
-    if requested_mode == "gpu" and not ort_gpu:
-        print("[ORT] onnxruntime-gpu not found (CPU package), skip GPU execution providers")
-        requested_mode = "cpu"
-
-    model_to_load = bundle.get_model_path()
     voices_path = bundle.get_voices_path()
-
     if not voices_path.exists():
         system_status["last_error"] = (
             "FalcoType's voices.bin is missing. Manage models in FalcoType."
             if runtime.submodule else f"Voice pack missing for {bundle.name}. Please re-download."
         )
-        system_status["is_loading"] = False
         return
 
-    actual_mode = requested_mode
-    if not ort_gpu:
-        actual_mode = "cpu"
+    if requested_mode is None:
+        requested_mode = (settings or {}).get("engine_mode", "gpu")
 
     try:
-        import app.state as state_module
-
-        # Hardware Choke: Prevent C-level math libraries from spawning hidden threads
-        os.environ["OMP_NUM_THREADS"] = "1"
-        os.environ["OPENBLAS_NUM_THREADS"] = "1"
-        os.environ["MKL_NUM_THREADS"] = "1"
-        os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-        os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
-        import onnxruntime as ort
-        try:
-            ort.set_default_logger_severity(3)
-        except AttributeError:
-            pass
-
-        if state_module.kokoro is not None:
-            print("[ENGINE] Unloading previous model...")
-            state_module.kokoro = None
-            gc.collect()
-
-        if not ort_gpu:
-            actual_mode = "cpu"
-        elif actual_mode == "gpu":
-            available_ort_providers = ort.get_available_providers()
-            valid_gpus = [
-                p for p in getattr(state_module, "providers", [])
-                if p in available_ort_providers and p != "CPUExecutionProvider"
-            ]
-            if not valid_gpus:
-                print(" -> [WARNING] No active GPU execution provider available. Fallback to CPU path.")
-                actual_mode = "cpu"
-
-        system_status["active_hardware"] = actual_mode
-        system_status["active_model"] = bundle.id
-        system_status["active_mode"] = requested_mode
-
-        print(f"[ENGINE] Loading Model: {bundle.name} on Hardware: {actual_mode.upper()}...")
-        print(f" -> Model Path: {model_to_load}")
-        print(f" -> Voices Path: {voices_path}")
-
-        if actual_mode == "gpu" and ort_gpu:
-            available_ort_providers = ort.get_available_providers()
-            custom_providers = []
-
-            for p in getattr(state_module, "providers", []):
-                if p in available_ort_providers:
-                    if p == "CUDAExecutionProvider":
-                        custom_providers.append((
-                            "CUDAExecutionProvider",
-                            {
-                                "device_id": 0,
-                                "cudnn_conv_algo_search": "DEFAULT",
-                                "arena_extend_strategy": "kSameAsRequested",
-                                "cudnn_conv_use_max_workspace": "0",
-                                "do_copy_in_default_stream": "1",
-                                "has_user_compute_stream": "0",
-                            },
-                        ))
-                    else:
-                        custom_providers.append(p)
-
-            active_names = [
-                p[0].replace("ExecutionProvider", "") if isinstance(p, tuple)
-                else p.replace("ExecutionProvider", "")
-                for p in custom_providers
-            ]
-            print(f" -> [ENGINE] Active Hardware Linked: \033[92m{' | '.join(active_names)}\033[0m")
-
-            original_session = ort.InferenceSession
-
-            def forced_gpu_session(*args, **kwargs):
-                kwargs["providers"] = custom_providers
-                if "sess_options" not in kwargs or kwargs["sess_options"] is None:
-                    sess_options = ort.SessionOptions()
-                    kwargs["sess_options"] = sess_options
-
-                kwargs["sess_options"].enable_cpu_mem_arena = False
-                kwargs["sess_options"].enable_mem_pattern = False
-                kwargs["sess_options"].execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-                kwargs["sess_options"].intra_op_num_threads = 1
-                kwargs["sess_options"].inter_op_num_threads = 1
-                kwargs["sess_options"].graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-                return original_session(*args, **kwargs)
-
-            ort.InferenceSession = forced_gpu_session
-
-            try:
-                state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
-            except Exception as e:
-                print(f"[ENGINE WARNING] PatchedKokoro failed: {e}. Trying standard Kokoro fallback.")
-                ort.InferenceSession = original_session
-                from kokoro_onnx import Kokoro
-                state_module.kokoro = Kokoro(str(model_to_load), str(voices_path))
-            finally:
-                ort.InferenceSession = original_session
-
-        else:
-            print("[ENGINE] Loading Model in \033[92mRAM (CPU)\033[0m...")
-            state_module.kokoro = PatchedKokoro(str(model_to_load), str(voices_path))
-            state_module.kokoro_export = state_module.kokoro
-
-        system_status["last_error"] = None
-        print(f"[ENGINE] Successfully loaded {bundle.name} with {len(state_module.kokoro.get_voices())} voices.")
-
-        # Validate and synchronize active voice for the loaded model
-        try:
-            with open(settings_file, "r", encoding="utf-8") as f:
-                current_settings = json.load(f)
-            cur_voice = current_settings.get("voice_id")
-            avail_voices = state_module.kokoro.get_voices()
-            if not cur_voice or cur_voice not in avail_voices:
-                current_settings["voice_id"] = ""
-                current_settings["selected_model"] = bundle.id
-                safe_save_json(settings_file, current_settings)
-                print(f"[ENGINE] Active voice reset for {bundle.name} (user manages selection).")
-        except Exception as err:
-            print(f"[ENGINE] Failed to sync voice settings: {err}")
-
+        state.engine.load(bundle.id, bundle.get_model_path(), voices_path, requested_mode)
     except Exception as e:
         system_status["last_error"] = f"Failed to load TTS engine: {str(e)}"
         print(f"[ENGINE ERROR] {system_status['last_error']}")
         import traceback
         traceback.print_exc()
+        return
+    system_status["last_error"] = None
 
-    system_status["is_loading"] = False
+    # A voice the new model lacks is cleared; the user picks again. Settings that
+    # cannot be read are left alone, never replaced by these two keys.
+    try:
+        current = _read_settings()
+        if current is not None and current.get("voice_id") not in state.engine.voices():
+            current["voice_id"] = ""
+            current["selected_model"] = bundle.id
+            safe_save_json(settings_file, current)
+            print(f"[ENGINE] Active voice reset for {bundle.name} (user manages selection).")
+    except Exception as err:
+        print(f"[ENGINE] Failed to sync voice settings: {err}")
+
+
+@router.get("/api/system/update-notice")
+def get_update_notice():
+    # Sync: the GitHub request runs in the threadpool. Inside FalcoType (Book mode)
+    # only FalcoType announces updates, so the managed Reader never checks.
+    return {"notice": None if runtime.submodule else pending_notice()}
 
 
 # --- System Status Endpoints ---
@@ -256,55 +131,35 @@ async def get_status():
     if runtime.submodule:
         selected_model = "kokoro-v1.0"
     available_models = get_available_models()
-    import app.state as state_module
-
-    # Only expose an active_model when the engine is actually running in memory
-    if state_module.kokoro is not None:
-        active_model = system_status.get("active_model", selected_model)
-        active_mode = system_status.get("active_mode", current_engine_mode)
-    else:
-        active_model = None
-        active_mode = current_engine_mode
 
     return {
         "submodule_mode": runtime.submodule,
         "downloads_allowed": not runtime.submodule,
         "models_read_only": runtime.submodule,
-        "model_loaded": state_module.kokoro is not None,
+        # Read first: the loader sets the model before it clears this, so the pair never looks failed.
         "is_loading": system_status["is_loading"],
+        "model_loaded": state.engine.loaded,
         "is_downloading": system_status["is_downloading"],
         "downloading_model": system_status.get("downloading_model"),
         "download_progress": system_status.get("download_progress", 0),
         "download_stage": system_status.get("download_stage"),
         "last_error": system_status["last_error"],
-        "voices": state_module.kokoro.get_voices() if state_module.kokoro else [],
+        "voices": state.engine.voices(),
         "engine_mode": current_engine_mode,
         "selected_model": selected_model,
-        "active_model": active_model,
-        "active_hardware": system_status.get("active_hardware", "cpu"),
+        # Only a model running in memory is active.
+        "active_model": state.engine.model_id,
+        "active_hardware": state.engine.hardware,
         "available_models": available_models,
+        "language_packs": {pack: language_packs.ready(pack) for pack in language_packs.PACKS},
     }
 
 
 # --- Model Management Endpoints ---
 @router.get("/api/system/models")
 async def list_models():
-    import app.state as state_module
-
-    # Only report an active model if the engine is actually running in memory.
-    # On fresh/freeze start (kokoro is None), nothing is truly active.
-    if state_module.kokoro is not None:
-        active_id = system_status.get("active_model")
-        if not active_id:
-            try:
-                with open(settings_file, "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                active_id = settings.get("selected_model", "kokoro-v1.0")
-            except Exception:
-                active_id = "kokoro-v1.0"
-    else:
-        active_id = None  # No engine → no model is "In Use"
-
+    # Only a model running in memory is "In Use".
+    active_id = state.engine.model_id
     catalog = get_catalog_summary(active_id)
     return {
         "submodule_mode": runtime.submodule,
@@ -317,7 +172,7 @@ async def list_models():
         "download_progress": system_status.get("download_progress", 0),
         "download_stage": system_status.get("download_stage"),
         "last_error": system_status.get("last_error"),
-        "active_hardware": system_status.get("active_hardware", "cpu"),
+        "active_hardware": state.engine.hardware,
         "models": catalog,
     }
 
@@ -358,8 +213,7 @@ async def download_model_endpoint(request: ModelDownloadRequest, background_task
             download_model_bundle(model_id, progress_callback=on_progress)
             print(f"[SETUP] Download complete for bundle {model_id}")
 
-            import app.state as state_module
-            if state_module.kokoro is None:
+            if not state.engine.loaded:
                 load_engine_logic(requested_model_id=model_id)
         except Exception as e:
             msg = classify_network_error(e)
@@ -436,12 +290,10 @@ async def delete_model_endpoint(request: ModelDeleteRequest):
     if system_status["is_downloading"] and system_status.get("downloading_model") == model_id:
         raise HTTPException(status_code=400, detail="Cannot delete while downloading")
 
-    import app.state as state_module
 
     # Protect the currently active in-use model from deletion.
     # The UI hides the delete button, but this is the backend guard.
-    is_engine_loaded = state_module.kokoro is not None
-    is_active = is_engine_loaded and (system_status.get("active_model") == model_id)
+    is_active = state.engine.model_id == model_id
     if is_active:
         raise HTTPException(
             status_code=400,

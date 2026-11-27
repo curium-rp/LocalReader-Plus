@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -22,24 +21,6 @@ def _as_int(value, default=None):
         return int(round(float(value)))
     except (TypeError, ValueError):
         return default
-
-
-def _native(window):
-    return getattr(window, "native", None) if window is not None else None
-
-
-def _native_flag(native, *names):
-    if native is None:
-        return None
-    for name in names:
-        value = getattr(native, name, None)
-        if value is None:
-            continue
-        try:
-            return bool(value() if callable(value) else value)
-        except Exception:
-            continue
-    return None
 
 
 from platform_driver import get_platform_driver
@@ -427,4 +408,3 @@ class WindowStateManager:
                         temp_path.unlink()
                     except Exception:
                         pass
-

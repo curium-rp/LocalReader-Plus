@@ -1,6 +1,6 @@
 import { state } from "./state.js";
-import { fetchJSON, fetchBlob, API_URL } from "./api.js";
-import { showToast, stripHTML, renderIcons, setMonitorPreview, syncBackToReadingButton } from "./ui.js";
+import { fetchJSON, API_URL } from "./api.js";
+import { showToast, renderIcons, setMonitorPreview, syncBackToReadingButton } from "./ui.js";
 import {
   renderPage,
   getSentencesForPage,
@@ -14,6 +14,7 @@ import {
 import { isSyncActive, syncState, recordSyncAudio, suppressSyncAudio, clearTimeCutAudio } from "../falco_api/falcotype-sync-state.js";
 import { SyncSpeechCache } from "../falco_api/sync-speech-cache.js";
 import { revealInSpread } from "./horizontal.js";
+import { keepInFocus } from "./library.js";
 import { updateProgressDisplay, getProgressMetrics } from "./progress.js";
 import { updateWakeLock } from "./wakelock.js";
 import { VOICE_BENCHMARKS } from "./blending.js";
@@ -23,8 +24,45 @@ let currentSynthesisId = 0; // 🌟 ADDED: Bulletproof lock to prevent voice ove
 let preparedSyncAudio = null;
 let pausedSyncSource = null;
 let standaloneCacheOwner = "";
-const syncSpeechKey = () => JSON.stringify([getEffectiveVoice(), document.getElementById("speedRange")?.value,
+const liveSpeechKey = () => JSON.stringify([getEffectiveVoice(), document.getElementById("speedRange")?.value,
   state.rules, state.ignoreList, state.pauseSettings, state.behaviorSettings]);
+// A started FalcoType run speaks with the voice, speed and rules it began with.
+// Changes made meanwhile are kept and used from the next run; reading on its own
+// always uses the current ones. A run lets go when it finishes, when another run
+// starts, or when the Reader moves it on (Esc, Restart, Continue, a time cut:
+// releaseSpeechHold), and a run let go never holds again.
+let heldSpeech = null;
+let retiredRun = "";
+
+function startedRun() {
+  const practice = isSyncActive() ? syncState.practiceStatus : null;
+  if (!practice?.run_id || !practice.run_start || practice.run_state === "finished") return "";
+  return `${practice.session_id}:${practice.run_id}`;
+}
+
+function letGo(run) {
+  const held = heldSpeech;
+  heldSpeech = null;
+  if (run) retiredRun = run;
+  if (held && held.key !== liveSpeechKey()) showToast("New voice settings in use");
+}
+
+export function releaseSpeechHold() {
+  letGo(startedRun() || heldSpeech?.run || "");
+}
+
+function syncSpeechKey() {
+  const run = startedRun();
+  if (heldSpeech && heldSpeech.run !== run) letGo(heldSpeech.run);
+  if (!run || run === retiredRun) return liveSpeechKey();
+  if (!heldSpeech) heldSpeech = { run, key: liveSpeechKey(), noted: false };
+  // One notice per run, however many changes follow it.
+  if (!heldSpeech.noted && liveSpeechKey() !== heldSpeech.key) {
+    heldSpeech.noted = true;
+    showToast("Voice changes apply when the next lesson starts");
+  }
+  return heldSpeech.key;
+}
 let syncPrecacheGeneration = 0;
 const syncAudioCache = new SyncSpeechCache(async (unit, signal) => {
   const res = await fetch(`${API_URL}/api/synthesize?audio_format=pcm_f32le`, {
@@ -215,6 +253,7 @@ function playAudioBuffer(audioBuffer, bType = "N", displayChars = "") {
       state.isPlaying = false;
       syncState.playback = "ended";
       syncState.audioEnded = true;
+      syncState.onAudioEnded?.();
       osMediaAnchor.pause();
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
       syncPlayPauseIcons("play");
@@ -312,6 +351,7 @@ export function stopPlayback() {
 
 export async function pauseSyncPlayback() {
   if (!isSyncActive() || syncState.advancement !== "status") return stopPlayback();
+  syncState.sleepPending = false;
   if (syncState.userPaused) return;
   syncState.userPaused = true;
   if (!state.currentAudioSource) {
@@ -342,6 +382,7 @@ export async function resumeSyncPlayback() {
   }
   const paused = pausedSyncSource;
   syncState.userPaused = false;
+  syncState.sleepPending = false;
   if (!syncState.audioEnabled || syncState.audioEnded) return;
   if (paused && paused.source === state.currentAudioSource && paused.doc === state.currentDoc &&
       paused.session === syncState.sessionId && paused.revision === syncState.selectionRevision && paused.speech === syncSpeechKey()) {
@@ -357,6 +398,8 @@ export async function resumeSyncPlayback() {
     preCacheNextSentences();
     return;
   }
+  // No speech can be made yet: FalcoType starts it when the voice is ready.
+  if (syncState.managed && syncState.engine === "loading") return;
   startPlayback();
 }
 
@@ -394,6 +437,36 @@ function readerSpeechUnit(text, currentEl, pageIndex) {
     bType === "S" && currentEl ? currentEl.textContent.trim() || cleanText.trim() || "•••" : cleanText.trim()))
     .replace(/<[^>]+>/g, '').trim();
   return { cleanText, bType, displayChars };
+}
+
+// The reading sentence on screen: its highlight, the view kept on it, and progress.
+function showReadingPosition() {
+  if (state.viewPageIndex === state.readingPageIndex) {
+    clearActiveSentenceHighlights();
+    state.sentenceElements.forEach((el, i) => {
+      el.classList.add("sentence");
+      el.classList.toggle("active-sentence", i === state.currentSentenceIndex);
+    });
+    const active = state.sentenceElements[state.currentSentenceIndex];
+
+    // Horizontal spreads reveal the spread; vertical keeps the block in the focus zone
+    // (images included: top-anchored, so a header image + its title don't double-jump).
+    if (active && state.autoScrollEnabled && !revealInSpread(active)) {
+      keepInFocus(active);
+    }
+  }
+  updateProgressDisplay();
+}
+
+// A Book sync selection (FalcoType's run or the user's pick) on screen at once, the
+// monitor included, as playback shows a spoken sentence. Speech that starts after
+// replaces the monitor text with its own.
+export function showSyncPosition() {
+  showReadingPosition();
+  const text = state.readingSentences?.[state.currentSentenceIndex];
+  if (typeof text !== "string") return;
+  const { bType, displayChars } = readerSpeechUnit(text, getCurrentReaderElement(), state.readingPageIndex);
+  setMonitorPreview(displayChars, { center: bType === "Img" || bType === "S" });
 }
 
 export async function playNext({ prepareOnly = false } = {}) {
@@ -475,62 +548,20 @@ export async function playNext({ prepareOnly = false } = {}) {
     }
     return;
   }
-  //auto scroll in this functions for adjudt cut jump later 
-  //currnet it cut 10 % top and 20 % buttom
-  if (state.viewPageIndex === state.readingPageIndex) {
-    clearActiveSentenceHighlights();
-    state.sentenceElements.forEach((el, i) => {
-      el.classList.add("sentence");
-      el.classList.toggle("active-sentence", i === state.currentSentenceIndex);
-    });
-    const active = state.sentenceElements[state.currentSentenceIndex];
-    
-    if (active && state.autoScrollEnabled) {
-      if (revealInSpread(active)) {
-        // Horizontal spreads: keep the active sentence on the visible spread.
-      } else {
-      const scrollerNode = document.querySelector(".content-area");
-      if (scrollerNode) {
-          const elRect = active.getBoundingClientRect();
-          const containerRect = scrollerNode.getBoundingClientRect();
-          const relativeTop = elRect.top - containerRect.top + scrollerNode.scrollTop;
-          
-          const hasNarrativeActive = /[a-zA-Z0-9\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFF9F\u4E00-\u9FAF\u3400-\u4DBF]/.test(active.textContent || "");
-          const isImg = active.tagName && (active.tagName.toLowerCase() === 'img' || (!hasNarrativeActive && active.querySelector('img, svg'))) && active.tagName.toLowerCase() !== 's';
-          
-          if (state.currentSentenceIndex === 0 && !isImg) {
-              scrollerNode.scrollTo({ top: 0, behavior: 'smooth' });
-          } else if (isImg) {
-              const alignImg = () => {
-                  if (!state.autoScrollEnabled) return;
-                  const currentRect = active.getBoundingClientRect();
-                  const cPos = (currentRect.top - containerRect.top + scrollerNode.scrollTop) - (containerRect.height / 2) + (currentRect.height / 2);
-                  scrollerNode.scrollTo({ top: Math.max(0, cPos), behavior: 'smooth' });
-              };
-              alignImg(); 
-              setTimeout(alignImg, 450); 
-          } else {
-              const outsideBand = elRect.top < containerRect.top + containerRect.height * 0.10 ||
-                  elRect.bottom > containerRect.bottom - containerRect.height * 0.20;
-              if (outsideBand) {
-                  scrollerNode.scrollTo({ top: Math.max(0, relativeTop - containerRect.height * 0.15), behavior: 'smooth' });
-              }
-          }
-      }
-      }
+  // 🌟 THE PHANTOM IMAGE AUTO-SKIP: a duplicate image inside a header/block is skipped
+  // BEFORE highlight + camera, otherwise the view jumps to it and instantly jumps again.
+  if (!isSyncActive()) {
+    const phantomEl = state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null;
+    if (phantomEl && phantomEl.tagName.toLowerCase() === 'img' && phantomEl.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n')) {
+      state.currentSentenceIndex++;
+      return playNext();
     }
   }
 
-  updateProgressDisplay();
+  showReadingPosition();
   saveProgress();
 
   const currentEl = isSyncActive() ? getCurrentReaderElement() : (state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null);
-
-  // 🌟 THE PHANTOM IMAGE AUTO-SKIP: Move forward automatically if we hit a duplicate image during playback
-  if (!isSyncActive() && currentEl && currentEl.tagName.toLowerCase() === 'img' && currentEl.closest('h1, h2, h3, h4, h5, h6, [id^="s_"], n')) {
-      state.currentSentenceIndex++;
-      return playNext();
-  }
 
   const { cleanText, bType, displayChars } = readerSpeechUnit(text, currentEl, state.readingPageIndex);
 
@@ -580,16 +611,22 @@ export async function playNext({ prepareOnly = false } = {}) {
     try {
       const unit = syncCacheUnit({ cleanText, bType, displayChars }, state.readingPageIndex, targetIndex, requestedSpeech);
       const buffer = await syncAudioCache.get(unit);
-      if (!valid() || requestedSpeech !== syncSpeechKey()) return false;
+      if (!valid()) return false;
+      // Voice, speed or a rule changed meanwhile: speak with those of now.
+      if (requestedSpeech !== syncSpeechKey()) return playNext({ prepareOnly });
       return ready(buffer, bType, displayChars);
     } catch (error) {
-      if (!valid() || error.name === "AbortError") return false;
+      if (!valid()) return false;
+      // The cache drops a request whose settings are gone.
+      if (requestedSpeech !== syncSpeechKey()) return playNext({ prepareOnly });
+      // Every other cancel invalidates this request first, so what is left is the cache's timeout.
+      const failure = error.name === "AbortError" ? new Error("Kokoro took too long to answer.") : error;
       syncState.playback = "error";
       syncState.audioEnded = false;
-      syncState.error = error.message;
+      syncState.error = failure.message;
       stopPlayback();
-      if (prepareOnly) throw error;
-      showToast(error.message);
+      if (prepareOnly) throw failure;
+      showToast(failure.message);
       return false;
     }
   }
@@ -664,19 +701,37 @@ export async function prepareSyncPlayback() {
   preCacheNextSentences();
 }
 
+// The user's Play. Launched by FalcoType there is no audiobook: a run starts speech,
+// and Play only lifts the user's own pause.
+export function requestPlayback() {
+  if (!syncState.managed) return startPlayback();
+  if (state.isPlaying) return;
+  syncState.sleepPending = false;
+  if (isSyncActive() && syncState.userPaused) {
+    // With no speech to continue this only lifts the pause: FalcoType starts what the run
+    // needs, which is none before the first input or while a picture shows.
+    if (pausedSyncSource) void resumeSyncPlayback().catch(error => showToast(error.message));
+    else syncState.userPaused = false;
+    return;
+  }
+  showToast(isSyncActive() && !syncState.audioEnabled ? "Kokoro TTS is off in FalcoType" : "Standby: speech starts when you type in FalcoType");
+}
+
 export function togglePlayback() {
   if (state.isPlaying) {
     if (isSyncActive() && syncState.advancement === "status") void pauseSyncPlayback();
     else stopPlayback();
   } else {
-    startPlayback();
+    requestPlayback();
   }
 }
 
 export function startPlayback() {
+  if (syncState.managed && !isSyncActive()) return;
   if (isSyncActive() && syncState.transitioning) return;
   if (isSyncActive() && !syncState.audioEnabled) return;
   if (state.isPlaying) return;
+  if (isSyncActive() && syncState.sleepPending) { void pauseSyncPlayback(); return; }
   if (isSyncActive() && syncState.userPaused) { void resumeSyncPlayback().catch(error => showToast(error.message)); return; }
   if (suppressSyncAudio()) return;
   initAudioContext();
@@ -773,9 +828,11 @@ export async function jumpToSentence(i) {
 }
 
 export async function saveProgress(flushImmediately = false) {
-  if (!state.currentDoc) return;
+  if (!state.currentDoc || state.placeDoc !== state.currentDoc) return;
+  // While a book opens, the indexes can still be the last book's.
+  if (syncState.managed && syncState.book !== "ready") return;
 
-  const currentEl = isSyncActive() ? getCurrentReaderElement() : (state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null);
+  const currentEl = syncState.managed || isSyncActive() ? getCurrentReaderElement() : (state.sentenceElements ? state.sentenceElements[state.currentSentenceIndex] : null);
   let sentenceIdString = null;
   if (currentEl) {
       sentenceIdString = currentEl.dataset?.sentenceId || currentEl.getAttribute('id') || currentEl.closest('[id^="s_"]')?.getAttribute('id') || currentEl.id || null;

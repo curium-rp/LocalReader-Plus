@@ -552,11 +552,44 @@ def _pdf_assign_dest_notes(
     return assigned
 
 
+# True if a span is a drop cap: one big letter followed by smaller body text
+def _pdf_is_drop_cap(prev, cur) -> bool:
+    letter = prev["text"].strip()
+    return (
+        len(letter) == 1 and letter.isalpha()
+        and prev["size"] >= cur["size"] * 1.4
+        and cur["text"][:1].isalpha()
+    )
+
+
+# Separator between two PDF spans: "" (same word), " " or a dropped line hyphen
+def _pdf_span_separator(prev, cur) -> str:
+    """PyMuPDF starts a new span on every font change, even mid-word ("S|omething").
+
+    Spaces come from the text itself or from a real horizontal gap, never from
+    the span boundary alone.
+    """
+    if prev["text"][-1:].isspace() or cur["text"][:1].isspace():
+        return " "
+    if _pdf_is_drop_cap(prev, cur):
+        return ""
+    if prev["line"] != cur["line"]:
+        # Line wrap: "exam-" + "ple" joins; anything else is a word break.
+        if prev["text"].endswith("-") and prev["text"][-2:-1].isalpha() and cur["text"][:1].islower():
+            return "-"
+        return " "
+    pb, cb = prev["bbox"], cur["bbox"]
+    if not pb or not cb:
+        return " "
+    gap = cb[0] - pb[2]
+    return " " if gap > 0.2 * min(prev["size"] or 10.0, cur["size"] or 10.0) else ""
+
+
 # Render a PDF block's spans into HTML markup with footnote links
 def _pdf_block_span_markup(block, src_notes: List[Dict[str, Any]], page_index: Optional[int] = None):
     collected = []
     max_fontsize = 0.0
-    for line in block.get("lines", []):
+    for line_i, line in enumerate(block.get("lines", [])):
         for span in line.get("spans", []):
             raw = span.get("text") or ""
             size = float(span.get("size") or 0)
@@ -569,6 +602,8 @@ def _pdf_block_span_markup(block, src_notes: List[Dict[str, Any]], page_index: O
                 "bbox": span.get("bbox"),
                 "text": cleaned,
                 "flags": int(span.get("flags") or 0),
+                "size": size,
+                "line": line_i,
             })
 
     winners: Dict[str, tuple] = {}
@@ -590,6 +625,18 @@ def _pdf_block_span_markup(block, src_notes: List[Dict[str, Any]], page_index: O
     for span_i, span in enumerate(collected):
         cleaned = span["text"]
         flags = span["flags"]
+        if span_i:
+            sep = _pdf_span_separator(collected[span_i - 1], span)
+            if sep == "-":
+                # Drop the line-break hyphen already emitted with the previous span.
+                if pieces[-1].rstrip().endswith("-"):
+                    pieces[-1] = pieces[-1].rstrip()[:-1]
+                    plain_parts[-1] = plain_parts[-1].rstrip()[:-1]
+                    sep = ""
+                else:
+                    sep = " "
+            pieces.append(sep)
+            plain_parts.append(sep)
         note = wrap_at.get(span_i)
         if note:
             src_rect = None
@@ -600,15 +647,15 @@ def _pdf_block_span_markup(block, src_notes: List[Dict[str, Any]], page_index: O
                 if _pdf_rects_intersect(span["bbox"], rect, pad=0.25):
                     break
             pieces.append(
-                _pdf_wrap_callout_markup(cleaned, note["id"], span["bbox"], src_rect, flags)
+                _pdf_wrap_callout_markup(cleaned, note["id"], span["bbox"], src_rect, flags).rstrip()
             )
         elif flags & 1:
-            pieces.append(f"<sup>{html.escape(cleaned)}</sup> ")
+            pieces.append(f"<sup>{html.escape(cleaned)}</sup>")
         else:
-            pieces.append(html.escape(cleaned) + " ")
+            pieces.append(html.escape(cleaned))
         plain_parts.append(cleaned)
-    markup = re.sub(r" {2,}", " ", "".join(pieces)).strip()
-    plain = " ".join(" ".join(plain_parts).split()).strip()
+    markup = re.sub(r"\s{2,}", " ", "".join(pieces)).strip()
+    plain = " ".join("".join(plain_parts).split()).strip()
     if plain.startswith("•"):
         plain = plain[1:].strip()
     return plain, markup.strip(), max_fontsize
@@ -617,12 +664,13 @@ def _pdf_block_span_markup(block, src_notes: List[Dict[str, Any]], page_index: O
 # Master PDF ingestion pipeline: extract text/spans, detect footnotes, and render pages
 @router.post("/api/convert/pdf")
 async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    import shutil
     try: import pymupdf
     except ImportError: raise HTTPException(status_code=500, detail="PyMuPDF library not installed.")
-        
-    from fastapi import HTTPException
-    from logic.smart_content_detector import detect_strict_scene_break
+
+    try:
+        from logic.smart_content_detector import detect_strict_scene_break
+    except ImportError:
+        from ..logic.smart_content_detector import detect_strict_scene_break
 
     if not file.filename.lower().endswith(".pdf"): raise HTTPException(status_code=400, detail="Not a PDF file")
 
@@ -665,7 +713,8 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
         image_map = {}
         image_counter = 1
         global_sentence_idx = 0
-        held_text = "" 
+        held_text = ""
+        held_cap = ""
         paragraph_terminators = (".", "!", "?", "…", "。", "！", "？", "”", '"', "’", "'", "」", "』")
 
         for page_index in range(len(doc)):
@@ -683,7 +732,10 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
             dest_notes = [note for note in pdf_notes if note.get("dst_page") == page_index]
             
             table_bboxes = []
-            if hasattr(page, "find_tables"):
+            # find_tables() (default "lines" strategy) needs ruling lines; prose
+            # pages have none, so skip the costly detection there.
+            get_drawings = getattr(page, "get_cdrawings", None) or page.get_drawings
+            if hasattr(page, "find_tables") and get_drawings():
                 for tab in page.find_tables():
                     elements.append({"type": "table", "bbox": tab.bbox, "data": tab.extract()})
                     table_bboxes.append(tab.bbox)
@@ -713,6 +765,24 @@ async def convert_pdf(id: str, background_tasks: BackgroundTasks, file: UploadFi
                     )
                     if block_text.startswith('•'): block_text = block_text[1:].strip()
                     if not block_text or block_text in ['•', '-', '·']: continue
+
+                    # A drop cap set as its own block ("S" + "omething ...") is
+                    # not a heading: hold the letter and glue it to the next text.
+                    if len(block_text) == 1 and block_text.isalpha() and max_fontsize > 14:
+                        if held_text:
+                            split_html, global_sentence_idx = master_sentence_splitter(
+                                held_text, global_sentence_idx
+                            )
+                            page_html += split_html
+                            held_text = ""
+                        held_cap = block_text
+                        continue
+                    if held_cap:
+                        # "A" / "I" are words on their own; other letters start the word.
+                        joiner = "" if held_cap not in ("A", "I") and block_text[:1].isalpha() else " "
+                        block_markup = html.escape(held_cap) + joiner + (block_markup or html.escape(block_text))
+                        block_text = held_cap + joiner + block_text
+                        held_cap = ""
 
                     dest_note = dest_assignment.get(elem_index)
                     if dest_note:

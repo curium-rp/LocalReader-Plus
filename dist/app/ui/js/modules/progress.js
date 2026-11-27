@@ -221,6 +221,8 @@ export function jumpToDisplayedPage(displayedPage) {
   return true;
 }
 
+let scrollRaf = 0;
+
 function scheduleScrollUpdate() {
   if (scrollRaf) return;
   scrollRaf = requestAnimationFrame(() => {

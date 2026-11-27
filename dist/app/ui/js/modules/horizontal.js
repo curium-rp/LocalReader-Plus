@@ -24,10 +24,6 @@ export function setHorizontalPageTurn(fn) {
   pageTurnHandler = typeof fn === "function" ? fn : null;
 }
 
-export function requestLandingSpread(which) {
-  pendingSpread = which === "last" ? "last" : "first";
-}
-
 function paneEl() {
   return document.getElementById("readerContent");
 }
@@ -463,8 +459,19 @@ function clearPaneHeight() {
   text.style.removeProperty("--spread-column-gap");
 }
 
+// A minimized or covered window may paint no frame, and the layout lock waits on this.
+// Measuring lays the page out by itself, so a late timer does as well as a frame.
+const FRAME_WAIT_MS = 250;
 function afterLayout(cb) {
-  requestAnimationFrame(cb);
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    cb();
+  };
+  const timer = setTimeout(run, FRAME_WAIT_MS);
+  requestAnimationFrame(run);
 }
 
 function ensureImagesLoadedForLayout() {
@@ -738,9 +745,9 @@ function bindListeners() {
   if (typeof ResizeObserver !== "undefined") {
     const ro = new ResizeObserver(() => onViewportChange());
     if (pane) ro.observe(pane);
+    // The content area carries every docked-sidebar change; the sidebar's own
+    // box is not watched, since a floating peek resizes it without moving the book.
     const area = document.querySelector(".content-area");
-    const sidebar = document.querySelector(".sidebar");
     if (area && area !== pane) ro.observe(area);
-    if (sidebar) ro.observe(sidebar);
   }
 }

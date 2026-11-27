@@ -3,7 +3,6 @@ Content Detection & pattern scene break.
 """
 
 import re
-from typing import Tuple
 
 
 # =========================================
@@ -48,27 +47,3 @@ def detect_strict_scene_break(text: str, allow_breaks_flag: bool) -> bool:
             return True
             
     return False
-
-
-def split_pdf_sentences(text: str, start_idx: int) -> Tuple[str, int]:
-    import html # Safe localized import
-    
-    text = text.strip()
-    if not text:
-        return "", start_idx
-        
-    pattern = r'(?<=[.!?])\s+(?=[A-Z"\'\u201c\u2018])|(?<=[。！？])\s*(?=[\u4e00-\u9fa5\u3040-\u30ff"\'\u201c\u2018])'
-    chunks = re.split(pattern, text)
-    
-    new_html = ""
-    current_idx = start_idx
-    
-    for c in chunks:
-        chunk_text = c.strip()
-        if chunk_text:
-            # 🌟 FIX: Sanitize the text to prevent PDF code blocks from destroying the UI DOM
-            safe_text = html.escape(chunk_text)
-            new_html += f'<n id="s_{current_idx}">{safe_text}</n> '
-            current_idx += 1
-            
-    return new_html.strip(), current_idx

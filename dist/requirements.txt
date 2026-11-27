@@ -24,11 +24,10 @@ selectolax
 ## --- Document Parsing ---##
 PyMuPDF
 
-## --- CJK Voice Support ---##
-misaki[zh]
 fugashi
 unidic-lite
 jaconv
 jamdict
+
 
 

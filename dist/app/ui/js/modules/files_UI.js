@@ -1,6 +1,6 @@
 import { fetchJSON } from "./api.js";
 import { showToast, renderIcons } from "./ui.js";
-import { selectDocument, loadLibrary, peekShelfStatus } from "./library.js";
+import { selectDocument, beginBookOpen, loadLibrary, peekShelfStatus } from "./library.js";
 
 // State
 let allTreesData = null; // { active_id, paths, trees, total_books, flat_list }
@@ -2099,10 +2099,6 @@ function renderEmptyState() {
   container.querySelector("#feEmptyAddBtn")?.addEventListener("click", handlePickFolderNative);
 }
 
-function isBookInShelf(epubPath, fileName) {
-  return Boolean(getCachedBook(epubPath, fileName));
-}
-
 /**
  * 1-Click adds book to shelf.
  */
@@ -2136,6 +2132,7 @@ async function handleAddBookToShelf(epubPath, cardElement) {
  * Double click or Open button: adds to shelf and selects document to start reading immediately.
  */
 async function handleOpenBookDirect(epubPath) {
+  const request = beginBookOpen();
   try {
     let book = libraryCache.get(epubPath.toLowerCase());
     if (!book) {
@@ -2158,7 +2155,7 @@ async function handleOpenBookDirect(epubPath) {
       if (typeof window !== "undefined" && typeof window.closeHistoryUI === "function") {
         window.closeHistoryUI();
       }
-      await selectDocument(book);
+      await selectDocument(book, request);
     }
   } catch (err) {
     console.error("[files_UI] Open book failed:", err);

@@ -1,19 +1,14 @@
-import os
-import sys
 import json
 import time
 import threading
-import platform
-from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from .config import (
     base_dir,
-    userdata_dir,
     content_dir,
     settings_file,
     rules_file,
@@ -23,13 +18,9 @@ from .config import (
 from .utils import safe_save_json, safe_init_json
 import app.state as state_module
 
-# Extract dynamic ONNX providers configured in main.py, filtering out empty strings
-ort_env = os.environ.get("ORT_AUTO_PROVIDERS", "")
-state_module.providers = [p for p in ort_env.split(",") if p]
-
 from .models import AppSettings
 
-from .routers import settings, library, tts, system, export, timer, theme, render, view, redirect, blending
+from .routers import settings, library, tts, system, export, theme, render, view, redirect, language_packs
 from . import files_api
 from .falco_api import falcotype
 
@@ -117,10 +108,6 @@ async def lifespan(app: FastAPI):
     yield
 
     print("[SHUTDOWN] Cleanup complete.")
-    try:
-        state_module.sleep_timer.stop_timer()
-    except Exception:
-        pass
 
 # --- App Definition ---
 app = FastAPI(title="LocalReader Plus", lifespan=lifespan)
@@ -151,13 +138,23 @@ app.include_router(library.router)
 app.include_router(tts.router)
 app.include_router(system.router)
 app.include_router(export.router)
-app.include_router(timer.router)
 app.include_router(theme.router)
 app.include_router(render.router)
 app.include_router(view.router)
-app.include_router(blending.router)
+app.include_router(state_module.blends.router())
+app.include_router(language_packs.router)
 app.include_router(files_api.router)
 app.include_router(falcotype.router)
+
+# --- Favicon ---
+# Declared ahead of the "/" static mount, which would otherwise answer it with a 404.
+favicon_path = base_dir.parent / "localreader_icons" / "windows" / "LocalReader.ico"
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    if not favicon_path.is_file():
+        return Response(status_code=204)
+    return FileResponse(favicon_path, media_type="image/x-icon")
 
 # --- Static Files ---
 ui_dir = base_dir / "ui"

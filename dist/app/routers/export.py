@@ -1,11 +1,12 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-from ..state import export_status, ffmpeg_status
+from ..state import export_status, ffmpeg_status, system_status
+from .. import state
 from ..config import content_dir, userdata_dir
-from ..models import ExportRequest, SynthesisRequest
-from ..utils import has_onnxruntime_gpu
-from .tts import synthesize
+from ..models import ExportRequest
+from speech_core import SynthesisRequest
+from .tts import reader_speech
 from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 import json
 import re
@@ -16,8 +17,6 @@ import subprocess
 import shutil
 import soundfile as sf
 import sys
-import asyncio
-import io
 from pathlib import Path
 
 # Fix paths for logic imports
@@ -199,15 +198,6 @@ async def install_ffmpeg(background_tasks: BackgroundTasks):
     return {"status": "started"}
 
 
-@router.post("/api/ffmpeg/cancel")
-async def cancel_ffmpeg_download():
-    global ffmpeg_installer
-    if ffmpeg_installer:
-        ffmpeg_installer.cancel()
-        return {"status": "cancelled"}
-    return {"status": "not_running"}
-
-
 @router.post("/api/export/audio")
 async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks):
     global export_status
@@ -217,8 +207,7 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
     start_tts_id = request.start_tts_id
     end_tts_id = request.end_tts_id
 
-    import app.state as state_module
-    if state_module.kokoro is None:
+    if not state.engine.loaded:
         raise HTTPException(status_code=503, detail="TTS Engine not initialized.")
 
     resolved_ffmpeg_path = None
@@ -429,16 +418,8 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
                             behavior_type=el_data["b_type"],
                             behavior_settings=dict(self.req.behavior_settings) if self.req.behavior_settings else None,
                         )
-                        response = synthesize(synth_req)  # Already running in the export worker.
-                        async def _get_audio():
-                            chunks = [chunk async for chunk in response.body_iterator]
-                            return b"".join(chunks)
-
-                        audio_bytes = asyncio.run(_get_audio())
-                        if not audio_bytes:
-                            return np.array([], dtype=np.float32), 24000
-
-                        samples, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+                        speech = reader_speech(synth_req)  # Already running in the export worker.
+                        samples, sr = np.asarray(speech.samples, dtype=np.float32).flatten(), speech.sample_rate
                         # 🌟 LEAD-IN NORMALIZATION: Normalize front pause on the very first element of the file
                         if el_data.get("is_first_element") and len(samples) > 0:
                             lead_in_frames = int(0.25 * sr)
@@ -462,40 +443,8 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
             import multiprocessing
             from ..config import settings_file
             
-            # 1. Detect Hardware Mode
-            engine_mode = "gpu"
-            try:
-                if settings_file.exists():
-                    with open(settings_file, "r", encoding="utf-8") as sf_f:
-                        user_settings = json.load(sf_f)
-                        engine_mode = user_settings.get("engined_mode", "gpu")
-            except Exception:
-                pass
-            
-            # ---  HARDWARE VALIDATION LAYER ---
-            # Prevents CPU choking if the system silently fell back to CPU mode
-            if engine_mode == "gpu" and not has_onnxruntime_gpu():
-                print("[Export] onnxruntime-gpu not found, skip GPU providers")
-                engine_mode = "cpu"
-            elif engine_mode == "gpu":
-                try:
-                    import onnxruntime as ort
-                    available_providers = ort.get_available_providers()
-                    gpu_providers = [
-                        "CUDAExecutionProvider", 
-                        "CoreMLExecutionProvider", 
-                        "DmlExecutionProvider", 
-                        "ROCMExecutionProvider",
-                        "OpenVINOExecutionProvider"
-                    ]
-                    
-                    # If no valid hardware provider is active in the engine, force CPU scaling
-                    if not any(p in available_providers for p in gpu_providers):
-                        print("[Export] Warning: GPU mode requested but no hardware provider found. Falling back to CPU scaling.")
-                        engine_mode = "cpu"
-                except Exception:
-                    # Failsafe if ONNX isn't initialized yet
-                    engine_mode = "cpu"
+            # 1. Size the workers for the hardware the engine actually runs on.
+            engine_mode = state.engine.hardware
 
             total_cores = multiprocessing.cpu_count()
             reserved_cores = max(1, total_cores // 6)
@@ -603,26 +552,17 @@ async def export_audio(request: ExportRequest, background_tasks: BackgroundTasks
 async def flush_export_vram(background_tasks: BackgroundTasks):
     def flush_task():
         print("[Export] Queue complete. Flushing RAM/VRAM and restoring idle state...")
+        # Before the unload, so a status read between the two never looks like a failed engine.
+        system_status["is_loading"] = True
         try:
-            import gc
-            import app.state as state_module
-            
-            # 🌟 DEEP C++ DESTRUCTION: Force OS to reclaim memory immediately
-            for engine_attr in ["kokoro", "kokoro_export"]:
-                engine = getattr(state_module, engine_attr, None)
-                if engine is not None:
-                    if hasattr(engine, "sess"):
-                        del engine.sess  # Nuke the ONNX C++ InferenceSession directly
-                    setattr(state_module, engine_attr, None)
-                
-            # Run GC multiple times to clear deep generational buffers
-            gc.collect()
-            gc.collect()
-            
+            # Return the model's RAM/VRAM to the OS before reloading it.
+            state.engine.unload()
+
             # Reboot the engine smoothly in the background
             from .system import load_engine_logic
             load_engine_logic()
         except Exception as e:
+            system_status["is_loading"] = False
             print(f"[Export] Memory Flush Warning: {e}")
 
     background_tasks.add_task(flush_task)
@@ -640,17 +580,6 @@ async def cancel_export():
         export_status["is_exporting"] = False
         return {"status": "cancelled"}
     return {"status": "not_running"}
-
-# Note: For nested downloads via URL, we use a catch-all path parameter.
-@router.get("/api/export/download/{file_path:path}")
-async def download_export(file_path: str):
-    from fastapi.responses import FileResponse
-    from ..config import userdata_dir
-    target_path = userdata_dir.parent / "Audio files" / file_path
-    if not target_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    media_type = "audio/mpeg" if file_path.endswith(".mp3") else "audio/wav"
-    return FileResponse(target_path, media_type=media_type, filename=target_path.name)
 
 from fastapi import Request
 

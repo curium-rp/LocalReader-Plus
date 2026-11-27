@@ -1,6 +1,5 @@
 import os
 import sys
-import glob
 import time
 import signal
 import threading
@@ -12,6 +11,7 @@ from pathlib import Path
 base_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(base_dir))
 from app.runtime import runtime
+from app.config import DEBUG
 from app.logic.local_server import bind_server_socket, server_url
 
 from platform_driver import get_platform_driver
@@ -19,78 +19,6 @@ get_platform_driver().configure_engine()
 
 import webview
 from window_manager import WindowStateManager, native_is_fullscreen, native_is_maximized
-
-# --- 2. UNIVERSAL HARDWARE DETECTION & ORT PROVIDER LINKING ---
-def setup_hardware():
-    from app.utils import has_onnxruntime_gpu
-
-    if not has_onnxruntime_gpu():
-        print("[ORT] onnxruntime-gpu not installed, skip GPU execution providers")
-        os.environ["ORT_AUTO_PROVIDERS"] = "CPUExecutionProvider"
-        print(" OS Hardware Acceleration Priority: CPU")
-        return
-
-    optimized_providers = []
-
-    if platform.system() == "Windows":
-        print("[Check OS] Windows detected.")
-        print("[ORT] onnxruntime-gpu found, linking CUDA")
-        preload_successful = False
-        try:
-            for p in sys.path:
-                nvidia_dir = os.path.join(p, "nvidia")
-                if os.path.isdir(nvidia_dir):
-                    for bin_path in glob.glob(os.path.join(nvidia_dir, "*", "bin")):
-                        if os.path.isdir(bin_path):
-                            os.add_dll_directory(bin_path)
-                            os.environ["PATH"] = bin_path + os.pathsep + os.environ.get("PATH", "")
-                    print("[NVIDIA] Successfully linked CUDA/cuDNN from Python 'nvidia' package.")
-                    optimized_providers.append("CUDAExecutionProvider")
-                    preload_successful = True
-                    break
-        except Exception as e:
-            print(f"[NVIDIA] Python environment DLLs not found ({e}). Falling back to System Scan...")
-
-        if not preload_successful:
-            found_paths = []
-            cuda_paths = glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.*\bin")
-            if cuda_paths:
-                cuda_paths.sort(reverse=True)
-                if os.path.exists(cuda_paths[0]): found_paths.append(cuda_paths[0])
-            cudnn_paths = glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin\*\x64")
-            if not cudnn_paths:
-                cudnn_paths = glob.glob(r"C:\Program Files\NVIDIA\CUDNN\v9.*\bin")
-            if cudnn_paths:
-                cudnn_paths.sort(reverse=True)
-                if os.path.exists(cudnn_paths[0]): found_paths.append(cudnn_paths[0])
-            if found_paths:
-                for p in found_paths:
-                    try:
-                        os.add_dll_directory(p)
-                        os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
-                    except Exception:
-                        pass
-                print(f"NVIDIA DLLs Linked -> {' | '.join(found_paths)}")
-                optimized_providers.append("CUDAExecutionProvider")
-
-        optimized_providers.append("DmlExecutionProvider")
-        optimized_providers.append("OpenVINOExecutionProvider")
-
-    elif platform.system() == "Darwin":
-        print("[Check OS] macOS detected. Link Core ML")
-        optimized_providers.append("CoreMLExecutionProvider")
-
-    elif platform.system() == "Linux":
-        print("[CHeck OS] Linux detected. Configuring GPU support...")
-        optimized_providers.append("CUDAExecutionProvider")
-        optimized_providers.append("ROCMExecutionProvider")
-        optimized_providers.append("OpenVINOExecutionProvider")
-
-    os.environ["ORT_AUTO_PROVIDERS"] = ",".join(optimized_providers)
-    smart_names = [p.replace("ExecutionProvider", "") for p in optimized_providers]
-    print(f" OS Hardware Acceleration Priority: {' -> '.join(smart_names)}")
-
-
 
 def setup_standard_borderless(window):
     """Platform-specific frame chrome configuration for native resize and snap."""
@@ -337,7 +265,8 @@ _server = None
 def run_server(listener):
     global _server
     try:
-        setup_hardware()
+        from speech_core.hardware import link_execution_providers
+        link_execution_providers()
         from app.server import app
         host, port = listener.getsockname()
         config = uvicorn.Config(app, host=host, port=port, log_level="critical")
@@ -349,10 +278,36 @@ def run_server(listener):
     finally:
         listener.close()
 
+def wait_for_server(server_thread):
+    """True once uvicorn is serving; False if its thread ended first. No fixed cap:
+    cold imports (onnxruntime/Kokoro) may take longer than any guessed delay."""
+    while server_thread.is_alive():
+        if _server is not None and _server.started:
+            return True
+        time.sleep(0.02)
+    return _server is not None and _server.started
+
+
 SPLASH_HTML = (
     "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
     "<body style='margin:0;background:#181818'></body></html>"
 )
+
+def app_icon_path():
+    """The window/taskbar/dock icon in the format this OS's pywebview backend loads:
+    WinForms reads .ico, Cocoa reads .icns (dock), GTK/Qt read .png."""
+    icons = base_dir / "localreader_icons"
+    system = platform.system()
+    if system == "Windows":
+        icon = icons / "windows" / "LocalReader.ico"
+    elif system == "Darwin":
+        icon = icons / "macos" / "LocalReader.icns"
+    else:
+        icon = icons / "linux" / "LocalReader.png"
+    if not icon.is_file():
+        print(f"[WARN] App icon missing: {icon}")
+        return None
+    return str(icon)
 
 def main():
     print("=" * 50)
@@ -367,7 +322,19 @@ def main():
     if runtime.submodule:
         print(f"[INIT] FalcoType submodule; read-only models: {runtime.models_dir}")
     print("[INIT] Creating application window...")
-    threading.Thread(target=run_server, args=(listener,), daemon=True).start()
+    server_thread = threading.Thread(target=run_server, args=(listener,), daemon=True)
+    server_thread.start()
+
+    def announce():
+        # Managed mode announces server readiness itself, independent of when
+        # (or whether) the window's shown event fires.
+        if wait_for_server(server_thread):
+            print(f"[FALCOTYPE_URL] {url}", flush=True)
+        else:
+            print(f"[CRITICAL] Server failed to bind port {port}.", flush=True)
+
+    if runtime.submodule:
+        threading.Thread(target=announce, daemon=True, name="falcotype-announce").start()
 
     storage_path = base_dir / "webview_data"
     window_state = WindowStateManager()
@@ -399,14 +366,10 @@ def main():
         print("=" * 50)
 
         def attach_ui():
-            for _ in range(250):
-                if _server is not None and _server.started:
-                    if runtime.submodule:
-                        print(f"[FALCOTYPE_URL] {url}", flush=True)
-                    window.load_url(url)
-                    return
-                time.sleep(0.02)
-            print(f"[CRITICAL] Server failed to bind port {port}.")
+            if wait_for_server(server_thread):
+                window.load_url(url)
+            elif not runtime.submodule:
+                print(f"[CRITICAL] Server failed to bind port {port}.")
 
         def on_shown():
             setup_standard_borderless(window)
@@ -480,7 +443,9 @@ def main():
         window.events.closed += on_closed
 
         try:
-            webview.start(debug=False, storage_path=str(storage_path))
+            # Keep dev tools available on demand (Ctrl+Shift+C / F12) without auto-popping on startup.
+            webview.settings["OPEN_DEVTOOLS_IN_DEBUG"] = False
+            webview.start(debug=DEBUG, storage_path=str(storage_path), icon=app_icon_path())
         except KeyboardInterrupt:
             print("\n[EXIT] KeyboardInterrupt caught. Closing cleanly...")
             try:

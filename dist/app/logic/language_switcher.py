@@ -1,5 +1,5 @@
 import re
-from typing import Callable, Tuple, List, Dict, Any
+from typing import Callable, List, Dict, Any
 
 # 🌟 STRICT 3-LANGUAGE FALLBACK MAPPING
 # Only English, Japanese, and Chinese (Mandarin) are supported for auto-switching.

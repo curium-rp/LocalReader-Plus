@@ -81,6 +81,25 @@ def get_primary_voice(expr: str) -> str:
     return max(slots, key=lambda s: s[1])[0]
 
 
+_VOICE_LANGUAGES = (
+    (("af_", "am_"), "en-us"), (("bf_", "bm_"), "en-gb"), (("ff_", "fm_"), "fr-fr"),
+    (("ef_", "em_"), "es"), (("zf_", "zm_"), "cmn"), (("if_", "im_"), "it"),
+    (("pf_", "pm_"), "pt-br"), (("jf_", "jm_"), "ja"),
+)
+
+
+def get_language_from_voice(voice: str) -> str:
+    """Kokoro language code of a voice ID, or of a blend's dominant voice."""
+    if not voice or not isinstance(voice, str):
+        return "en-us"
+    if "+" in voice or "(" in voice:
+        voice = get_primary_voice(voice)
+    for prefixes, language in _VOICE_LANGUAGES:
+        if voice.startswith(prefixes):
+            return language
+    return "en-us"
+
+
 def get_english_weight_ratio(expr: str) -> float:
     """
     Calculate the normalized proportion (0.0 - 1.0) of English voices

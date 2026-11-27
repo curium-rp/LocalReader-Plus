@@ -22,7 +22,6 @@ import posixpath
 import urllib.parse
 import threading
 import shutil
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple, Set
 
@@ -31,7 +30,7 @@ from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 # Import shared application paths and utilities
 try:
     from ..config import library_dir, library_file, metadata_dir, content_dir
-    from ..utils import safe_save_json, safe_init_json, save_json_rotate_old
+    from ..utils import safe_save_json, save_json_rotate_old
 except (ImportError, ValueError):
     userdata_dir = Path(__file__).resolve().parent.parent.parent / "userdata"
     metadata_dir = userdata_dir / "metadata"
@@ -66,7 +65,6 @@ except (ImportError, ValueError):
 # Import pure normalizer functions
 try:
     from .html_normalizer import (
-        standardize_footnotes,
         _normalize_epub_html,
         pre_parse_clean,
         force_formatting_markers,
@@ -100,9 +98,12 @@ try:
         ensure_toc_normalizer_inputs,
     )
     from .smart_content_detector import detect_strict_scene_break
+    from .refn_normalizer import (
+        REFN_VERSION, analyze_book, apply_ops, document_name, is_definition, lookup_note, note_index,
+        remap_note_pages,
+    )
 except (ImportError, ValueError):
     from html_normalizer import (
-        standardize_footnotes,
         _normalize_epub_html,
         pre_parse_clean,
         force_formatting_markers,
@@ -136,6 +137,10 @@ except (ImportError, ValueError):
         ensure_toc_normalizer_inputs,
     )
     from smart_content_detector import detect_strict_scene_break
+    from refn_normalizer import (
+        REFN_VERSION, analyze_book, apply_ops, document_name, is_definition, lookup_note, note_index,
+        remap_note_pages,
+    )
 
 # ---------------------------------------------------------------------------
 # Native Engine Bridge (in-process shared library)
@@ -470,7 +475,7 @@ def page_html_has_reader_content(page_html: str) -> bool:
 
 def filter_reader_spine(spine: List[str], htmls: Dict[str, bytes]) -> List[str]:
     """Drop blank insert/verso XHTML that would serialize as <body></body>."""
-    kept = [href for href in spine if raw_chapter_worth_keeping(_htmls_bytes_for(htmls, href))]
+    kept = [href for href in spine if raw_chapter_worth_keeping(_raw_for_href(htmls, href))]
     return kept or list(spine)
 
 
@@ -486,10 +491,6 @@ def unique_image_map_id(image_map: Dict[str, str], zip_path: str) -> str:
         n += 1
         candidate = f"{stem}_{n}{ext}"
     return candidate
-
-
-
-
 
 
 def _spine_next_has_header(spine: List[str], idx: int, raw_htmls: Optional[Dict[str, bytes]]) -> bool:
@@ -551,16 +552,7 @@ def compact_empty_reader_pages(meta: dict, session: Dict[str, Any]) -> bool:
             continue
         if old >= 0:
             entry["page_index"] = _remap_page_index(old, spine_to_page, kept)
-    for rec in (meta.get("footnote_map") or {}).values():
-        if not isinstance(rec, dict):
-            continue
-        for key in ("page_index", "callout_page_index"):
-            try:
-                old = int(rec.get(key, -1))
-            except (TypeError, ValueError):
-                continue
-            if old >= 0:
-                rec[key] = _remap_page_index(old, spine_to_page, kept)
+    remap_note_pages(meta.get("footnotes"), lambda old: _remap_page_index(old, spine_to_page, kept))
     meta["total_pages"] = len(meta["spine"])
     meta["totalPages"] = len(meta["spine"])
     titles, rich = build_toc_normalizer_inputs(meta.get("toc_map") or [], meta["spine"])
@@ -717,6 +709,7 @@ class HybridMemoryManager:
                 "status": "ready",     # "ready" -> "buffering" -> "complete"
                 "filled_event": threading.Event(),
                 "timestamp": time.time(),
+                "saved_info": book_info_fingerprint(meta) if meta else "",
             }
             self._active_sessions[doc_id] = session
             return session
@@ -888,10 +881,13 @@ class HybridMemoryManager:
                         session["status"] = "missing"
                     print(f"[Tier 2] Book missing from path: {epub_path}")
                     return
-                # Call C++ peeker for all HTML chapters in one shot
-                all_raw_htmls = peeker_caller_fn(epub_path, mode="html")
+                # Reuse the manifest's HTML stream; otherwise peek all chapters in one shot.
                 with self._lock:
-                    session["raw_htmls"] = all_raw_htmls
+                    all_raw_htmls = session.get("raw_htmls") or {}
+                if not all_raw_htmls:
+                    all_raw_htmls = peeker_caller_fn(epub_path, mode="html")
+                    with self._lock:
+                        session["raw_htmls"] = all_raw_htmls
 
                 for idx, href in enumerate(spine):
                     with self._lock:
@@ -952,18 +948,14 @@ class HybridMemoryManager:
         tree = HTMLParser(raw_str)
         known_toc_titles, rich_toc_map = ensure_toc_normalizer_inputs(meta)
 
+        # Replay the whole-book note analysis; detection never runs per chapter.
         try:
-            standardize_footnotes(tree)
-        except Exception:
-            pass
+            apply_ops(tree, (meta.get("refn_ops") or {}).get(document_name(chapter_href)))
+        except Exception as e:
+            print(f"[Memories] Note replay failed for {chapter_href}: {e}")
 
         try:
-            stamp_footnotes_from_map(tree, chapter_href, meta)
-        except Exception:
-            pass
-
-        try:
-            force_formatting_markers(tree, chapter_href)
+            force_formatting_markers(tree)
         except Exception:
             pass
 
@@ -1060,38 +1052,45 @@ class HybridMemoryManager:
             return None
 
         meta = session.get("meta", {})
-        footnote_map = meta.get("footnote_map", {})
-        clean_anchor = target_anchor.lstrip("#")
-        rec = lookup_footnote_record(footnote_map, target_file, clean_anchor)
-        if rec and rec.get("html"):
-            return rec["html"]
-
         spine = meta.get("spine", [])
-        target_page_idx = rec.get("page_index", -1) if rec else -1
-        if target_page_idx is None or target_page_idx < 0:
-            target_page_idx = _spine_page_index(spine, target_file)
+        footnotes = meta.get("footnotes")
+        clean_anchor = target_anchor.lstrip("#")
+        note = lookup_note(footnotes, spine, note_index(footnotes, spine), target_file, clean_anchor)
 
+        target_page_idx = note.get("page", -1) if note else _spine_page_index(spine, target_file)
         if target_page_idx < 0:
             return None
 
         with self._lock:
             page_html = session["chapters"].get(target_page_idx)
-
+        if not page_html and target_page_idx < len(spine):
+            raw_bytes = self.get_raw_chapter_bytes(doc_id, meta, target_page_idx)
+            epub_path = meta.get("source_path")
+            if raw_bytes is None and source_epub_is_present(epub_path):
+                raw_bytes = call_peeker_single(epub_path, spine[target_page_idx])
+            if raw_bytes:
+                page_html = self.get_or_intercept_chapter(doc_id, target_page_idx, raw_bytes, meta)
         if not page_html:
             return None
 
         tree = HTMLParser(page_html)
-        jump_id = (rec.get("anchor_id") if rec else None) or clean_anchor
+        jump_id = (note["ids"][0] if note and note.get("ids") else None) or clean_anchor
         el = (
             tree.css_first(f'[data-orig-id="{jump_id}"]')
             or tree.css_first(f'[id="{jump_id}"]')
             or tree.css_first(f'[name="{jump_id}"]')
         )
-        if el:
-            container = find_parent(el, ("aside", "li", "p", "div")) or el.parent
-            return (container or el).html
-
-        return None
+        if el is None:
+            return None
+        # Same owner as library.js extractFootnoteHtml(): the note itself, never its list.
+        container = el
+        while container is not None and container.tag not in ("body", "html"):
+            if container.tag in ("aside", "li") or is_definition(container) or "epub-footnote" in (container.attributes or {}).get("class", ""):
+                break
+            container = container.parent
+        if container is None or container.tag in ("body", "html"):
+            container = el if el.tag == "p" else (find_parent(el, ("p",)) or el.parent or el)
+        return container.inner_html
 
 
 # Global Hybrid Memory Manager Singleton
@@ -1164,7 +1163,7 @@ def load_book_info(doc_id: str) -> Optional[Dict[str, Any]]:
 def save_book_info(doc_id: str, info: Dict[str, Any]) -> None:
     path = book_info_path(doc_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    safe_save_json(path, info, indent=2)
+    safe_save_json(path, stored_book_info(info), indent=2)
 
 
 def load_book_progress(doc_id: str) -> Optional[Dict[str, Any]]:
@@ -1524,10 +1523,6 @@ def list_pdf_catalog() -> List[Dict[str, Any]]:
     return items
 
 
-def catalog_item_for(doc_id: str) -> Optional[Dict[str, Any]]:
-    return peek_catalog_item(doc_id) or pdf_catalog_item(doc_id)
-
-
 def _load_catalog() -> List[Dict[str, Any]]:
     if not library_file.exists():
         return []
@@ -1675,356 +1670,62 @@ def _spine_page_index(spine: Optional[List[str]], href_or_file: str) -> int:
     return -1
 
 
-def _resolve_epub_href(current_href: str, href: str) -> Tuple[str, str]:
-    """Resolve a possibly-relative EPUB href to (file_path, fragment)."""
-    href = (href or "").strip()
-    if not href:
-        return current_href or "", ""
-    if "#" in href:
-        file_part, frag = href.split("#", 1)
-    else:
-        file_part, frag = href, ""
-    file_part = file_part.split("?")[0]
-    if not file_part:
-        return current_href or "", frag
-    if current_href:
-        joined = posixpath.normpath(posixpath.join(posixpath.dirname(current_href), file_part))
-        return joined.lstrip("/"), frag
-    return file_part.lstrip("/"), frag
+# info.json keeps source facts only. Derived TOC inputs are rebuilt in RAM.
+_DERIVED_META_KEYS = ("known_toc_titles", "rich_toc_map")
+# Server-side note replay data; the reader frontend never needs it.
+_PRIVATE_META_KEYS = ("refn_ops",)
 
 
-def _htmls_bytes_for(htmls: Dict[str, bytes], href: str) -> bytes:
-    if href in htmls:
-        return htmls[href]
-    base = posixpath.basename(href).lower()
-    for key, raw in htmls.items():
-        if posixpath.basename(key).lower() == base:
-            return raw
-    return b""
+def stored_book_info(meta: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in meta.items() if key not in _DERIVED_META_KEYS}
 
 
-def _inside_footnote_def(node: Optional[Node]) -> bool:
-    cur = node
-    while cur is not None:
-        attrs = cur.attributes or {}
-        epub_type = (attrs.get("epub:type") or "").lower()
-        role = (attrs.get("role") or "").lower()
-        if cur.tag in ("aside", "dd") or epub_type in ("footnote", "endnote") or role in ("doc-footnote", "doc-endnote"):
-            return True
-        cur = cur.parent
-    return False
+def book_info_fingerprint(meta: Dict[str, Any]) -> str:
+    return json.dumps(stored_book_info(meta), sort_keys=True, ensure_ascii=False)
 
 
-def _footnote_def_id(el: Optional[Node]) -> str:
-    if el is None:
-        return ""
-    attrs = el.attributes or {}
-    el_id = str(attrs.get("id") or attrs.get("name") or "").strip()
-    epub_type = (attrs.get("epub:type") or "").lower()
-    role = (attrs.get("role") or "").lower()
-    classes = (attrs.get("class") or "").lower()
-    if epub_type in ("footnote", "endnote") or role in ("doc-footnote", "doc-endnote"):
-        if el_id:
-            return el_id
-        child = el.css_first("[id], [name]")
-        if child:
-            return str((child.attributes or {}).get("id") or (child.attributes or {}).get("name") or "")
-        return ""
-    lower_id = el_id.lower()
-    if (
-        lower_id.startswith("cite_note")
-        or lower_id.startswith("tn")
-        or lower_id.startswith("fn-def")
-        or lower_id.startswith("fn_def")
-        or "sdfootnote" in lower_id
-    ):
-        return el_id
-    if "footnote" in classes or "endnote" in classes:
-        return el_id
-    parent = el.parent
-    parent_class = ((parent.attributes or {}).get("class") or "").lower() if parent is not None else ""
-    if el.tag == "li" and el_id and ("reference" in classes or "reference" in parent_class):
-        return el_id
-    if el.tag in ("p", "div", "li"):
-        for anchor in el.css("a"):
-            href = ((anchor.attributes or {}).get("href") or "").lower()
-            if "sdfootnote" in href and "anc" in href:
-                return (anchor.attributes or {}).get("href", "").split("#")[-1].lstrip("#") or el_id
-    return ""
-
-
-def _is_footnote_callout(anchor: Optional[Node]) -> bool:
-    if anchor is None:
-        return False
-    href = (anchor.attributes or {}).get("href") or ""
-    if "#" not in href or href.startswith(("http://", "https://", "mailto:")):
-        return False
-    if _inside_footnote_def(anchor):
-        return False
-    attrs = anchor.attributes or {}
-    epub_type = (attrs.get("epub:type") or "").lower()
-    role = (attrs.get("role") or "").lower()
-    classes = set((attrs.get("class") or "").lower().split())
-    parent = anchor.parent
-    parent_class = ((parent.attributes or {}).get("class") or "").lower() if parent is not None else ""
-    has_sup = find_parent(anchor, "sup") is not None or anchor.css_first("sup") is not None
-    return (
-        epub_type == "noteref"
-        or role == "doc-noteref"
-        or bool(classes & {"noteref", "footnote-ref", "epub-noteref", "reference"})
-        or has_sup
-        or "reference" in parent_class
-    )
-
-
-def _footnote_twins(anchor_id: str) -> List[str]:
-    if not anchor_id:
-        return []
-    twins = []
-    if "anc" in anchor_id:
-        twins.append(anchor_id.replace("anc", "sym"))
-    if "sym" in anchor_id:
-        twins.append(anchor_id.replace("sym", "anc"))
-    return [item for item in twins if item and item != anchor_id]
-
-
-def _put_footnote_keys(footnote_map: Dict[str, Any], rec: Dict[str, Any], *keys: str) -> None:
-    for key in keys:
-        if key:
-            footnote_map[str(key)] = rec
-
-
-def lookup_footnote_record(
-    footnote_map: Optional[Dict[str, Any]],
-    file_part: str = "",
-    frag: str = "",
-    extra_key: str = "",
-) -> Optional[Dict[str, Any]]:
-    """Resolve a footnote_map entry to a TOC-shaped record (or wrap a legacy string)."""
-    if not footnote_map or not (frag or extra_key):
-        return None
-    base = posixpath.basename((file_part or "").split("?")[0]) if file_part else ""
-    candidates = [
-        extra_key,
-        f"{base}#{frag}" if base and frag else "",
-        f"{file_part}#{frag}" if file_part and frag else "",
-        frag,
-    ]
-    rec = None
-    for key in candidates:
-        if key and key in footnote_map:
-            rec = footnote_map[key]
-            break
-    if rec is None:
-        lower_frag = (frag or "").lower()
-        lower_base = base.lower()
-        lower_extra = (extra_key or "").lower()
-        for key, value in footnote_map.items():
-            k_lower = str(key).lower()
-            if lower_extra and k_lower == lower_extra:
-                rec = value
-                break
-            if lower_base and lower_frag and k_lower == f"{lower_base}#{lower_frag}":
-                rec = value
-                break
-            if lower_frag and k_lower == lower_frag:
-                rec = value
-                break
-    if rec is None:
-        return None
-    if isinstance(rec, str):
-        return {
-            "html": rec,
-            "page_index": -1,
-            "file": base,
-            "anchor_id": frag,
-        }
-    if isinstance(rec, dict):
-        return rec
-    return None
-
-
-def footnote_map_needs_rebuild(footnote_map: Any) -> bool:
-    """True when footnote_map is missing, not a dict, or still old string values.
-    An empty dict is valid (book has no footnotes).
-    """
-    if footnote_map is None:
-        return True
-    if not isinstance(footnote_map, dict):
-        return True
-    if not footnote_map:
-        return False
-    first = next(iter(footnote_map.values()), None)
-    return not isinstance(first, dict)
+def public_book_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
+    hidden = _DERIVED_META_KEYS + _PRIVATE_META_KEYS
+    return {key: value for key, value in meta.items() if key not in hidden}
 
 
 def meta_maps_need_rebuild(meta: Optional[Dict[str, Any]]) -> bool:
-    """Rebuild only when map keys are missing or the stored types are stale."""
-    if not meta:
+    """Rebuild only when a stored map is missing or was written by an older detector."""
+    if not meta or not meta.get("reader_pages_filtered"):
         return True
-    if not meta.get("reader_pages_filtered"):
+    if not isinstance(meta.get("chapter_images"), dict) or not isinstance(meta.get("toc_map"), list):
         return True
-    if "chapter_images" not in meta or not isinstance(meta.get("chapter_images"), dict):
+    footnotes = meta.get("footnotes")
+    if not isinstance(footnotes, dict) or footnotes.get("v") != REFN_VERSION:
         return True
-    if "toc_map" not in meta or not isinstance(meta.get("toc_map"), list):
-        return True
-    if "footnote_map" not in meta:
-        return True
-    return footnote_map_needs_rebuild(meta.get("footnote_map"))
+    return not isinstance(meta.get("refn_ops"), dict)
 
 
-def stamp_footnotes_from_map(tree: HTMLParser, chapter_href: str, meta: dict) -> None:
-    """Mark callouts/definitions from the book-wide footnote_map so the UI can attach clicks."""
-    footnote_map = meta.get("footnote_map") or {}
-    if not footnote_map:
-        return
-
-    for el in list(tree.css("aside, li, p, div, section, dd, [id], [name]")):
-        attrs = el.attributes or {}
-        el_id = str(attrs.get("id") or attrs.get("name") or "")
-        rec = lookup_footnote_record(footnote_map, chapter_href, el_id) if el_id else None
-        if rec and rec.get("anchor_id") == el_id:
-            el.attrs["epub:type"] = "footnote"
-            continue
-        # Same-page callouts point at the definition id. Only stamp the
-        # definition wrapper (backlink to the callout), never the story <p>.
-        for anchor in el.css("a"):
-            href = (anchor.attributes or {}).get("href") or ""
-            if "#" not in href:
-                continue
-            file_part, frag = _resolve_epub_href(chapter_href, href)
-            rec = lookup_footnote_record(footnote_map, file_part, frag)
-            if not rec:
-                continue
-            def_id = str(rec.get("anchor_id") or "")
-            callout_id = str(rec.get("callout_id") or "")
-            on_def_page = posixpath.basename(chapter_href).lower() == str(rec.get("file") or "").lower()
-            points_at_def = frag == def_id or frag in _footnote_twins(def_id)
-            points_at_callout = bool(callout_id) and (
-                frag == callout_id or frag in _footnote_twins(callout_id)
-            )
-            if not on_def_page or points_at_def or not points_at_callout:
-                continue
-            if _is_footnote_callout(anchor):
-                continue
-            if not el_id and def_id:
-                el.attrs["id"] = def_id
-                el_id = def_id
-            el.attrs["epub:type"] = "footnote"
-            break
-
-    for anchor in tree.css("a"):
-        href = (anchor.attributes or {}).get("href") or ""
-        if "#" not in href or href.startswith(("http://", "https://", "mailto:")):
-            continue
-        file_part, frag = _resolve_epub_href(chapter_href, href)
-        rec = lookup_footnote_record(footnote_map, file_part, frag)
-        if not rec:
-            continue
-        if _inside_footnote_def(anchor):
-            anchor.attrs["epub:type"] = "backlink"
-        else:
-            anchor.attrs["epub:type"] = "noteref"
+_IMG_SRC_RE = re.compile(
+    r'<(?:img|image)\b[^>]*(?:src|href|xlink:href)=["\']([^"\']+)["\']',
+    re.I,
+)
 
 
-def extract_epub_footnotes(
-    htmls: Dict[str, bytes],
-    spine: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """
-    Cross-file footnote index shaped like toc_map.
-    Values are { html, page_index, file, anchor_id, callout_page_index?, callout_id? }.
-    Keys include fragment, basename#frag, and sdfootnote anc/sym twins.
-    """
-    spine = list(spine or [])
-    if not spine:
-        spine = list(htmls.keys())
+def _chapter_image_names(raw: Optional[bytes]) -> List[str]:
+    if not raw:
+        return []
+    matches = _IMG_SRC_RE.findall(raw.decode("utf-8", errors="ignore"))
+    return list(dict.fromkeys(
+        posixpath.basename(m.split("#")[0].split("?")[0]) for m in matches if m.strip()
+    ))
 
-    footnote_map: Dict[str, Any] = {}
-    chapters: List[Tuple[int, str, HTMLParser]] = []
 
-    for idx, href in enumerate(spine):
-        raw = _htmls_bytes_for(htmls, href)
-        if not raw:
-            continue
-        tree = HTMLParser(raw.decode("utf-8", errors="ignore"))
-        chapters.append((idx, href, tree))
-
-    def put_record(rec: Dict[str, Any], *extra_ids: str) -> None:
-        file_name = rec.get("file") or ""
-        anchor_id = rec.get("anchor_id") or ""
-        keys = [
-            anchor_id,
-            f"{file_name}#{anchor_id}" if file_name and anchor_id else "",
-        ]
-        for extra in extra_ids:
-            if extra:
-                keys.extend([extra, f"{file_name}#{extra}" if file_name else extra])
-                for twin in _footnote_twins(extra):
-                    keys.extend([twin, f"{file_name}#{twin}" if file_name else twin])
-        for twin in _footnote_twins(anchor_id):
-            keys.extend([twin, f"{file_name}#{twin}" if file_name else twin])
-        _put_footnote_keys(footnote_map, rec, *keys)
-
-    for idx, href, tree in chapters:
-        ch_base = posixpath.basename(href)
-        for el in tree.css("aside, li, p, div, section, dd"):
-            def_id = _footnote_def_id(el)
-            if not def_id:
-                continue
-            container = el
-            rec = {
-                "html": container.html or "",
-                "page_index": idx,
-                "file": ch_base,
-                "anchor_id": def_id,
-            }
-            extra_ids: List[str] = []
-            for back in container.css("a"):
-                bhref = (back.attributes or {}).get("href") or ""
-                if "#" not in bhref or bhref.startswith(("http://", "https://", "mailto:")):
-                    continue
-                cfile, cfrag = _resolve_epub_href(href, bhref)
-                if not cfrag:
-                    continue
-                if cfrag == def_id or cfrag in _footnote_twins(def_id):
-                    continue
-                extra_ids.append(cfrag)
-                rec["callout_id"] = rec.get("callout_id") or cfrag
-                cidx = _spine_page_index(spine, cfile or href)
-                if rec.get("callout_page_index") is None and cidx >= 0:
-                    rec["callout_page_index"] = cidx
-            put_record(rec, *extra_ids)
-
-    for idx, href, tree in chapters:
-        ch_base = posixpath.basename(href)
-        for anchor in tree.css("a"):
-            if not _is_footnote_callout(anchor):
-                continue
-            a_href = (anchor.attributes or {}).get("href") or ""
-            dfile, dfrag = _resolve_epub_href(href, a_href)
-            rec = lookup_footnote_record(footnote_map, dfile, dfrag)
-            if rec is None:
-                continue
-            callout_id = str((anchor.attributes or {}).get("id") or (anchor.attributes or {}).get("name") or "")
-            sup = find_parent(anchor, "sup")
-            if sup is not None:
-                callout_id = callout_id or str((sup.attributes or {}).get("id") or "")
-            if rec.get("callout_page_index") is None:
-                rec["callout_page_index"] = idx
-            if not callout_id:
-                twins = _footnote_twins(str(rec.get("anchor_id") or ""))
-                callout_id = twins[0] if twins else dfrag
-            if callout_id:
-                rec["callout_id"] = rec.get("callout_id") or callout_id
-                _put_footnote_keys(
-                    footnote_map,
-                    rec,
-                    callout_id,
-                    f"{ch_base}#{callout_id}",
-                )
-
-    return footnote_map
+def _read_toc_markup(cpp_manifest: Dict[str, Any], htmls: Dict[str, bytes], epub_path: Path) -> str:
+    toc_file = cpp_manifest.get("toc_file", "")
+    if not toc_file:
+        return ""
+    if toc_file in htmls:
+        return htmls[toc_file].decode("utf-8", errors="ignore")
+    try:
+        return call_peeker_single(epub_path, toc_file).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
 
 
 def intercept_manifest(
@@ -2033,68 +1734,32 @@ def intercept_manifest(
     doc_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Intercepts the file inventory emitted by C++ peeker manifest.
-    Builds lightweight metadata and writes ONLY userdata/metadata/<doc_id>.json.
+    Build userdata/library/<doc_id>/info.json from the C++ manifest and one HTML
+    stream: reader spine, image/TOC maps, and the whole-book note analysis.
     Zero image files and zero chapter files are extracted to disk.
     """
     doc_id = doc_id or str(uuid.uuid4())
     epub_path = Path(epub_path).resolve()
 
-    spine = list(cpp_manifest.get("spine", []) or [])
-    raw_images = cpp_manifest.get("images", [])
-
-    # Build image map: clean_id -> zip_path
     image_map: Dict[str, str] = {}
-    for img_path in raw_images:
-        safe_name = unique_image_map_id(image_map, img_path)
-        image_map[safe_name] = img_path
+    for img_path in cpp_manifest.get("images", []):
+        image_map[unique_image_map_id(image_map, img_path)] = img_path
 
-    # Stream HTML in ~2ms to map chapter images, TOC, and footnotes upfront
-    htmls = {}
+    spine = list(cpp_manifest.get("spine", []) or [])
+    htmls: Dict[str, bytes] = {}
     if epub_path.exists() and spine:
         try:
             htmls = call_peeker_stream_html(epub_path)
         except Exception as e:
             print(f"[Peeker] HTML stream error during manifest interception: {e}")
-
     spine = filter_reader_spine(spine, htmls)
 
-    # Map each chapter to images contained inside it
-    IMG_SRC_REGEX = re.compile(
-        r'<(?:img|image)\b[^>]*(?:src|href|xlink:href)=["\']([^"\']+)["\']',
-        re.I,
-    )
-    chapter_images: Dict[str, List[str]] = {}
-
-    for idx, href in enumerate(spine):
-        raw = _htmls_bytes_for(htmls, href)
-        if raw:
-            text = raw.decode("utf-8", errors="ignore")
-            matches = IMG_SRC_REGEX.findall(text)
-            clean_matches = list(dict.fromkeys(
-                posixpath.basename(m.split("#")[0].split("?")[0])
-                for m in matches if m.strip()
-            ))
-            chapter_images[str(idx)] = clean_matches
-        else:
-            chapter_images[str(idx)] = []
-
-    # Parse ToC and Footnotes against the filtered reader spine
-    toc_manifest = dict(cpp_manifest)
-    toc_manifest["spine"] = spine
-    toc_file = toc_manifest.get("toc_file", "")
-    raw_toc = ""
-    if toc_file:
-        if htmls and toc_file in htmls:
-            raw_toc = htmls[toc_file].decode("utf-8", errors="ignore")
-        elif epub_path.exists():
-            try:
-                raw_toc = call_peeker_single(epub_path, toc_file).decode("utf-8", errors="ignore")
-            except Exception:
-                pass
-    toc_map = parse_epub_toc(toc_manifest, raw_toc)
-    footnote_map = extract_epub_footnotes(htmls, spine)
-    known_toc_titles, rich_toc_map = build_toc_normalizer_inputs(toc_map, spine)
+    toc_map = parse_epub_toc({**cpp_manifest, "spine": spine}, _read_toc_markup(cpp_manifest, htmls, epub_path))
+    try:
+        footnotes, refn_ops = analyze_book(htmls, spine, pre_parse_clean)
+    except Exception as e:
+        print(f"[Memories] Note analysis failed: {e}")
+        footnotes, refn_ops = {"v": REFN_VERSION, "notes": []}, {}
 
     metadata = {
         "id": doc_id,
@@ -2107,11 +1772,10 @@ def intercept_manifest(
         "totalPages": len(spine),
         "spine": spine,
         "image_map": image_map,
-        "chapter_images": chapter_images,
+        "chapter_images": {str(idx): _chapter_image_names(_raw_for_href(htmls, href)) for idx, href in enumerate(spine)},
         "toc_map": toc_map,
-        "footnote_map": footnote_map,
-        "known_toc_titles": sorted(known_toc_titles),
-        "rich_toc_map": rich_toc_map,
+        "footnotes": footnotes,
+        "refn_ops": refn_ops,
         "css": list(cpp_manifest.get("css") or []),
         "reader_pages_filtered": True,
         "bookType": "epub",
@@ -2119,7 +1783,6 @@ def intercept_manifest(
         "created_at": source_epub_mtime(epub_path) or int(time.time()),
     }
 
-    # SAVE ONLY WHAT WE PLAN: userdata/library/<doc_id>/info.json (no content extract)
     save_book_info(doc_id, metadata)
     if not book_progress_path(doc_id).exists():
         save_book_progress(doc_id, empty_book_progress(doc_id), rotate_old=False)
@@ -2600,14 +2263,17 @@ def synthesize_full_content(
                                 pass
 
     with memory_manager._lock:
-        compacted = compact_empty_reader_pages(meta, session)
+        compact_empty_reader_pages(meta, session)
         spine = meta.get("spine", []) or []
         pages = [
             session["chapters"].get(i, "<p>[Missing Chapter]</p>")
             for i in range(len(spine))
         ]
+        passes_done = bool(session.get("book_passes"))
 
-    pages = apply_peek_book_passes(pages, meta, session)
+    # The Tier 2 worker already ran the whole-book passes on these pages.
+    if not passes_done:
+        pages = apply_peek_book_passes(pages, meta, session)
     toc_map = stamp_peek_toc_targets(pages, meta.get("toc_map") or [])
     meta["toc_map"] = toc_map
 
@@ -2622,17 +2288,20 @@ def synthesize_full_content(
             if event is not None:
                 event.set()
 
-    try:
-        save_book_info(doc_id, meta)
-    except Exception as e:
-        print(f"[Memories] Failed to persist peek maps for {doc_id}: {e}")
+    # Persist only when compaction, TOC targets or image ids changed the stored maps.
+    fingerprint = book_info_fingerprint(meta)
+    if fingerprint != session.get("saved_info"):
+        try:
+            save_book_info(doc_id, meta)
+            session["saved_info"] = fingerprint
+        except Exception as e:
+            print(f"[Memories] Failed to persist peek maps for {doc_id}: {e}")
 
     return {
         "id": doc_id,
         "pages": pages,
         "toc_map": toc_map,
-        "footnote_map": meta.get("footnote_map", {}),
-        "metadata": meta,
+        "metadata": public_book_meta(meta),
         "image_map": meta.get("image_map", {}),
         "smart_start_page": 0,
         "language": meta.get("language", "en"),

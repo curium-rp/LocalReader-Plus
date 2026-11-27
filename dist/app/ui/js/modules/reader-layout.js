@@ -1,9 +1,7 @@
 import { twoPageFits } from "./horizontal.js";
 
-const M_SAFE = 16;
 const W_MIN = 320;
 const W_DRAWER = 320;
-const W_RAIL = 0;
 
 let resizeTimer = null;
 let hooksBound = false;

@@ -1,6 +1,6 @@
-import uuid
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel
+from typing import List, Optional, Dict
+from speech_core import PronunciationRule
 
 class LibraryItem(BaseModel):
     id: str
@@ -16,26 +16,6 @@ class LibraryItem(BaseModel):
     total_pages: Optional[int] = None
     progress_percent: Optional[int] = None
     disable_br: Optional[bool] = False
-
-class ContentItem(BaseModel):
-    id: str
-    pages: List[str]
-    image_map: Optional[Dict[str, str]] = None
-    toc_map: Optional[List[Dict[str, Any]]] = None
-    currentPage: Optional[int] = 0
-    lastSentenceId: Optional[str] = None
-    lastSentenceIndex: Optional[int] = 0
-    lastAccessed: Optional[float] = 0.0
-    language: Optional[str] = None
-    disable_br: Optional[bool] = False
-
-class PronunciationRule(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    original: str
-    replacement: str
-    match_case: bool = False
-    word_boundary: bool = True
-    is_regex: Optional[bool] = False
 
 class AppSettings(BaseModel):
     # TODO(deprecate): [BACKWARD COMPATIBILITY] Safe to remove in ~6 months.
@@ -77,9 +57,6 @@ class ModelSelectRequest(BaseModel):
 class ModelDeleteRequest(BaseModel):
     model_id: str
 
-class TimerRequest(BaseModel):
-    minutes: int
-
 class ExportRequest(BaseModel):
     doc_id: str
     voice: str = "af_heart"
@@ -94,31 +71,3 @@ class ExportRequest(BaseModel):
     pause_settings: Optional[Dict[str, int]] = None
     behavior_settings: Optional[Dict[str, int]] = None
     file_label: Optional[str] = "Full Book"
-
-# 🌟 NEW: Payload for opening nested directory folders safely
-class OpenLocationRequest(BaseModel):
-    path: str
-
-class SynthesisRequest(BaseModel):
-    text: str
-    voice: str = "af_heart"
-    speed: float = 1.0
-    rules: List[PronunciationRule]
-    ignore_list: List[str] = []
-    pause_settings: Optional[Dict[str, int]] = {
-        "comma": 0,
-        "period": 0,
-        "spam": 0,
-        "question": 600,
-        "exclamation": 600,
-        "colon": 400,
-        "semicolon": 400,
-        "newline": 800,
-    }
-    behavior_settings: Optional[Dict[str, int]] = {
-        "H": 2000,
-        "Img": 3000,
-        "S": 1000,
-        "N": 500,
-    }
-    behavior_type: Optional[str] = "N"

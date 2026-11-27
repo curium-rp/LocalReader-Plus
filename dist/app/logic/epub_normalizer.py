@@ -99,6 +99,8 @@ def assign_epub_block_ids(tree: HTMLParser) -> int:
             attrs.update(reader_attrs)
             replacement = f"<p{_attrs_to_str(attrs)}>{inner_html}</p>"
         elif block.tag in ("li", "blockquote", "figure"):
+            if original_id:
+                attrs["data-orig-id"] = original_id
             replacement = (
                 f"<{block.tag}{_attrs_to_str(attrs)}>"
                 f"<p{_attrs_to_str(reader_attrs)}>{inner_html}</p>"

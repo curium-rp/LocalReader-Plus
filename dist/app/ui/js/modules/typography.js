@@ -688,91 +688,46 @@ function isTypoMenuOpen() {
   return document.getElementById("typoFloatMenu")?.classList.contains("open");
 }
 
+// The topbar settings trigger (topbar.js) is the menu's only opener.
 function positionTypoMenu() {
-  const topbarTrigger = document.getElementById("settingsMenuTrigger");
-  const isFromTopbar = topbarTrigger?.classList.contains("open");
-  const btn = isFromTopbar ? topbarTrigger : document.getElementById("typoMenuBtn");
+  const trigger = document.getElementById("settingsMenuTrigger");
   const menu = document.getElementById("typoFloatMenu");
-  if (!btn || !menu || !menu.classList.contains("open")) return;
-  const rect = btn.getBoundingClientRect();
+  if (!trigger || !menu || !menu.classList.contains("open")) return;
+  const rect = trigger.getBoundingClientRect();
   const pad = 8;
   const menuW = menu.offsetWidth || 280;
   const menuH = menu.offsetHeight || 420;
-
-  let left, top;
-  if (isFromTopbar) {
-    left = Math.max(pad, Math.min(rect.left, window.innerWidth - menuW - pad));
-    top = Math.max(pad, rect.bottom + 4);
-    if (top + menuH > window.innerHeight - pad) {
-      top = Math.max(pad, window.innerHeight - menuH - pad);
-    }
-  } else {
-    left = rect.right + 8;
-    if (left + menuW > window.innerWidth - pad) {
-      left = Math.max(pad, rect.left - menuW - 8);
-    }
-    top = rect.top;
-    if (top + menuH > window.innerHeight - pad) {
-      top = Math.max(pad, window.innerHeight - menuH - pad);
-    }
-  }
-
+  const left = Math.max(pad, Math.min(rect.left, window.innerWidth - menuW - pad));
+  let top = Math.max(pad, rect.bottom + 4);
+  if (top + menuH > window.innerHeight - pad) top = Math.max(pad, window.innerHeight - menuH - pad);
   menu.style.left = `${Math.round(left)}px`;
   menu.style.top = `${Math.round(top)}px`;
 }
 
 export function closeTypoMenu() {
   const menu = document.getElementById("typoFloatMenu");
-  const btn = document.getElementById("typoMenuBtn");
-  const topbarTrigger = document.getElementById("settingsMenuTrigger");
   if (menu) {
     menu.classList.remove("open");
     menu.setAttribute("aria-hidden", "true");
   }
-  if (btn) btn.classList.remove("active");
-  if (topbarTrigger) topbarTrigger.classList.remove("open");
+  document.getElementById("settingsMenuTrigger")?.classList.remove("open");
   closeHeadingPopups();
 }
 
 export function openTypoMenu() {
   marginEditingMode = null;
   const menu = document.getElementById("typoFloatMenu");
-  const btn = document.getElementById("typoMenuBtn");
-  const topbarTrigger = document.getElementById("settingsMenuTrigger");
   if (!menu) return;
   menu.classList.add("open");
   menu.setAttribute("aria-hidden", "false");
-  if (topbarTrigger?.classList.contains("open")) {
-    if (btn) btn.classList.remove("active");
-  } else if (btn) {
-    btn.classList.add("active");
-  }
   syncControlUi();
   positionTypoMenu();
   requestAnimationFrame(positionTypoMenu);
   renderIcons();
 }
 
-function toggleTypoMenu() {
-  if (isTypoMenuOpen()) closeTypoMenu();
-  else openTypoMenu();
-}
-
 function wireFloatMenu() {
-  const btn = document.getElementById("typoMenuBtn");
   const menu = document.getElementById("typoFloatMenu");
-  if (btn) {
-    btn.onclick = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleTypoMenu();
-    };
-    btn.oncontextmenu = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openTypoMenu();
-    };
-  }
   if (menu) {
     menu.addEventListener("click", (e) => e.stopPropagation());
     menu.addEventListener("contextmenu", (e) => e.stopPropagation());
@@ -1031,8 +986,7 @@ function wireControls() {
   document.addEventListener("click", (e) => {
     closeHeadingPopups();
     const menu = document.getElementById("typoFloatMenu");
-    const btn = document.getElementById("typoMenuBtn");
-    if (menu?.contains(e.target) || btn?.contains(e.target) || e.target.closest("#settingsMenuTrigger")) return;
+    if (menu?.contains(e.target) || e.target.closest("#settingsMenuTrigger")) return;
     closeTypoMenu();
   });
 }

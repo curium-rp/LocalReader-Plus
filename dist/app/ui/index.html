@@ -58,7 +58,7 @@
         <div id="topbarProgressFill"></div>
       </div>
       <div class="topbar-section topbar-left pywebview-no-drag">
-        <button type="button" id="topbarSidebarToggle" class="topbar-icon-btn" title="Toggle Library Sidebar">
+        <button type="button" id="topbarSidebarToggle" class="topbar-icon-btn" aria-label="Toggle library sidebar">
           <i data-lucide="panel-left" class="w-3.5 h-3.5"></i>
         </button>
         <div class="menubar" id="appMenubar">
@@ -167,14 +167,9 @@
       <aside class="sidebar bg-card flex flex-col">
         <div class="sidebar-chrome shrink-0">
           <div class="sidebar-tray">
-            <button
-              type="button"
-              id="typoMenuBtn"
-              class="typo-menu-btn sidebar-tray-btn"
-              title="Text display"
-              data-i18n-title="sidebar.text_display"
-            >
-              <i data-lucide="settings-2" class="w-3.5 h-3.5"></i>
+            <!-- One-time release notice (js/modules/update-notice.js); moves beside the topbar sidebar icon while the sidebar hides. -->
+            <button type="button" id="updateNoticeBtn" class="update-notice hidden" tabindex="-1">
+              <span class="update-notice-mark">!</span><span id="updateNoticeVersion"></span>
             </button>
             <button
               type="button"

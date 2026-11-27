@@ -3,7 +3,6 @@ import os
 import re
 import shutil
 import stat
-import sys
 import time
 import threading
 from pathlib import Path
@@ -73,11 +72,6 @@ def _replace_with_retry(src: Path, dst: Path, attempts: int = 12) -> None:
     if last_err:
         raise last_err
 
-def has_onnxruntime_gpu() -> bool:
-    capi = Path(sys.prefix) / "Lib" / "site-packages" / "onnxruntime" / "capi"
-    return (capi / "onnxruntime_providers_cuda.dll").exists() or (
-        capi / "libonnxruntime_providers_cuda.so"
-    ).exists()
 
 _ISO639_2_TO_1 = {
     "aar": "aa", "abk": "ab", "afr": "af", "aka": "ak", "alb": "sq", "amh": "am",
@@ -171,19 +165,6 @@ def normalize_bcp47(value: Any) -> Optional[str]:
         return "ja"
 
     return primary
-
-
-def language_from_epub_book(book: Any) -> Optional[str]:
-    try:
-        metas = book.get_metadata("DC", "language") or []
-    except Exception:
-        metas = []
-    for item in metas:
-        raw = item[0] if isinstance(item, (tuple, list)) and item else item
-        tag = normalize_bcp47(raw)
-        if tag:
-            return tag
-    return None
 
 
 def language_from_pdf_doc(doc: Any) -> Optional[str]:
@@ -318,38 +299,3 @@ def safe_init_json(path: Path, default_data: Any, indent: Optional[int] = None):
             json.dump(default_data, f, ensure_ascii=False, indent=indent)
 
 
-def get_language_from_voice(voice: str) -> str:
-    """
-    Detect language from voice ID prefix.
-    Supports single voices and blend expressions.
-    Returns appropriate language code for Kokoro TTS.
-    """
-    if not voice or not isinstance(voice, str):
-        return "en-us"
-
-    target_voice = voice
-    if "+" in voice or "(" in voice:
-        try:
-            from .routers.tts import get_primary_voice
-            target_voice = get_primary_voice(voice)
-        except Exception:
-            target_voice = voice.split("+")[0].split("(")[0].strip()
-
-    if target_voice.startswith(("af_", "am_")):
-        return "en-us"
-    elif target_voice.startswith(("bf_", "bm_")):
-        return "en-gb"
-    elif target_voice.startswith(("ff_", "fm_")):
-        return "fr-fr"
-    elif target_voice.startswith(("ef_", "em_")):
-        return "es"
-    elif target_voice.startswith(("zf_", "zm_")):
-        return "cmn"
-    elif target_voice.startswith(("if_", "im_")):
-        return "it"
-    elif target_voice.startswith(("pf_", "pm_")):
-        return "pt-br"
-    elif target_voice.startswith(("jf_", "jm_")):
-        return "ja"
-    else:
-        return "en-us"

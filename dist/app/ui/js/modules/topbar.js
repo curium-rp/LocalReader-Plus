@@ -6,6 +6,7 @@ import { getTop9Recent } from "./recent.js";
 import { openTypoMenu, closeTypoMenu } from "./typography.js";
 import { openFilesUI } from "./files_UI.js";
 import { openHistoryUI } from "./history.js";
+import { clickSidebarToggle } from "./sidebar.js";
 
 function nativeApi() {
   return window.pywebview?.api || null;
@@ -110,8 +111,7 @@ function wireMenubar() {
     if (
       e.target.closest(".menubar-item") ||
       e.target.closest("#settingsMenuTrigger") ||
-      e.target.closest("#typoFloatMenu") ||
-      e.target.closest("#typoMenuBtn")
+      e.target.closest("#typoFloatMenu")
     ) {
       return;
     }
@@ -616,9 +616,7 @@ function wireTitlebarDrag() {
 }
 
 function wireSidebarToggle() {
-  document.getElementById("topbarSidebarToggle")?.addEventListener("click", () => {
-    document.getElementById("sidebarCollapseBtn")?.click();
-  });
+  document.getElementById("topbarSidebarToggle")?.addEventListener("click", clickSidebarToggle);
 }
 
 function wireClock() {

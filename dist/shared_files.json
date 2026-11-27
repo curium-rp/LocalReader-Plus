@@ -1,0 +1,29 @@
+{
+  "about": "The Reader files FalcoType uses. FalcoType reaches this tree only through this list, and its test/bridge suite checks every entry. Paths are relative to dist/. Rename or move a listed file here in the same change.",
+  "launcher": "main.py",
+  "python_modules": {
+    "downloader": "app/logic/downloader.py",
+    "falcotype_protocol": "app/falco_api/falcotype_protocol.py",
+    "language_packs": "app/logic/language_packs.py",
+    "local_server": "app/logic/local_server.py",
+    "platform_driver": "platform_driver.py",
+    "shell_paths": "app/logic/shell_paths.py",
+    "window_manager": "window_manager.py"
+  },
+  "python_packages": {
+    "speech_core": "speech_core"
+  },
+  "js_modules": {
+    "blending.js": "app/ui/js/modules/blending.js",
+    "downloader.js": "app/ui/js/modules/downloader.js",
+    "language-packs.js": "app/ui/js/modules/language-packs.js"
+  },
+  "js_host_imports": ["api.js", "state.js", "ui.js"],
+  "ui_libraries": {
+    "lucide.min.js": "app/ui/lib/lucide.min.js",
+    "tailwindcss-with-all-plugins.js": "app/ui/lib/tailwindcss-with-all-plugins.js"
+  },
+  "stylesheets": {
+    "reader-typography.css": "app/ui/css/reader-typography.css"
+  }
+}

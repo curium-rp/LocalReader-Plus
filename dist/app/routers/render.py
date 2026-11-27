@@ -170,10 +170,16 @@ def _sanitize(data: dict) -> dict:
         out["font_thickness"] = DEFAULT_RENDER["font_thickness"]
     try:
         out["line_height"] = float(out.get("line_height") or DEFAULT_RENDER["line_height"])
+        if not math.isfinite(out["line_height"]):
+            raise ValueError("Invalid line height")
     except (TypeError, ValueError):
         out["line_height"] = DEFAULT_RENDER["line_height"]
     try:
-        out["paragraph_spacing"] = float(out.get("paragraph_spacing"))
+        spacing = float(out.get("paragraph_spacing"))
+        if not math.isfinite(spacing):
+            raise ValueError("Invalid paragraph spacing")
+        # Same 0-2 range as the slider and FalcoType's display contract.
+        out["paragraph_spacing"] = max(0.0, min(2.0, spacing))
     except (TypeError, ValueError):
         out["paragraph_spacing"] = DEFAULT_RENDER["paragraph_spacing"]
     if not out.get("font_family"):

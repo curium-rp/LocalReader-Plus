@@ -1,8 +1,6 @@
 import re
 import unicodedata
-import os
 import json
-import urllib.request
 import html
 import threading
 from pathlib import Path
@@ -80,8 +78,8 @@ class UltimateJapaneseG2P:
             import jaconv
         except ImportError as e:
             raise ImportError(
-                "Japanese speech is unavailable. Install LocalReader's optional "
-                "requirements-cjk.txt (fugashi, unidic-lite, jaconv)."
+                "Japanese speech is unavailable. Install the Japanese language "
+                "package (fugashi, unidic-lite, jaconv)."
             ) from e
         self._jaconv = jaconv
         try:

@@ -1,6 +1,7 @@
 import { state } from './state.js';
 import { toggleSettingsDrawer, showToast, renderIcons } from './ui.js';
-import { stopPlayback, saveProgress } from './tts.js';
+import { saveProgress } from './tts.js';
+import { sleepSyncPlayback } from '../falco_api/falcotype-sync.js';
 
 let timerInterval = null;
 let timerEndTime = null;
@@ -152,7 +153,7 @@ export function initTimer() {
 
         // Smoothly stop playback and save reading progress bookmark
         try {
-            stopPlayback();
+            await sleepSyncPlayback();
             saveProgress();
         } catch (e) {
             console.error("[TIMER] Error during playback stop/save", e);

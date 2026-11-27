@@ -1,5 +1,3 @@
-.falcotype-chunk-unit { background: color-mix(in srgb, var(--text-content, #ccc) 7%, transparent); }
-
 :root {
   --reader-font-family: Georgia, serif;
   --reader-font-size: 18px;
@@ -120,7 +118,6 @@
   box-decoration-break: slice;
 }
 
-.chapter-text n:hover,
 .chapter-text .sentence:hover {
   background-color: rgba(255, 255, 255, 0.05);
 }
@@ -132,6 +129,12 @@
   box-shadow: none !important;
   outline: none !important;
   border: none !important;
+}
+
+/* Box tweaks only for inline sentences. Block sentences (e.g. <h1 class="sentence"><img></h1>)
+   must keep their own margin/padding, or the page reflows every time they gain/lose focus. */
+.chapter-text n.active-sentence,
+.chapter-text .sentence.active-sentence:not(:is(h1, h2, h3, h4, h5, h6, p, div, figure, section, blockquote, li, hgroup)) {
   padding-top: var(--highlight-pad-y);
   padding-bottom: var(--highlight-pad-y);
   padding-left: calc(0.09 * var(--reader-font-size));
@@ -432,10 +435,6 @@ body.horizontal-mode #textContent.chapter-text.horizontal s img.epub-image {
   font-family: var(--reader-font-family, Georgia, serif);
 }
 
-.typo-menu-btn.active {
-  box-shadow: 0 0 0 2px rgba(191, 219, 254, 0.95);
-}
-
 .typo-float-menu {
   position: fixed;
   z-index: 1100;
@@ -695,23 +694,6 @@ body.horizontal-mode #textContent.chapter-text.horizontal s img.epub-image {
   background: rgba(37, 99, 235, 0.18);
 }
 
-/* --- OVERLAP MERGE MODE (Activated by JS <= 1.45) --- */
-body.merge-highlights .chapter-text n.active-sentence,
-body.merge-highlights .chapter-text .sentence.active-sentence {
-  -webkit-box-decoration-break: slice !important;
-  box-decoration-break: slice !important;
-  border-radius: 4px !important;
-  /* Inflate padding to bridge tight gaps */
-  padding-top: calc(0.18 * var(--reader-font-size)) !important;
-  padding-bottom: calc(0.18 * var(--reader-font-size)) !important;
-}
-
-/* Opaque flat color strictly for default theme to prevent alpha intersection burn-in */
-body.merge-highlights:not([class*="theme-"]) .chapter-text n.active-sentence,
-body.merge-highlights:not([class*="theme-"]) .chapter-text .sentence.active-sentence {
-  background-color: #1b3252 !important;
-}
-
 /* =========================================================
    CALIBRATED THEME TEXT GLOW HIGHLIGHTS (< 1.45 Line-Height)
 ===IF used line space set < 145% it will change to glow highlights*/
@@ -727,7 +709,6 @@ body.tight-highlight-mode .chapter-text .sentence.active-sentence {
   color: #c4b5fd !important;
   text-shadow: 0 0 3px rgba(168, 85, 247, 0.18) !important;
 }
-body.tight-highlight-mode .chapter-text n:hover,
 body.tight-highlight-mode .chapter-text .sentence:hover {
   background-color: transparent !important;
   text-shadow: 0 0 3px rgba(192, 132, 252, 0.1) !important;
@@ -739,8 +720,7 @@ body.tight-highlight-mode .chapter-text .sentence:hover {
   color: #b4b4b8 !important;
   text-shadow: 0 0 4px rgba(255, 255, 255, 0.18) !important;
 }
-[data-theme="dark-soft"] body.tight-highlight-mode .chapter-text .sentence:hover,
-[data-theme="dark-soft"] body.tight-highlight-mode .chapter-text n:hover {
+[data-theme="dark-soft"] body.tight-highlight-mode .chapter-text .sentence:hover {
   text-shadow: 0 0 3px rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -750,8 +730,7 @@ body.tight-highlight-mode .chapter-text .sentence:hover {
   color: #18181b !important;
   text-shadow: 0 0 4px rgba(0, 0, 0, 0.15) !important;
 }
-[data-theme="soft-white"] body.tight-highlight-mode .chapter-text .sentence:hover,
-[data-theme="soft-white"] body.tight-highlight-mode .chapter-text n:hover {
+[data-theme="soft-white"] body.tight-highlight-mode .chapter-text .sentence:hover {
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.08) !important;
 }
 
@@ -761,8 +740,7 @@ body.tight-highlight-mode .chapter-text .sentence:hover {
   color: #1c150e !important;
   text-shadow: 0 0 4px rgba(180, 83, 9, 0.25) !important;
 }
-[data-theme="sepia-contrast"] body.tight-highlight-mode .chapter-text .sentence:hover,
-[data-theme="sepia-contrast"] body.tight-highlight-mode .chapter-text n:hover {
+[data-theme="sepia-contrast"] body.tight-highlight-mode .chapter-text .sentence:hover {
   text-shadow: 0 0 3px rgba(180, 83, 9, 0.1) !important;
 }
 
@@ -772,8 +750,7 @@ body.tight-highlight-mode .chapter-text .sentence:hover {
   color: #382313 !important;
   text-shadow: 0 0 4px rgba(120, 53, 15, 0.2) !important;
 }
-[data-theme="sepia-soft"] body.tight-highlight-mode .chapter-text .sentence:hover,
-[data-theme="sepia-soft"] body.tight-highlight-mode .chapter-text n:hover {
+[data-theme="sepia-soft"] body.tight-highlight-mode .chapter-text .sentence:hover {
   text-shadow: 0 0 3px rgba(120, 53, 15, 0.08) !important;
 }
 
@@ -783,8 +760,7 @@ body.tight-highlight-mode .chapter-text .sentence:hover {
   color: #cad1e7 !important;
   text-shadow: 0 0 4px rgba(130, 170, 255, 0.35) !important;
 }
-[data-theme="twilight"] body.tight-highlight-mode .chapter-text .sentence:hover,
-[data-theme="twilight"] body.tight-highlight-mode .chapter-text n:hover {
+[data-theme="twilight"] body.tight-highlight-mode .chapter-text .sentence:hover {
   text-shadow: 0 0 3px rgba(130, 170, 255, 0.12) !important;
 }
 

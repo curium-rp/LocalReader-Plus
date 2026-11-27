@@ -36,15 +36,10 @@ class FFMPEGInstaller:
             progress_callback: Function called with (downloaded_bytes, total_bytes, status_message)
         """
         self.progress_callback = progress_callback
-        self.is_cancelled = False
     
     def check_installed(self) -> bool:
         """Check if FFMPEG binaries are already installed"""
         return bool(get_ffmpeg_path() and get_ffprobe_path())
-    
-    def cancel(self):
-        """Cancel the download process"""
-        self.is_cancelled = True
     
     def install(self) -> tuple[bool, Optional[str]]:
         """
@@ -76,10 +71,6 @@ class FFMPEGInstaller:
             
             with open(temp_zip, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
-                    if self.is_cancelled:
-                        temp_zip.unlink(missing_ok=True)
-                        return False, "Download cancelled"
-                    
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
@@ -179,20 +170,3 @@ def get_ffmpeg_path() -> Optional[str]:
 
 def get_ffprobe_path() -> Optional[str]:
     return _resolve(FFPROBE_EXE, "ffprobe")
-
-# Configure pydub to use local FFMPEG
-def configure_pydub():
-    """
-    Configure pydub to use locally installed FFMPEG binaries.
-    Must be called after FFMPEG is installed and before using pydub.
-    """
-    from pydub import AudioSegment
-    
-    ffmpeg_path = get_ffmpeg_path()
-    ffprobe_path = get_ffprobe_path()
-    
-    if ffmpeg_path:
-        AudioSegment.converter = ffmpeg_path
-    if ffprobe_path:
-        AudioSegment.ffprobe = ffprobe_path
-

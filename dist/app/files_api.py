@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import time
 import uuid
@@ -12,7 +11,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 try:
-    from fastapi import APIRouter, HTTPException, BackgroundTasks
+    from fastapi import APIRouter, HTTPException
     from pydantic import BaseModel
     router = APIRouter(prefix="/api/explorer", tags=["explorer"])
 except ImportError:
@@ -25,7 +24,7 @@ except ImportError:
         pass
     router = None
 
-from .config import userdata_dir, master_tree_file, tree_dir, columepx_file
+from .config import master_tree_file, tree_dir, columepx_file
 from .utils import safe_save_json
 from .logic.shell_paths import open_path_in_os
 from .logic.memories import (
@@ -633,39 +632,6 @@ def rescan_path(path_id: str) -> Dict[str, Any]:
         return load_tree_log(path_id)
 
 
-def rescan_all_paths() -> Dict[str, Any]:
-    """
-    Rescans all registered paths and updates individual tree logs and master_tree.json.
-    """
-    master = load_master_tree()
-    complete = bool(master.get("paths"))
-    for p in master.get("paths", []):
-        p_path_str = p.get("path")
-        if p_path_str:
-            p_path = Path(p_path_str)
-            if p_path.exists() and p_path.is_dir():
-                try:
-                    tree_data = scan_folder_tree(p_path)
-                    save_tree_log(tree_data, p.get("id"))
-                except Exception as e:
-                    complete = False
-                    print(f"[FilesAPI] Error rescanning path {p_path_str}: {e}")
-            else:
-                complete = False
-        else:
-            complete = False
-    if complete:
-        with _tree_cache_lock:
-            latest = load_master_tree()
-            scanned_paths = {(str(p["id"]), p.get("path")) for p in master["paths"]}
-            current_paths = {(str(p["id"]), p.get("path")) for p in latest.get("paths", [])}
-            if scanned_paths == current_paths:
-                latest["last_full_scan_at"] = time.time()
-                latest["last_scanned_at"] = latest["last_full_scan_at"]
-                save_master_tree(latest)
-    return load_all_trees()
-
-
 @_with_tree_cache_lock
 def save_tree_log(tree_data: Dict[str, Any], path_id: Optional[str] = None, *, activate: bool = True) -> str:
     """
@@ -773,22 +739,6 @@ def delete_tree_path(path_id: str) -> Dict[str, Any]:
 
 
 @_with_tree_cache_lock
-def switch_active_path(path_id: str) -> Dict[str, Any]:
-    """Switches active path in master_tree.json and returns its tree data."""
-    master = load_master_tree()
-    target_id = str(path_id)
-    found = any(str(p.get("id")) == target_id for p in master.get("paths", []))
-    if not found:
-        raise HTTPException(status_code=404, detail=f"Path ID {path_id} not found in master_tree")
-
-    master["active_id"] = target_id
-    save_master_tree(master)
-
-    tree_data = load_tree_log(target_id)
-    return {"status": "ok", "active_id": target_id, "data": tree_data}
-
-
-@_with_tree_cache_lock
 def save_paths_order(ordered_paths: List[Dict[str, Any]], active_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Saves the user-arranged or A-Z sorted list of paths into master_tree.json.
@@ -853,10 +803,6 @@ class PathPayload(BaseModel):
 
 class AddToShelfPayload(BaseModel):
     epub_path: str
-
-
-class SwitchPathPayload(BaseModel):
-    id: str
 
 
 class SavePathsPayload(BaseModel):
@@ -932,11 +878,6 @@ if router is not None:
                 save_master_tree(master)
         return {"status": "ok", "id": target_id, "collapsed": bool(payload.collapsed), "master": master}
 
-    @router.post("/switch-path")
-    async def api_switch_path(payload: SwitchPathPayload):
-        """Switch the active path in the master registry."""
-        return switch_active_path(payload.id)
-
     @router.delete("/path/{path_id}")
     async def api_delete_path(path_id: str):
         """Delete a path from the master registry and remove its tree file."""
@@ -990,12 +931,6 @@ if router is not None:
         data = load_all_trees()
         return {"status": "ok", "data": data}
 
-    @router.post("/rescan-all")
-    async def api_rescan_all():
-        """Rescan all registered book folder paths."""
-        data = await asyncio.to_thread(rescan_all_paths)
-        return {"status": "ok", "data": data}
-
     @router.post("/open-in-os")
     async def api_open_in_os(payload: OpenPathPayload):
         """Open a directory or file in the native OS file explorer."""
@@ -1034,4 +969,3 @@ if router is not None:
         """Update column pixel widths for a view and persist to disk."""
         data = save_columepx_data(payload.view, payload.widths)
         return {"status": "ok", "data": data}
-

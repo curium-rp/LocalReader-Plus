@@ -1,8 +1,10 @@
 """Managed reader content, control mailbox and leases. No persistent storage."""
 
 from collections import OrderedDict
+import ipaddress
 import json
 import os
+from pathlib import Path
 import secrets
 import threading
 import time
@@ -13,6 +15,7 @@ from pydantic import Field, model_validator
 from .falcotype_protocol import StrictModel, Sync, Command, PracticeStatus, BookChunk, TimeCutResult
 
 from ..runtime import runtime
+from speech_core import SynthesisRequest, speak, synthesize
 
 
 router = APIRouter(prefix="/api/falcotype", tags=["falcotype"])
@@ -30,12 +33,23 @@ _activation = ""
 _published_session = None
 _transitioning = False
 _pending = None
+_pending_at = 0.0
 _results = OrderedDict()
 _highest_id = 0
 _advancement = "command"
 _practice = None
 _practice_deadline = 0.0
+_media = None
+_reader = {"book": "none", "engine": "loading", "error": ""}
 PAGE_LIMIT = 16 * 1024 * 1024
+# Bridge contract version; FalcoType refuses any other (All md/EPUB_server.md, API v5).
+API_VERSION = 5
+# Commands that never move the selection. A queued one is stale once the Reader
+# publishes a new selection; selection-moving commands change it while applying.
+SELECTION_BOUND = ("prepare", "play", "resume")
+# A queued command the page never acknowledges is rejected before the host's
+# own 30 s wait ends, so the one-command mailbox cannot stay blocked.
+COMMAND_TTL_S = 28.0
 
 
 Kind = Literal["text", "heading", "image", "scene"]
@@ -44,6 +58,8 @@ Kind = Literal["text", "heading", "image", "scene"]
 class Unit(StrictModel):
     index: int = Field(ge=0)
     kind: Kind
+    # A text unit opened by a full-size picture: the picture shows before the caption is typed.
+    figure: bool = False
 
 
 class ChapterScope(StrictModel):
@@ -88,6 +104,18 @@ class CurrentSentence(StrictModel):
     kind: Kind
 
 
+# The position the Reader last opened for a followed run, and its navigation count.
+class FollowEcho(StrictModel):
+    epoch: int = Field(ge=0)
+    id: int = Field(ge=0)
+
+
+# The Reader's Behavior delays (Img, S), which a followed run counts itself.
+class MediaDelays(StrictModel):
+    image: int = Field(ge=0, le=600_000)
+    scene: int = Field(ge=0, le=600_000)
+
+
 class Playback(StrictModel):
     state: Literal["idle", "loading", "ready", "playing", "paused", "ended", "error"] = "idle"
     user_paused: bool = False
@@ -101,28 +129,68 @@ class Playback(StrictModel):
     continuation_from: int | None = Field(default=None, ge=0)
     practice_sequence: int = Field(default=0, ge=0)
     advance_gate: str = Field(default="", max_length=80)
-    media_waiting: bool = False
-    media_remaining_ms: int = Field(default=0, ge=0)
+    error: str = Field(default="", max_length=1024)
+    follow: FollowEcho = Field(default_factory=lambda: FollowEcho(epoch=0, id=0))
+    media_delays: MediaDelays = Field(default_factory=lambda: MediaDelays(image=3000, scene=1000))
+
+
+# The image/scene block. confirmed: the Reader accepted FalcoType's running media wait.
+# figure: a text unit holding a picture (image + caption); shown first, then typed.
+class MediaBlock(StrictModel):
+    selection_revision: int = Field(ge=0)
+    kind: Literal["image", "scene"]
+    delay_ms: int = Field(ge=0, le=600_000)
+    confirmed: bool = False
+    figure: bool = False
+
+    @model_validator(mode="after")
+    def figure_is_an_unconfirmed_image(self):
+        if self.figure and (self.kind != "image" or self.confirmed):
+            raise ValueError("A figure is an image shown before its caption; it has no media wait.")
+        return self
+
+
+# What the Reader page has loaded. A server that answers is not yet a Reader that can sync.
+class ReaderState(StrictModel):
+    book: Literal["none", "loading", "ready", "failed"] = "none"
+    engine: Literal["loading", "ready", "failed"] = "loading"
     error: str = Field(default="", max_length=1024)
 
 
 class Acknowledgment(StrictModel):
     id: int = Field(ge=1)
-    status: Literal["applied", "rejected"]
+    status: Literal["applied", "rejected", "stale"]
     error: str = Field(default="", max_length=1024)
 
 
 class Selection(StrictModel):
     current: CurrentSentence | None
     playback: Playback = Field(default_factory=Playback)
+    media: MediaBlock | None = None
+    reader: ReaderState = Field(default_factory=ReaderState)
     session_id: str | None = Field(default=None, max_length=128)
     ack: Acknowledgment | None = None
     transitioning: bool = False
 
 
+def _loopback_host(hostname):
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def require_managed(request: Request):
     if not runtime.submodule or not _token:
         raise HTTPException(404, "Reader bridge is not enabled.")
+    # base_url comes from Host: reject DNS-rebound names and cross-site fetches,
+    # which matters most for the token-free page publication endpoints.
+    if not _loopback_host(request.url.hostname or ""):
+        raise HTTPException(403, "Reader bridge requires the reader's loopback host.")
+    if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+        raise HTTPException(403, "Reader bridge requires the reader's own origin.")
     origin = request.headers.get("origin")
     if origin and origin != str(request.base_url).rstrip("/"):
         raise HTTPException(403, "Reader bridge requires the reader's own origin.")
@@ -137,18 +205,44 @@ def require_host(request: Request):
 def expire():
     global _session, _pending, _practice
     now = time.monotonic()
+    if _pending and now - _pending_at >= COMMAND_TTL_S:
+        _results[_pending["id"]] = {"id": _pending["id"], "status": "rejected",
+                                    "error": "Reader command expired before it was applied."}
+        _pending = None
     if _session and (now >= _lease_until or (_published_session == _session and now - _updated >= 6)):
         _session = None
         _pending = None
         _practice = None
 
 
+def _reader_revision():
+    return _current["selection_revision"] if _current else None
+
+
+def _result(command_id, status, error=""):
+    return {"id": command_id, "status": status, "error": error[:1024], "selection_revision": _reader_revision()}
+
+
+def _store(result):
+    _results[result["id"]] = result
+    while len(_results) > 128:
+        _results.popitem(last=False)
+    return result
+
+
 def practice_snapshot():
     if not _session or not _practice:
         return None
-    remaining = _practice["remaining_ms"] if (_practice["limit_kind"] == "unlimited" or _practice["run_state"] != "running"
+    remaining = _practice["remaining_ms"] if (_practice["limit_kind"] != "finite" or _practice["run_state"] != "running"
         or _practice["media_waiting"] or _practice["clock_paused"]) else max(0, int((_practice_deadline - time.monotonic()) * 1000))
     return {**_practice, "remaining_ms": remaining}
+
+
+def reader_snapshot():
+    # starting: the page has not reported yet. stalled: it reported, then went quiet.
+    if not _updated:
+        return {**_reader, "book": "starting"}
+    return _reader if time.monotonic() - _updated < 6 else {**_reader, "book": "stalled"}
 
 
 def live_current():
@@ -162,7 +256,7 @@ def live_current():
 @router.get("/context")
 def get_context(request: Request):
     require_managed(request)
-    return {"enabled": True}
+    return {"enabled": True, "api": API_VERSION}
 
 
 class OpenBook(StrictModel):
@@ -171,6 +265,7 @@ class OpenBook(StrictModel):
 
 @router.post("/open")
 def open_book(payload: OpenBook, request: Request):
+    """FalcoType's dropped EPUB or PDF opens the same way as a drop on this window."""
     require_host(request)
     import webview
     from ..files_api import add_book_to_shelf
@@ -178,13 +273,22 @@ def open_book(payload: OpenBook, request: Request):
     if not webview.windows:
         raise HTTPException(503, "LocalReader window is not ready.")
     window = webview.windows[0]
+    if Path(payload.path).suffix.lower() == ".pdf":
+        if not window.evaluate_js("typeof window.__lrOnNativePdfDrop === 'function'"):
+            raise HTTPException(503, "LocalReader page is not ready.")
+        path_json = json.dumps(payload.path, ensure_ascii=False)
+        window.evaluate_js(f"(function() {{ window.__lrOnNativePdfDrop({path_json}); return true; }})()")
+        return {"status": "ok"}
     if not window.evaluate_js("typeof window.__lrOnNativeEpubDrop === 'function'"):
         raise HTTPException(503, "LocalReader page is not ready.")
+    # Its place in line among the user's opens is now, not after the shelf add.
+    order = window.evaluate_js("window.__lrBeginBookOpen ? window.__lrBeginBookOpen() : null")
     result = add_book_to_shelf(payload.path)
     if result.get("status") not in ("ok", "success", "already_in_shelf") or not result.get("book"):
         raise HTTPException(400, "Could not open EPUB in LocalReader.")
     book_json = json.dumps(result["book"], ensure_ascii=False)
-    window.evaluate_js(f"(function() {{ window.__lrOnNativeEpubDrop({book_json}); return true; }})()")
+    order_arg = f", {int(order)}" if type(order) in (int, float) else ""
+    window.evaluate_js(f"(function() {{ window.__lrOnNativeEpubDrop({book_json}{order_arg}); return true; }})()")
     return {"status": "ok"}
 
 
@@ -204,9 +308,10 @@ def publish_page(page: Page, request: Request):
 @router.post("/current")
 def publish_current(selection: Selection, request: Request):
     require_managed(request)
-    global _current, _playback, _revision, _updated, _published_session, _pending, _page, _staged_page, _transitioning, _session, _practice
+    global _current, _playback, _revision, _updated, _published_session, _pending, _page, _staged_page, _transitioning, _session, _practice, _media, _reader
     current = selection.current.model_dump() if selection.current else None
     playback = selection.playback.model_dump()
+    media = selection.media.model_dump() if selection.media else None
     with _lock:
         expire()
         if current:
@@ -227,14 +332,20 @@ def publish_current(selection: Selection, request: Request):
             _session = None
             _pending = None
             _practice = None
-        if (current, playback, selection.session_id, selection.transitioning) != (_current, _playback, _published_session, _transitioning):
+        if (current, playback, media, selection.session_id, selection.transitioning) != (_current, _playback, _media, _published_session, _transitioning):
             _revision += 1
-        _current, _playback = current, playback
+        _current, _playback, _media = current, playback, media
         _published_session = selection.session_id
         _transitioning = selection.transitioning
+        _reader = selection.reader.model_dump()
         _updated = time.monotonic()
         if selection.ack and _pending and selection.session_id == _session and selection.ack.id == _pending["id"]:
-            _results[selection.ack.id] = selection.ack.model_dump()
+            _store({**selection.ack.model_dump(), "selection_revision": _reader_revision()})
+            _pending = None
+        # A queued playback command for a selection the Reader has left can never apply.
+        if (_pending and current and _pending["type"] in SELECTION_BOUND
+                and _pending["selection_revision"] != current["selection_revision"]):
+            _store(_result(_pending["id"], "stale", "Selected sentence has changed."))
             _pending = None
         return {"sync": {"session_id": _session, "advancement": _advancement,
                          "remaining_ms": max(0, int((_lease_until - time.monotonic()) * 1000)) if _session else 0},
@@ -250,7 +361,8 @@ def get_current(request: Request, session_id: str | None = None):
         expire()
         if session_id and session_id == _session:
             _lease_until = time.monotonic() + 6
-        return {"current": live_current(), "playback": _playback, "revision": _revision,
+        return {"api": API_VERSION, "current": live_current(), "playback": _playback,
+                "media": _media if live_current() else None, "revision": _revision, "reader": reader_snapshot(),
                 "sync": {"session_id": _session, "advancement": _advancement, "applied": bool(_session and _published_session == _session)},
                 "ack": next(reversed(_results.values()), None), "transitioning": _transitioning}
 
@@ -286,6 +398,18 @@ def set_sync(sync: Sync, request: Request):
         return {"session_id": _session, "advancement": _advancement}
 
 
+@router.post("/speech")
+def speech(payload: SynthesisRequest, request: Request):
+    """FalcoType's speech (Practice prompts, voice test) while this Reader owns
+    Kokoro: raw PCM in the voice or blend FalcoType sends, never the Reader's own
+    active blend, through the same plain pipeline FalcoType runs on its own engine,
+    so Practice sounds the same whichever process holds the model."""
+    require_host(request)
+    from .. import state
+    from ..routers.tts import UNAVAILABLE
+    return speak(lambda: synthesize(state.engine, payload), "pcm_f32le", UNAVAILABLE)
+
+
 @router.post("/practice-status")
 def publish_practice(status: PracticeStatus, request: Request):
     require_host(request)
@@ -293,8 +417,9 @@ def publish_practice(status: PracticeStatus, request: Request):
     payload = status.model_dump()
     with _lock:
         expire()
+        stale = {"sequence": status.sequence, "status": "stale", "selection_revision": _reader_revision()}
         if status.session_id != _session or _published_session != _session or _advancement != "status":
-            raise HTTPException(409, "Practice status requires an active status-driven session.")
+            return {**stale, "error": "Practice status requires an active status-driven session."}
         if _practice and status.sequence <= _practice["sequence"]:
             if status.sequence == _practice["sequence"] and payload != _practice:
                 raise HTTPException(409, "A status sequence cannot be reused with different data.")
@@ -304,62 +429,66 @@ def publish_practice(status: PracticeStatus, request: Request):
                 (status.run_state != "finished" or status.outcome != _practice["outcome"])):
             raise HTTPException(409, "A finished run cannot be reopened or change its outcome.")
         if status.run_start:
-            if _practice and status.run_id == _practice["run_id"]:
+            # A run names its start at the first real input, and it never changes after that.
+            if _practice and status.run_id == _practice["run_id"] and _practice["run_start"]:
                 if payload["run_start"] != _practice["run_start"]:
                     raise HTTPException(409, "The run-start checkpoint is immutable.")
-            else:
+            elif not status.follow:
                 current = live_current()
                 if not current or any(getattr(status.run_start, key) != current[key]
                         for key in ("book_id", "page_index", "page_revision", "sentence_index")):
-                    raise HTTPException(409, "A new run must start at the current reader selection.")
+                    return {**stale, "error": "A new run must start at the current reader selection."}
+        # A followed run names its own position, usually ahead of the Reader's selection:
+        # it is accepted as it stands, and the Reader page checks it against its book.
         # Stops apply to the whole run, including a handoff already loading its next page.
-        held = (status.run_state == "running" and status.clock_paused and _practice
+        held = status.follow or (status.run_state == "running" and status.clock_paused and _practice
                 and status.run_id == _practice["run_id"] and status.selection_revision == _practice["selection_revision"]
                 and payload["chunk"] == _practice["chunk"])
         if status.run_state in ("running", "preparing") and not held:
             current = live_current()
             if not current or status.selection_revision != current["selection_revision"]:
-                raise HTTPException(409, "Selected sentence has changed.")
+                return {**stale, "error": "Selected sentence has changed."}
             if status.media_waiting and current["kind"] not in ("image", "scene"):
-                raise HTTPException(409, "A media wait requires an image or scene break.")
+                return {**stale, "error": "A media wait requires an image or scene break."}
             if status.chunk:
                 chunk = status.chunk
                 if (any(getattr(chunk, key) != current[key] for key in ("book_id", "page_index", "page_revision"))
                         or not chunk.start <= current["sentence_index"] < chunk.end <= len(_page["units"])):
                     raise HTTPException(409, "Book chunk belongs to a different canonical selection.")
-                if _page["chapters"] and not any(scope["id"] == chunk.chapter_id and
-                        scope["start"] <= chunk.start < chunk.end <= scope["end"] for scope in _page["chapters"]):
-                    raise HTTPException(409, "Book chunk crosses its reader chapter scope.")
                 kinds = [unit["kind"] for unit in _page["units"][chunk.start:chunk.end]]
+                if chunk.kind == "text" and not chunk.last and chunk.end != len(_page["units"]):
+                    raise HTTPException(409, "A chunk short of its target runs to the page's end.")
                 if ((chunk.kind in ("image", "scene") and kinds != [chunk.kind]) or
-                        ((chunk.kind == "empty" or chunk.kind == "text" and chunk.preset != "chapter") and any(kind in ("image", "scene") for kind in kinds))):
+                        (chunk.kind == "empty" and any(kind in ("image", "scene") for kind in kinds)) or
+                        (chunk.last and kinds[-1] in ("image", "scene"))):
                     raise HTTPException(409, "Book chunk does not match reader media units.")
         _practice = payload
         _practice_deadline = None if status.remaining_ms is None or status.clock_paused else time.monotonic() + status.remaining_ms / 1000
-        return {"sequence": status.sequence, "status": "accepted"}
+        return {"sequence": status.sequence, "status": "accepted", "selection_revision": _reader_revision()}
 
 
 @router.post("/command")
 def send_command(command: Command, request: Request, response: Response):
     require_host(request)
-    global _pending, _highest_id
+    global _pending, _pending_at, _highest_id
     payload = command.model_dump()
     with _lock:
         expire()
+        if _advancement == "status" and command.type in ("complete", "advance", "continue", "skip_image"):
+            raise HTTPException(409, "Automatic advancement is owned by reader practice status; use media_next for media.")
         if command.session_id != _session or _published_session != _session:
-            raise HTTPException(409, "Sync session is not active in the reader.")
+            return _result(command.id, "stale", "Sync session is not active in the reader.")
         if command.id in _results:
             if _results[command.id]["status"] == "queued":
                 response.status_code = 202
             return _results[command.id]
-        if _advancement == "status" and command.type in ("complete", "advance", "continue", "skip_image"):
-            raise HTTPException(409, "Automatic advancement is owned by reader practice status; use media_next for media.")
         if not live_current():
-            raise HTTPException(409, "Sync session is not active in the reader.")
+            return _result(command.id, "stale", "The Reader is changing its selection.")
         if command.id <= _highest_id:
-            raise HTTPException(409, "Command is stale; it will not be replayed.")
+            return _result(command.id, "stale", "Command is older than the last one; it will not be replayed.")
+        _highest_id = command.id
         if command.selection_revision != _current["selection_revision"]:
-            raise HTTPException(409, "Selected sentence has changed.")
+            return _store(_result(command.id, "stale", "Selected sentence has changed."))
         if command.type == "time_cut":
             applied = (_playback.get("time_cut") or {}).get("operation_id") == command.time_cut.operation_id
             if not applied and (_advancement != "status" or not _practice
@@ -369,30 +498,30 @@ def send_command(command: Command, request: Request, response: Response):
                     or _practice.get("chunk") != command.time_cut.chunk.model_dump()
                     or (_practice["selection_revision"] != command.selection_revision
                         and _playback.get("continuation_from") != _practice["selection_revision"])):
-                raise HTTPException(409, "Time cut requires the captured expired practice chunk.")
+                return _store(_result(command.id, "rejected", "Time cut requires the captured expired practice chunk."))
         if command.type == "run_action":
             applied = (_playback.get("run_action") or {}).get("operation_id") == command.run_action.operation_id
             if not applied and (_advancement != "status" or not _practice or _practice["run_state"] != "finished"
                     or _practice["run_id"] != command.run_action.run_id
-                    or (_practice["outcome"] not in ("manual_stop", "book_end", "abandoned")
-                        and not (_practice["outcome"] == "time_limit" and _playback.get("book_ended") and command.run_action.action == "restart"))
+                    or (_practice["outcome"] not in ("manual_stop", "chunk_end", "book_end", "abandoned")
+                        and not (_practice["outcome"] == "time_limit" and command.run_action.action == "run_start"))
                     or _practice["chunk"] != command.run_action.chunk.model_dump()):
-                raise HTTPException(409, "A result action requires its acknowledged finished run.")
-        if _advancement == "status" and command.type in ("prepare", "play", "resume"):
-            if (not _practice or _practice["selection_revision"] != command.selection_revision
-                    or _practice["run_state"] not in ("preparing", "running")
+                return _store(_result(command.id, "rejected", "A result action requires its acknowledged finished run."))
+        if _advancement == "status" and command.type in SELECTION_BOUND:
+            # The status for this selection has not arrived yet, or a newer one replaced it.
+            if not _practice or _practice["selection_revision"] != command.selection_revision:
+                return _store(_result(command.id, "stale", "Practice status is for another sentence."))
+            if (_practice["run_state"] not in ("preparing", "running")
                     or (_practice["run_state"] == "running" and (_practice["clock_paused"] or
                         (_practice_deadline is not None and not _practice["media_waiting"] and time.monotonic() >= _practice_deadline)))):
-                raise HTTPException(409, "Practice must be ready before starting audio.")
+                return _store(_result(command.id, "rejected", "Practice must be ready before starting audio."))
+        # FalcoType sends one command at a time: a newer one means it gave up on the queued one.
         if _pending:
-            raise HTTPException(409, "A reader command is still pending.")
+            _store(_result(_pending["id"], "superseded", "A newer command replaced this one."))
         _pending = payload
-        _highest_id = command.id
-        _results[command.id] = {"id": command.id, "status": "queued", "error": ""}
-        while len(_results) > 128:
-            _results.popitem(last=False)
+        _pending_at = time.monotonic()
         response.status_code = 202
-        return _results[command.id]
+        return _store(_result(command.id, "queued"))
 
 
 @router.get("/page")
